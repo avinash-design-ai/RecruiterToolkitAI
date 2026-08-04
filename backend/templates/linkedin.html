@@ -175,6 +175,18 @@ form.addEventListener("submit", async function(e){
 
         const data = await response.json();
 
+        if (data.login_required) {
+
+            document.getElementById("status").innerHTML = `
+                <div class="alert alert-warning">
+                    <h5>🔒 LinkedIn Login Required</h5>
+                    <p>${data.message}</p>
+                </div>
+            `;
+
+         return;
+     }
+
         if(!response.ok){
 
             document.getElementById("status").innerHTML=`

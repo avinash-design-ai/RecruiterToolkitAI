@@ -24,8 +24,6 @@ def run_linkedin(
 
     try:
 
-        page = browser.new_page()
-
         page.goto(
             "https://www.linkedin.com/feed/",
             wait_until="domcontentloaded"
@@ -35,22 +33,31 @@ def run_linkedin(
 
         print("Current URL:", page.url)
 
+        # -----------------------------
+        # Check login
+        # -----------------------------
+        if "login" in page.url or "checkpoint" in page.url:
+
+            return {
+                "success": False,
+                "login_required": True,
+                "message": "Authentication required before LinkedIn search."
+            }
+
         workflow = SearchWorkflow(browser)
 
-        results = workflow.run(
+        result = workflow.run(
             company=company,
             location=location,
             max_profiles=max_profiles
         )
 
-        filename = f"{company}_{location}.csv".replace(" ", "_")
-
         return {
             "success": True,
-            "count": len(results),
-            "filename": filename
+            "count": result["count"],
+            "filename": os.path.basename(result["csv"])
         }
-
+        
     finally:
 
         browser.close()
