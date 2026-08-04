@@ -3,8 +3,23 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-with open(ROOT_DIR / "config.json", "r") as f:
-    settings = json.load(f)
+# ---------------------------------------------------------
+# Default Settings
+# ---------------------------------------------------------
+
+settings = {
+    "headless": True,
+    "slow_mo": 0,
+    "timeout": 30000,
+    "profile": "default"
+}
+
+config_file = ROOT_DIR / "config.json"
+
+if config_file.exists():
+
+    with open(config_file, "r", encoding="utf-8") as f:
+        settings.update(json.load(f))
 
 HEADLESS = settings["headless"]
 SLOW_MO = settings["slow_mo"]
@@ -19,10 +34,10 @@ SCREENSHOT_DIR = ROOT_DIR / "screenshots"
 LOG_DIR = ROOT_DIR / "logs"
 PROFILE_DIR = ROOT_DIR / "profile"
 
-for folder in [
+for folder in (
     EXPORT_DIR,
     SCREENSHOT_DIR,
     LOG_DIR,
     PROFILE_DIR,
-]:
-    folder.mkdir(exist_ok=True)
+):
+    folder.mkdir(parents=True, exist_ok=True)
