@@ -1966,3 +1966,8 @@ RESUME FORMATTER
     font-weight:600;
 
 }
+
+.status.beta {
+    background: #fff3cd;
+    color: #856404;
+}
