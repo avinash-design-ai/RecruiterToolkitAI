@@ -1,0 +1,117 @@
+==========================================================
+          PREVAILING WAGE CALCULATOR
+              INSTALLATION GUIDE
+==========================================================
+
+SYSTEM REQUIREMENTS
+-------------------
+• Windows 10 or Windows 11
+• Internet Connection
+• Python 3.13 or later (Python 3.14 is also supported)
+
+==========================================================
+STEP 1 - INSTALL PYTHON
+==========================================================
+
+Download Python from the official website:
+
+https://www.python.org/downloads/
+
+During installation make sure to check:
+
+☑ Add Python to PATH
+
+If Python 3.14 causes any compatibility issues,
+install Python 3.13 instead.
+
+Python 3.13 Downloads:
+
+https://www.python.org/downloads/release/python-3137/
+
+==========================================================
+STEP 2 - COPY THE APPLICATION
+==========================================================
+
+Copy the entire folder
+
+PrevailingWageCalculator
+
+to ANY location.
+
+Examples:
+
+C:\PrevailingWageCalculator
+
+D:\Applications\PrevailingWageCalculator
+
+C:\Users\<username>\Documents\PrevailingWageCalculator
+
+The folder DOES NOT need to match the developer's folder
+location.
+
+==========================================================
+STEP 3 - INSTALL APPLICATION DEPENDENCIES
+==========================================================
+
+Open the application folder.
+
+Double-click:
+
+install.bat
+
+The installer will automatically:
+
+• Install all required Python packages
+• Install the Playwright Chromium browser
+
+This only needs to be done once.
+
+==========================================================
+STEP 4 - START THE APPLICATION
+==========================================================
+
+Double-click:
+
+Run Prevailing Wage Calculator.vbs
+
+OR
+
+Create a Desktop Shortcut to the VBS file and
+launch it from the desktop.
+
+==========================================================
+UPDATING THE APPLICATION
+==========================================================
+
+When a new version is received:
+
+1. Close the application.
+2. Replace the PrevailingWageCalculator folder.
+3. Run install.bat again only if instructed.
+4. Launch the application.
+
+==========================================================
+TROUBLESHOOTING
+==========================================================
+
+Python not found?
+
+Reinstall Python and make sure:
+
+☑ Add Python to PATH
+
+Application doesn't start?
+
+Run install.bat again.
+
+Browser not found?
+
+Run install.bat again.
+
+Internet required?
+
+Yes.
+The application retrieves prevailing wage data
+directly from the U.S. Department of Labor FLAG website.
+
+==========================================================

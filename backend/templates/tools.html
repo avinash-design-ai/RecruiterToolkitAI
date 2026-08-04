@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="container">
+
+    <div class="text-center mb-5">
+
+        <h1 class="display-5 fw-bold">
+            Recruiter Toolkit AI
+        </h1>
+
+        <p class="lead text-muted">
+            Powerful automation tools built for modern recruiters.
+        </p>
+
+    </div>
+
+    <div class="row g-4">
+
+        <!-- Prevailing Wage Calculator -->
+
+        <div class="col-lg-4">
+
+            <div class="card shadow h-100">
+
+                <div class="card-body d-flex flex-column">
+
+                    <h3>💰 Prevailing Wage Calculator</h3>
+
+                    <p class="text-muted mt-3">
+
+                        Search FLAG Wage Level II by city or upload an Excel
+                        workbook to automatically populate wages for multiple
+                        locations.
+
+                    </p>
+
+                    <ul>
+
+                        <li>Quick City Search</li>
+
+                        <li>Bulk Excel Processing</li>
+
+                        <li>Automatic Wage Level II Lookup</li>
+
+                        <li>Download Updated Workbook</li>
+
+                    </ul>
+
+                    <div class="mt-auto">
+
+                        <a href="/tools/wage"
+                           class="btn btn-primary w-100">
+
+                            Open Tool
+
+                        </a>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <!-- LinkedIn Automation -->
+
+        <div class="col-lg-4">
+
+            <div class="card shadow h-100">
+
+                <div class="card-body d-flex flex-column">
+
+                    <h3>🔍 LinkedIn Automation</h3>
+
+                    <p class="text-muted mt-3">
+
+                        Search LinkedIn using keywords and location,
+                        collect recruiter information and export results.
+
+                    </p>
+
+                    <ul>
+
+                        <li>Keyword Search</li>
+
+                        <li>Location Search</li>
+
+                        <li>Profile Extraction</li>
+
+                        <li>CSV Export</li>
+
+                    </ul>
+
+                    <div class="mt-auto">
+
+                        <a href="/tools/linkedin"
+                           class="btn btn-primary w-100">
+
+                            Open Tool
+
+                        </a>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <!-- Resume Formatter -->
+
+        <div class="col-lg-4">
+
+            <div class="card shadow h-100">
+
+                <div class="card-body d-flex flex-column">
+
+                    <h3>📄 Resume Formatter</h3>
+
+                    <p class="text-muted mt-3">
+
+                        Format resumes automatically using your standardized
+                        recruiter template with AI-assisted parsing.
+
+                    </p>
+
+                    <ul>
+
+                        <li>Resume Parsing</li>
+
+                        <li>Template Formatting</li>
+
+                        <li>AI Summary Generation</li>
+
+                        <li>ATS Ready Output</li>
+
+                    </ul>
+
+                    <div class="mt-auto">
+
+                        <button class="btn btn-secondary w-100" disabled>
+
+                            Coming Soon
+
+                        </button>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

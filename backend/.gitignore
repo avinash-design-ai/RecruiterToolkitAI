@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Uploads
+uploads/
+backend/uploads/
+
+# Browser Profiles
+profile/
+**/profile/
+Default/
+**/Default/
+
+# Environment
+.env
+.env.py
+**/.env
+**/.env.py
+
+# Logs
+logs/
+*.log
+
+# Cache
+Code Cache/
+GPUCache/

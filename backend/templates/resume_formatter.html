@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="resume-page">
+
+    <div class="container">
+
+        <div class="text-center mb-5">
+
+            <span class="section-tag">
+                AI RESUME FORMATTER
+            </span>
+
+            <h1 class="display-5 fw-bold mt-3">
+                Resume Formatter
+            </h1>
+
+            <p class="lead text-muted">
+                Upload a resume and convert it into your recruiter template using AI.
+            </p>
+
+        </div>
+
+        <div class="resume-card">
+
+            <form
+                action="/api/resume/format"
+                method="post"
+                enctype="multipart/form-data">
+
+                <div class="upload-box">
+
+                    <div class="upload-icon">
+                        📄
+                    </div>
+
+                    <h3>
+                        Drag & Drop Resume
+                    </h3>
+
+                    <p>
+                        Select a DOCX or PDF Resume
+                    </p>
+
+                    <input
+                        type="file"
+                        name="resume"
+                        class="form-control mt-4"
+                        accept=".docx,.pdf"
+                        required>
+
+                </div>
+
+                <div class="row mt-5">
+
+                    <div class="col-md-6">
+
+                        <label class="form-label">
+                            Resume Template
+                        </label>
+
+                        <select class="form-select">
+
+                            <option>
+                                Standard Recruiter Template
+                            </option>
+
+                        </select>
+
+                    </div>
+
+                    <div class="col-md-6">
+
+                        <label class="form-label">
+                            AI Processing
+                        </label>
+
+                        <input
+                            class="form-control"
+                            value="Enabled"
+                            disabled>
+
+                    </div>
+
+                </div>
+
+                <div class="mt-5">
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary btn-lg">
+
+                        🚀 Format Resume
+
+                    </button>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </div>
+
+</section>
+
+{% endblock %}

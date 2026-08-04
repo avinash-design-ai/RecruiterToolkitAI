@@ -1,0 +1,41 @@
+Recruiter Toolkit
+
+FIRST TIME SETUP
+
+1. Open RecruiterToolkit folder
+
+2. Run:
+   install_requirements.bat
+
+3. Wait for installation to complete
+
+
+USING THE TOOL
+
+1. Double click:
+   RecruiterToolkit.vbs
+
+2. Enter:
+   Company
+   Location
+   Max Profiles
+
+3. Click Run Search
+
+
+OUTPUT
+
+CSV files are created inside:
+
+exports\
+
+Example:
+
+exports\Teksystems_dallas.csv
+
+
+NOTES
+
+- Keep LinkedIn logged in.
+- Close exported CSV files before running again.
+- Close previous toolkit sessions before opening a new one.
