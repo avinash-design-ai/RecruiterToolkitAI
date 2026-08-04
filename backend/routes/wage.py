@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -5,19 +7,30 @@ from modules.PrevailingWageCalculator.flc_scraper import FLCScraper
 
 router = APIRouter()
 
+executor = ThreadPoolExecutor(max_workers=2)
+
 
 class CityRequest(BaseModel):
     city: str
 
 
-@router.post("/wage")
-def get_wage(request: CityRequest):
+def scrape(city):
 
     scraper = FLCScraper()
 
     try:
-        result = scraper.get_wages(request.city)
-        return result
+        return scraper.get_wages(city)
 
     finally:
         scraper.close()
+
+
+@router.post("/wage")
+async def get_wage(request: CityRequest):
+
+    future = executor.submit(
+        scrape,
+        request.city
+    )
+
+    return future.result()

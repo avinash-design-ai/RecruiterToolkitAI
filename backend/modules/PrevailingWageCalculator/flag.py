@@ -9,8 +9,8 @@ class FlagWebsite:
         self.playwright = sync_playwright().start()
 
         self.browser = self.playwright.chromium.launch(
-            headless=False,
-            slow_mo=300
+            headless=True,
+            slow_mo=0
         )
 
         self.page = self.browser.new_page()
