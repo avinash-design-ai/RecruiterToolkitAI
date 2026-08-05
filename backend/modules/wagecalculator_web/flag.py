@@ -18,10 +18,15 @@ class FlagWebsite:
     def __init__(self):
 
         self.playwright = sync_playwright().start()
-
+        print("HEADLESS =", HEADLESS)
+        print("Playwright launching Chromium...")
         self.browser = self.playwright.chromium.launch(
             headless=HEADLESS,
             slow_mo=SLOW_MO
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ]
         )
 
         self.page = self.browser.new_page()

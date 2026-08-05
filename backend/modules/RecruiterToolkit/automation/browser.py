@@ -33,6 +33,11 @@ class BrowserManager:
                 "height": WINDOW_HEIGHT,
             },
             accept_downloads=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
         )
 
         # Default timeout

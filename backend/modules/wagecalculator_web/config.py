@@ -8,7 +8,7 @@ Recruiter's Toolkit Configuration
 
 WAGE_YEAR = "7/2026 - 6/2027"
 
-HEADLESS = False
+HEADLESS = True
 
 SLOW_MO = 300
 
