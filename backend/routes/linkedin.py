@@ -59,7 +59,11 @@ def linkedin_search(
 
         max_profiles=data.max_profiles,
 
-        profile=str(current_user.id)
+        profile=str(current_user.id),
+
+        linkedin_email=data.linkedin_email,
+
+        linkedin_password=data.linkedin_password
 
     )
 

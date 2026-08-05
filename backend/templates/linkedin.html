@@ -115,152 +115,170 @@
 
 <script>
 
-const form = document.getElementById("linkedinForm");
+document.addEventListener("DOMContentLoaded", function () {
 
-const startBtn = document.getElementById("startBtn");
+   const form = document.getElementById("linkedinForm");
 
-const stopBtn = document.getElementById("stopBtn");
+   const startBtn = document.getElementById("startBtn");
 
+   const stopBtn = document.getElementById("stopBtn");
+
+   let pendingRequest = null;
+
+   const loginModal = new bootstrap.Modal(
+       document.getElementById("linkedinLoginModal")
+   );
+
+   const linkedinLoginBtn =
+       document.getElementById("linkedinLoginBtn");
 
 //------------------------------------------------------
 // Start Search
 //------------------------------------------------------
 
-form.addEventListener("submit", async function(e){
+    form.addEventListener("submit", async function(e){
 
-    e.preventDefault();
+       e.preventDefault();
 
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
+       startBtn.disabled = true;
+       stopBtn.disabled = false;
 
-    startBtn.innerHTML = "Searching...";
+       startBtn.innerHTML = "Searching...";
 
-    document.getElementById("results").innerHTML = "";
+       document.getElementById("results").innerHTML = "";
 
-    document.getElementById("status").innerHTML = `
+       document.getElementById("status").innerHTML = `
 
-        <div class="alert alert-info">
+           <div class="alert alert-info">
 
-            <div class="spinner-border spinner-border-sm me-2"></div>
+               <div class="spinner-border spinner-border-sm me-2"></div>
 
-            Running LinkedIn Automation...
+              Running LinkedIn Automation...
 
-        </div>
+           </div>
 
-    `;
+       `;
 
-    try{
+       try{
 
-        const response = await fetch("/linkedin",{
+        
+               pendingRequest = {
 
-            method:"POST",
+                   company:
+                       document.getElementById("company").value,
 
-            headers:{
-                "Content-Type":"application/json"
-            },
+                   location:
+                       document.getElementById("location").value,
 
-            body:JSON.stringify({
+                   max_profiles:
+                       parseInt(
+                           document.getElementById("max_profiles").value
+                        )
 
-                company:document.getElementById("company").value,
+               };
 
-                location:document.getElementById("location").value,
+               const response = await fetch("/linkedin", {
 
-                max_profiles:parseInt(
-                    document.getElementById("max_profiles").value
-                )
+                   method: "POST",
 
-            })
+                   headers: {
+ 
+                       "Content-Type": "application/json"
 
-        });
+                   },
 
-        const data = await response.json();
+                   body: JSON.stringify(
+                      pendingRequest
+                   )
 
-        if (data.login_required) {
+               });
 
-            document.getElementById("status").innerHTML = `
-                <div class="alert alert-warning">
-                    <h5>🔒 LinkedIn Login Required</h5>
-                    <p>${data.message}</p>
+      
+            const data = await response.json();
+
+            if (data.login_required) {
+
+                loginModal.show();
+
+                return;
+
+             }
+
+       
+            if(!response.ok){
+
+                document.getElementById("status").innerHTML=`
+
+                    <div class="alert alert-danger">
+
+                        ${data.detail || data.message || "LinkedIn search failed."}
+
+                    </div>
+
+                `;
+
+                return;
+
+            }
+
+            document.getElementById("status").innerHTML=`
+
+                <div class="alert alert-success">
+
+                    <h5>
+
+                        ✅ Search Completed Successfully
+
+                    </h5>
+
+                    <br>
+
+                    Profiles Found :
+                    <strong>${data.count}</strong>
+
                 </div>
+
             `;
 
-         return;
-     }
+            document.getElementById("results").innerHTML=`
 
-        if(!response.ok){
+                <a
+                    class="btn btn-success"
+                    href="/linkedin/download/${encodeURIComponent(data.filename)}">
+
+                    ⬇ Download CSV
+
+                </a>
+
+            `;
+
+        }
+
+        catch(err){
 
             document.getElementById("status").innerHTML=`
 
                 <div class="alert alert-danger">
 
-                    ${data.detail || data.message || "LinkedIn search failed."}
+                    ${err.message}
 
                 </div>
 
             `;
 
-            return;
+        }
+
+        finally{
+
+            startBtn.disabled = false;
+
+            stopBtn.disabled = true;
+
+            startBtn.innerHTML = "▶ Start Search";
 
         }
 
-        document.getElementById("status").innerHTML=`
-
-            <div class="alert alert-success">
-
-                <h5>
-
-                    ✅ Search Completed Successfully
-
-                </h5>
-
-                <br>
-
-                Profiles Found :
-                <strong>${data.count}</strong>
-
-            </div>
-
-        `;
-
-        document.getElementById("results").innerHTML=`
-
-            <a
-                class="btn btn-success"
-                href="/linkedin/download/${encodeURIComponent(data.filename)}">
-
-                ⬇ Download CSV
-
-            </a>
-
-        `;
-
-    }
-
-    catch(err){
-
-        document.getElementById("status").innerHTML=`
-
-            <div class="alert alert-danger">
-
-                ${err.message}
-
-            </div>
-
-        `;
-
-    }
-
-    finally{
-
-        startBtn.disabled = false;
-
-        stopBtn.disabled = true;
-
-        startBtn.innerHTML = "▶ Start Search";
-
-    }
-
-});
+    });
 
 
 //------------------------------------------------------
@@ -303,6 +321,167 @@ stopBtn.addEventListener("click", async function(){
 
 });
 
+linkedinLoginBtn.addEventListener(
+    "click",
+    async function () {
+
+        loginModal.hide();
+
+        pendingRequest.linkedin_email =
+            document.getElementById(
+                "linkedinEmail"
+            ).value;
+
+        pendingRequest.linkedin_password =
+            document.getElementById(
+                "linkedinPassword"
+            ).value;
+
+        document.getElementById(
+            "status"
+        ).innerHTML = `
+
+        <div class="alert alert-info">
+
+            Logging into LinkedIn...
+
+        </div>
+
+        `;
+
+        const response = await fetch(
+            "/linkedin",
+            {
+
+                method: "POST",
+
+                headers: {
+
+                    "Content-Type":
+                        "application/json"
+
+                },
+
+                body: JSON.stringify(
+                    pendingRequest
+                )
+
+            }
+        );
+
+        const data =
+            await response.json();
+
+        if (!response.ok || !data.success) {
+
+            document.getElementById(
+                "status"
+            ).innerHTML = `
+
+            <div class="alert alert-danger">
+
+                ${data.message}
+
+            </div>
+
+            `;
+
+            return;
+
+        }
+
+        document.getElementById("status").innerHTML = `
+
+       <div class="alert alert-success">
+
+            <h5>✅ Search Completed Successfully</h5>
+
+            <br>
+
+            Profiles Found :
+            <strong>${data.count}</strong>
+
+       </div>
+
+       `;
+
+        document.getElementById(
+            "results"
+        ).innerHTML = `
+
+        <a
+            class="btn btn-success"
+            href="/linkedin/download/${encodeURIComponent(data.filename)}">
+
+            ⬇ Download CSV
+
+        </a>
+
+        `;
+
+    }
+);
+
+});
+
 </script>
+
+<div class="modal fade" id="linkedinLoginModal" tabindex="-1">
+
+    <div class="modal-dialog">
+
+        <div class="modal-content">
+
+            <div class="modal-header">
+
+                <h5 class="modal-title">
+                    LinkedIn Login Required
+                </h5>
+
+            </div>
+
+            <div class="modal-body">
+
+                <div class="mb-3">
+
+                    <label>Email</label>
+
+                    <input
+                        type="email"
+                        id="linkedinEmail"
+                        class="form-control">
+
+                </div>
+
+                <div class="mb-3">
+
+                    <label>Password</label>
+
+                    <input
+                        type="password"
+                        id="linkedinPassword"
+                        class="form-control">
+
+                </div>
+
+            </div>
+
+            <div class="modal-footer">
+
+                <button
+                    class="btn btn-primary"
+                    id="linkedinLoginBtn">
+
+                    Login & Continue
+
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
 
 {% endblock %}
