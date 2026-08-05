@@ -1,12 +1,13 @@
 import os
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
-from fastapi import Depends
+
 from services.current_user import get_current_user
 from database.models import User
 from models.linkedin import LinkedInRequest
+
 from modules.RecruiterToolkit.linkedin_runner import run_linkedin
 from automation.search_controller import request_stop
 
@@ -41,7 +42,22 @@ def linkedin_search(
 
 ):
 
+    print("=" * 70)
+    print("LINKEDIN ENDPOINT HIT")
+    print("=" * 70)
+
+    print("Company :", data.company)
+    print("Location:", data.location)
+    print("Max     :", data.max_profiles)
+
+    if current_user:
+        print("User ID :", current_user.id)
+    else:
+        print("User    : None")
+
     if not current_user:
+
+        print("Authentication failed.")
 
         return {
 
@@ -51,21 +67,52 @@ def linkedin_search(
 
         }
 
-    return run_linkedin(
+    try:
 
-        company=data.company,
+        print("Calling run_linkedin()...")
 
-        location=data.location,
+        result = run_linkedin(
 
-        max_profiles=data.max_profiles,
+            company=data.company,
 
-        profile=str(current_user.id),
+            location=data.location,
 
-        linkedin_email=data.linkedin_email,
+            max_profiles=data.max_profiles,
 
-        linkedin_password=data.linkedin_password
+            profile=str(current_user.id),
 
-    )
+            linkedin_email=data.linkedin_email,
+
+            linkedin_password=data.linkedin_password
+
+        )
+
+        print("=" * 70)
+        print("run_linkedin() RETURNED")
+        print(type(result))
+        print(result)
+        print("=" * 70)
+
+        return result
+
+    except Exception as ex:
+
+        import traceback
+
+        print("=" * 70)
+        print("LINKEDIN EXCEPTION")
+        print("=" * 70)
+
+        traceback.print_exc()
+
+        return {
+
+            "success": False,
+
+            "message": str(ex)
+
+        }
+
 
 # ----------------------------------------------------
 # Stop LinkedIn Search
@@ -84,12 +131,15 @@ def stop_linkedin():
 
     }
 
+
 # ----------------------------------------------------
 # Download CSV
 # ----------------------------------------------------
 
 @router.get("/linkedin/download/{filename}")
 def download_csv(filename: str):
+
+    print("Download requested:", filename)
 
     file_path = os.path.join(
 
@@ -102,6 +152,10 @@ def download_csv(filename: str):
         filename
 
     )
+
+    print("Resolved path:", file_path)
+
+    print("Exists:", os.path.exists(file_path))
 
     if not os.path.exists(file_path):
 
