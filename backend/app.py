@@ -1,10 +1,8 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 
-from fastapi import UploadFile, File
-from fastapi.responses import FileResponse
 from pathlib import Path
 import shutil
 
@@ -15,133 +13,130 @@ from routes.excel import router as excel_router
 from routes.linkedin import router as linkedin_router
 from routes.auth import router as auth_router
 
-from database.database import Base
-from database.database import engine
-
+from database.database import Base, engine
 import database.models
+
 
 print("1 - app.py started")
 
-from fastapi import FastAPI, Request
-print("2 - FastAPI imported")
-
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse
-print("3 - FastAPI components imported")
-
-from routes.wage import router as wage_router
-print("4 - wage router imported")
-
-from routes.excel import router as excel_router
-print("5 - excel router imported")
-
-from routes.linkedin import router as linkedin_router
-print("6 - linkedin router imported")
-
-from routes.auth import router as auth_router
-print("7 - auth router imported")
-
-from database.database import Base, engine
-print("8 - database imported")
-
-import database.models
-print("9 - models imported")
-
 Base.metadata.create_all(bind=engine)
-print("10 - database initialized")
+print("2 - Database initialized")
 
 app = FastAPI(title="Recruiter Toolkit AI")
-print("11 - FastAPI app created")
+print("3 - FastAPI app created")
 
-Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Recruiter Toolkit AI")
+# ---------------------------------------------------
+# Routers
+# ---------------------------------------------------
+
 app.include_router(auth_router)
 app.include_router(wage_router)
 app.include_router(excel_router)
 app.include_router(linkedin_router)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ---------------------------------------------------
+# Static Files
+# ---------------------------------------------------
+
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static"
+)
 
 templates = Jinja2Templates(directory="templates")
+
+
+# ---------------------------------------------------
+# Startup
+# ---------------------------------------------------
 
 @app.on_event("startup")
 async def startup():
 
-    print("12 - Startup event")
+    print("4 - Application startup complete")
+
+
+# ---------------------------------------------------
+# Pages
+# ---------------------------------------------------
 
 @app.get("/")
 def index():
+
     return RedirectResponse("/home")
 
 
 @app.get("/home")
 def home(request: Request):
+
     return templates.TemplateResponse(
+        request,
         "home.html",
-        {
-            "request": request
-        }
+        {}
     )
 
 
 @app.get("/about")
 def about(request: Request):
+
     return templates.TemplateResponse(
+        request,
         "about.html",
-         {
-            "request": request
-        }
+        {}
     )
 
 
 @app.get("/tools")
 def tools(request: Request):
+
     return templates.TemplateResponse(
+        request,
         "tools.html",
-         {
-            "request": request
-        }
+        {}
     )
 
 
 @app.get("/contact")
 def contact(request: Request):
+
     return templates.TemplateResponse(
+        request,
         "contact.html",
-         {
-            "request": request
-        }
+        {}
     )
+
 
 @app.get("/tools/wage")
 def wage_page(request: Request):
+
     return templates.TemplateResponse(
+        request,
         "wage.html",
-         {
-            "request": request
-        }
+        {}
     )
+
 
 @app.get("/tools/resume")
 def resume_page(request: Request):
 
     return templates.TemplateResponse(
+        request,
         "resume_formatter.html",
-        {
-            "request": request
-        }
+        {}
     )
+
+
+# ---------------------------------------------------
+# Resume Formatter API
+# ---------------------------------------------------
 
 @app.post("/api/resume/format")
 async def resume_formatter(
     resume: UploadFile = File(...)
 ):
-
-    # ---------------------------------------
-    # Create upload folder
-    # ---------------------------------------
 
     input_folder = Path("uploads/input")
 
@@ -149,10 +144,6 @@ async def resume_formatter(
         parents=True,
         exist_ok=True
     )
-
-    # ---------------------------------------
-    # Save uploaded resume
-    # ---------------------------------------
 
     input_file = input_folder / resume.filename
 
@@ -163,17 +154,9 @@ async def resume_formatter(
             buffer
         )
 
-    # ---------------------------------------
-    # Format Resume
-    # ---------------------------------------
-
     output_file = format_resume(
         str(input_file)
     )
-
-    # ---------------------------------------
-    # Download Result
-    # ---------------------------------------
 
     return FileResponse(
         path=output_file,
