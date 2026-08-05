@@ -3,7 +3,9 @@ import os
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
-
+from fastapi import Depends
+from services.current_user import get_current_user
+from database.models import User
 from models.linkedin import LinkedInRequest
 from modules.RecruiterToolkit.linkedin_runner import run_linkedin
 from automation.search_controller import request_stop
@@ -31,7 +33,23 @@ def linkedin_page(request: Request):
 # ----------------------------------------------------
 
 @router.post("/linkedin")
-def linkedin_search(data: LinkedInRequest):
+def linkedin_search(
+
+    data: LinkedInRequest,
+
+    current_user: User = Depends(get_current_user)
+
+):
+
+    if not current_user:
+
+        return {
+
+            "success": False,
+
+            "message": "Please login first."
+
+        }
 
     return run_linkedin(
 
@@ -39,7 +57,9 @@ def linkedin_search(data: LinkedInRequest):
 
         location=data.location,
 
-        max_profiles=data.max_profiles
+        max_profiles=data.max_profiles,
+
+        profile=str(current_user.id)
 
     )
 

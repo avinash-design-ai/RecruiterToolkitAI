@@ -24,25 +24,78 @@ def run_linkedin(
 
     try:
 
+        # -------------------------------------
+        # Open browser
+        # -------------------------------------
+
+        page = browser.new_page()
+
         page.goto(
             "https://www.linkedin.com/feed/",
             wait_until="domcontentloaded"
         )
 
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(3000)
 
-        print("Current URL:", page.url)
+        current = page.url.lower()
 
-        # -----------------------------
-        # Check login
-        # -----------------------------
-        if "login" in page.url or "checkpoint" in page.url:
+        print("Current URL:", current)
 
-            return {
-                "success": False,
-                "login_required": True,
-                "message": "Authentication required before LinkedIn search."
-            }
+        # -------------------------------------
+        # Login required?
+        # -------------------------------------
+
+        if (
+            "login" in current
+            or "checkpoint" in current
+            or "logout" in current
+        ):
+
+            print("=" * 50)
+            print("LOGIN REQUIRED")
+            print("Please login to LinkedIn...")
+            print("=" * 50)
+
+            page.wait_for_url(
+                "**/feed/**",
+                timeout=300000      # 5 minutes
+            )
+
+            print("LinkedIn login completed.")
+
+            # Give LinkedIn a moment to finish loading
+            page.wait_for_timeout(3000)
+
+            # Always return to feed after login
+            page.goto(
+                "https://www.linkedin.com/feed/",
+                wait_until="domcontentloaded"
+            )
+
+            page.wait_for_timeout(3000)
+
+            print("Continuing search...")
+
+        # -------------------------------------
+        # Final authentication check
+        # -------------------------------------
+
+        current = page.url.lower()
+
+        print("Current URL:", current)
+
+        if (
+            "login" in current
+            or "checkpoint" in current
+            or "logout" in current
+        ):
+            raise Exception(
+                "LinkedIn authentication failed."
+            )
+
+        # -------------------------------------
+        # Run LinkedIn search
+        # -------------------------------------
 
         workflow = SearchWorkflow(browser)
 
@@ -53,11 +106,17 @@ def run_linkedin(
         )
 
         return {
+
             "success": True,
+
             "count": result["count"],
-            "filename": os.path.basename(result["csv"])
+
+            "filename": os.path.basename(
+                result["csv"]
+            )
+
         }
-        
+
     finally:
 
         browser.close()

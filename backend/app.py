@@ -13,9 +13,17 @@ from modules.ResumeFormatterV2.formatter_service import format_resume
 from routes.wage import router as wage_router
 from routes.excel import router as excel_router
 from routes.linkedin import router as linkedin_router
+from routes.auth import router as auth_router
+
+from database.database import Base
+from database.database import engine
+
+import database.models
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Recruiter Toolkit AI")
-
+app.include_router(auth_router)
 app.include_router(wage_router)
 app.include_router(excel_router)
 app.include_router(linkedin_router)
