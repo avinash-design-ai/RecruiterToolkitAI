@@ -22,7 +22,7 @@ class FlagWebsite:
         print("Playwright launching Chromium...")
         self.browser = self.playwright.chromium.launch(
             headless=HEADLESS,
-            slow_mo=SLOW_MO
+            slow_mo=SLOW_MO,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage"

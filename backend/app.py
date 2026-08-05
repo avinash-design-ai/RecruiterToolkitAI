@@ -83,10 +83,12 @@ def wage_page(request: Request):
 
 @app.get("/tools/resume")
 def resume_page(request: Request):
+
     return templates.TemplateResponse(
-        request,
         "resume_formatter.html",
-        {}
+        {
+            "request": request
+        }
     )
 
 @app.post("/api/resume/format")
