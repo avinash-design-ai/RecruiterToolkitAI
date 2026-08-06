@@ -24,20 +24,22 @@ class BrowserManager:
         self.session = SessionManager(profile)
 
         # Persistent Browser Context
-        self.browser = self.playwright.chromium.launch_persistent_context(
-            user_data_dir=self.session.get_profile_path(),
+        browser = self.playwright.chromium.launch(
             headless=HEADLESS,
             slow_mo=SLOW_MO,
-            viewport={
-                "width": WINDOW_WIDTH,
-                "height": WINDOW_HEIGHT,
-            },
-            accept_downloads=True,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
             ],
+        )
+
+        self.browser = browser.new_context(
+            viewport={
+                "width": WINDOW_WIDTH,
+                "height": WINDOW_HEIGHT,
+            },
+            accept_downloads=True,
         )
 
         # Default timeout
@@ -46,13 +48,7 @@ class BrowserManager:
         log.success(f"Browser started successfully (Profile: {profile})")
 
     def new_page(self):
-        """
-        Returns the first available page.
-        Creates one if none exist.
-        """
-        if self.browser.pages:
-            return self.browser.pages[0]
-
+       
         return self.browser.new_page()
 
     def pages(self):
