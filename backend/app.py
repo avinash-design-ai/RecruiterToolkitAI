@@ -163,3 +163,5 @@ async def resume_formatter(
         filename=Path(output_file).name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
+
+

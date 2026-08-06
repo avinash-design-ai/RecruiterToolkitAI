@@ -1,13 +1,10 @@
 import os
 
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
 
-from services.current_user import get_current_user
-from database.models import User
 from models.linkedin import LinkedInRequest
-
 from modules.RecruiterToolkit.linkedin_runner import run_linkedin
 from automation.search_controller import request_stop
 
@@ -34,13 +31,7 @@ def linkedin_page(request: Request):
 # ----------------------------------------------------
 
 @router.post("/linkedin")
-def linkedin_search(
-
-    data: LinkedInRequest,
-
-    current_user: User = Depends(get_current_user)
-
-):
+def linkedin_search(data: LinkedInRequest):
 
     print("=" * 70)
     print("LINKEDIN ENDPOINT HIT")
@@ -50,26 +41,9 @@ def linkedin_search(
     print("Location:", data.location)
     print("Max     :", data.max_profiles)
 
-    if current_user:
-        print("User ID :", current_user.id)
-    else:
-        print("User    : None")
-
-    if not current_user:
-
-        print("Authentication failed.")
-
-        return {
-
-            "success": False,
-
-            "message": "Please login first."
-
-        }
+    print("Starting LinkedIn automation...")
 
     try:
-
-        print("Calling run_linkedin()...")
 
         result = run_linkedin(
 
@@ -79,7 +53,7 @@ def linkedin_search(
 
             max_profiles=data.max_profiles,
 
-            profile=str(current_user.id),
+            profile="temp",
 
             linkedin_email=data.linkedin_email,
 
@@ -139,7 +113,11 @@ def stop_linkedin():
 @router.get("/linkedin/download/{filename}")
 def download_csv(filename: str):
 
-    print("Download requested:", filename)
+    print("=" * 70)
+    print("DOWNLOAD REQUEST")
+    print("=" * 70)
+
+    print("Filename :", filename)
 
     file_path = os.path.join(
 
@@ -153,9 +131,9 @@ def download_csv(filename: str):
 
     )
 
-    print("Resolved path:", file_path)
+    print("Resolved :", file_path)
 
-    print("Exists:", os.path.exists(file_path))
+    print("Exists   :", os.path.exists(file_path))
 
     if not os.path.exists(file_path):
 
@@ -166,6 +144,8 @@ def download_csv(filename: str):
             "message": "CSV file not found."
 
         }
+
+    print("Sending CSV...")
 
     return FileResponse(
 
