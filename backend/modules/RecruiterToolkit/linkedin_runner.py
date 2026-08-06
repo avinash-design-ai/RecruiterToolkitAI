@@ -10,6 +10,10 @@ from pages.login_page import LoginPage
 from automation.search_controller import reset
 from automation.browser import BrowserManager
 from workflows.search_workflow import SearchWorkflow
+from automation.active_sessions import (
+    create_session,
+    remove_session,
+)
 
 
 def run_linkedin(
@@ -28,6 +32,8 @@ def run_linkedin(
     reset()
 
     print("2 - Stop controller reset")
+
+    keep_browser_alive = False
 
     browser = BrowserManager(profile=profile)
 
@@ -116,9 +122,16 @@ def run_linkedin(
                 and "linkedin.com/search" not in page.url.lower()
                 and "linkedin.com/company" not in page.url.lower()
             ):
-                raise Exception(
-                    f"LinkedIn login did not finish. Current URL: {page.url}"
-                )
+                session_id = create_session(browser, page)
+
+                keep_browser_alive = True
+
+                return {
+                    "success": False,
+                    "verification_required": True,
+                    "session_id": session_id,
+                    "message": "Verification code required."
+                    }
 
             print("LinkedIn login completed.")
             print("=" * 60)
@@ -328,8 +341,14 @@ def run_linkedin(
 
     finally:
 
-        print("11 - Closing browser")
+        if not keep_browser_alive:
 
-        browser.close()
+            print("11 - Closing browser")
 
-        print("12 - Browser closed")
+            browser.close()
+
+            print("12 - Browser closed")
+
+        else:
+
+            print("Browser kept alive for verification.")
