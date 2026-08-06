@@ -88,24 +88,136 @@ def run_linkedin(
             login = LoginPage(page)
 
             login.login(
-
                 linkedin_email,
-
                 linkedin_password
-
             )
+
+            print("=" * 60)
+            print("WAITING AFTER LOGIN")
+            print("=" * 60)
+
+            print("Waiting for LinkedIn homepage...")
 
             page.wait_for_url(
-
-                "**/feed/**",
-
-                timeout=60000
-
+                lambda url:
+                    "linkedin.com/feed" in url
+                    or "linkedin.com/search" in url
+                    or "linkedin.com/company" in url,
+                timeout=180000
             )
 
-            page.wait_for_timeout(3000)
+            print("LinkedIn login completed.")
+            print("=" * 60)
+            print("OPEN PAGES")
+            print("=" * 60)
 
-            print("7 - Login successful")
+            for i, p in enumerate(browser.pages()):
+
+                try:
+
+                    print(f"PAGE {i}")
+                    print("TITLE :", p.title())
+                    print("URL   :", p.url)
+                    print("-" * 50)
+
+                except Exception as ex:
+
+                    print(ex)
+
+            print("=" * 60)
+            print("CURRENT PAGE")
+            print("=" * 60)
+
+            print(page.title())
+            print(page.url)
+
+            page.wait_for_timeout(30000)
+
+            print("=" * 60)
+            print("AFTER 30 SECONDS")
+            print("=" * 60)
+
+            for i, p in enumerate(browser.pages()):
+
+                try:
+
+                    print(f"PAGE {i}")
+                    print("TITLE :", p.title())
+                    print("URL   :", p.url)
+                    print("-" * 60)
+
+                    print("BUTTONS")
+
+                    buttons = p.locator("button")
+
+                    print("Button Count:", buttons.count())
+
+                    for j in range(buttons.count()):
+
+                        try:
+
+                            btn = buttons.nth(j)
+
+                            print(
+                                j,
+                                btn.inner_text(),
+                                btn.is_visible()
+                            )
+
+                        except Exception:
+                            pass
+
+                    print("-" * 60)
+
+                    print("INPUTS")
+
+                    inputs = p.locator("input")
+
+                    print("Input Count:", inputs.count())
+
+                    for j in range(inputs.count()):
+
+                        try:
+
+                            inp = inputs.nth(j)
+
+                            print(
+                                j,
+                                inp.get_attribute("type"),
+                                inp.get_attribute("name"),
+                                inp.get_attribute("value"),
+                                inp.is_visible()
+                            )
+
+                        except Exception:
+                            pass
+
+                    print("-" * 60)
+
+                    print("LINKS")
+
+                    links = p.locator("a")
+
+                    print("Link Count:", links.count())
+
+                    for j in range(min(10, links.count())):
+
+                        try:
+
+                            a = links.nth(j)
+
+                            print(
+                                j,
+                                a.inner_text(),
+                                a.get_attribute("href")
+                            )
+
+                        except Exception:
+                            pass
+
+                except Exception as ex:
+
+                    print(ex)
 
         current = page.url.lower()
 
@@ -129,7 +241,7 @@ def run_linkedin(
         print("8 - Creating SearchWorkflow")
         print("=" * 60)
 
-        workflow = SearchWorkflow(browser)
+        workflow = SearchWorkflow(page)
 
         print("9 - Running workflow")
 

@@ -5,11 +5,9 @@ from automation.search_controller import should_stop
 
 class SearchWorkflow:
 
-    def __init__(self, browser):
+    def __init__(self, page):
 
-        self.browser = browser
-
-        self.page = browser.new_page()
+        self.page = page
 
         self.company_page = CompanyPage(
             self.page

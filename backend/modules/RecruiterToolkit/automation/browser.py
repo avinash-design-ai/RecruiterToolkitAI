@@ -24,24 +24,21 @@ class BrowserManager:
         self.session = SessionManager(profile)
 
         # Persistent Browser Context
-        browser = self.playwright.chromium.launch(
+        self.browser = self.playwright.chromium.launch_persistent_context(
+            user_data_dir=self.session.get_profile_path(),
             headless=HEADLESS,
             slow_mo=SLOW_MO,
+            viewport={
+                "width": WINDOW_WIDTH,
+                "height": WINDOW_HEIGHT,
+            },
+            accept_downloads=True,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
             ],
         )
-
-        self.browser = browser.new_context(
-            viewport={
-                "width": WINDOW_WIDTH,
-                "height": WINDOW_HEIGHT,
-            },
-            accept_downloads=True,
-        )
-
         # Default timeout
         self.browser.set_default_timeout(TIMEOUT)
 

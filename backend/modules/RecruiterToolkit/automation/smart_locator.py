@@ -17,25 +17,35 @@ class SmartLocator:
 
             try:
 
-                locator = self.page.locator(selector).first
+                locators = self.page.locator(selector)
 
-                locator.wait_for(
-                    state="visible",
-                    timeout=10000
-                )
+                count = locators.count()
 
-                log.success(
-                    f"Locator found: {selector}"
-                )
+                log.info(f"{selector} -> {count} matches")
 
-                return locator
+                for i in range(count):
+
+                    locator = locators.nth(i)
+
+                    try:
+
+                        if locator.is_visible():
+
+                            log.success(
+                                f"Visible locator found: {selector} [{i}]"
+                            )
+
+                            return locator
+
+                    except Exception:
+                        pass
 
             except Exception as e:
 
                 last_error = e
 
         raise Exception(
-            f"No locator matched.\n"
+            f"No visible locator matched.\n"
             f"Tried: {selectors}\n"
             f"{last_error}"
         )

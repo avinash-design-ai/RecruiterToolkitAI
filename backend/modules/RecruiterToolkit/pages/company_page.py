@@ -17,12 +17,7 @@ class CompanyPage(BasePage):
         search_box.press("Enter")
 
         self.page.wait_for_timeout(5000)
-
-        print("=" * 50)
-        print("Search URL:", self.page.url)
-        print("Page title:", self.page.title())
-        print("=" * 50)
-
+    
     def open_company_result(self, company):
 
         company_links = self.page.locator(

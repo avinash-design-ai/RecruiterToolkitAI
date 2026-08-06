@@ -1,45 +1,87 @@
 from pages.base_page import BasePage
+import os
 
 
 class LoginPage(BasePage):
 
     USERNAME = [
-
-        "#username",
-
-        "input[name='session_key']",
-
-        "input#username",
-
         "input[autocomplete='username']",
-
-        "input[type='email']"
-
+        "input[type='email']",
+        "#username",
+        "input[name='session_key']"
     ]
 
     PASSWORD = [
-
-        "#password",
-
-        "input[name='session_password']",
-
-        "input#password",
-
         "input[autocomplete='current-password']",
-
-        "input[type='password']"
-
+        "input[type='password']",
+        "#password",
+        "input[name='session_password']"
     ]
 
-    LOGIN = [
+    def click_login(self):
 
-        "button[type='submit']",
+        print("=" * 60)
+        print("Searching for LinkedIn Sign In button")
+        print("=" * 60)
 
-        "button[data-litms-control-urn]",
+        # Preferred ARIA selector
+        try:
 
-        "button"
+            self.page.get_by_role(
+                "button",
+                name="Sign in"
+            ).click(timeout=3000)
 
-    ]
+            print("Clicked Sign In using role")
+
+            return
+
+        except Exception:
+            pass
+
+        # Exact visible text
+        try:
+
+            self.page.get_by_text(
+                "Sign in",
+                exact=True
+            ).click(timeout=3000)
+
+            print("Clicked Sign In using text")
+
+            return
+
+        except Exception:
+            pass
+
+        # Final fallback
+        buttons = self.page.locator("button")
+
+        for i in range(buttons.count()):
+
+            try:
+
+                btn = buttons.nth(i)
+
+                if not btn.is_visible():
+                    continue
+
+                text = btn.inner_text().strip()
+
+                print(i, text)
+
+                if text.lower() == "sign in":
+
+                    btn.click()
+
+                    print("Clicked Sign In button")
+
+                    return
+
+            except Exception:
+                pass
+
+        raise Exception("LinkedIn Sign In button not found.")
 
     def login(self, username, password):
 
@@ -47,45 +89,59 @@ class LoginPage(BasePage):
         print("Waiting for LinkedIn login page...")
         print("=" * 60)
 
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
+        self.page.wait_for_timeout(3000)
+
         print("=" * 60)
-        print(self.page.content()[:5000])
+        print("PAGE TITLE")
+        print("=" * 60)
+        print(self.page.title())
+        print(self.page.url)
+
+        print("=" * 60)
+        print("INPUT ELEMENTS")
+        print("=" * 60)
+
         inputs = self.page.locator("input")
 
-        print("INPUT COUNT:", inputs.count())
+        count = inputs.count()
 
-        for i in range(inputs.count()):
+        print("INPUT COUNT:", count)
+
+        for i in range(count):
 
             try:
+
+                el = inputs.nth(i)
+
                 print(
                     i,
-                    inputs.nth(i).evaluate(
-                        """el => ({
-                            id: el.id,
-                            name: el.name,
-                            type: el.type,
-                            placeholder: el.placeholder
-                        })"""
-                    )
+                    {
+                        "id": el.get_attribute("id"),
+                        "name": el.get_attribute("name"),
+                        "type": el.get_attribute("type"),
+                        "placeholder": el.get_attribute("placeholder"),
+                        "visible": el.is_visible()
+                    }
                 )
-            except Exception as e:
-                print(e)
+
+            except Exception as ex:
+
+                print(ex)
+
         print("=" * 60)
 
-        self.page.wait_for_timeout(3000)
+        os.makedirs("screenshots", exist_ok=True)
 
         self.page.screenshot(
             path="screenshots/login_page.png",
             full_page=True
         )
 
-        import os
-
-        print("Screenshot Exists:",
-              os.path.exists("/tmp/login_page.png"))
-        print("Page title :", self.page.title())
-
-        print("Current URL:", self.page.url)
+        print(
+            "Screenshot saved:",
+            os.path.exists("screenshots/login_page.png")
+        )
 
         print("Filling username...")
 
@@ -103,10 +159,11 @@ class LoginPage(BasePage):
 
         print("Clicking Login...")
 
-        self.click(
-            self.LOGIN
-        )
+        self.click_login()
 
-        self.page.wait_for_load_state("networkidle")
+        print("Waiting after login...")
 
+        self.page.wait_for_load_state("domcontentloaded")
         self.page.wait_for_timeout(5000)
+
+        print("Login completed.")
