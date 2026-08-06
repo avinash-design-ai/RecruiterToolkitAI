@@ -93,18 +93,32 @@ def run_linkedin(
             )
 
             print("=" * 60)
-            print("WAITING AFTER LOGIN")
+            print("WAITING FOR LINKEDIN HOME")
             print("=" * 60)
 
-            print("Waiting for LinkedIn homepage...")
+            for _ in range(180):      # wait up to 180 seconds
 
-            page.wait_for_url(
-                lambda url:
-                    "linkedin.com/feed" in url
-                    or "linkedin.com/search" in url
-                    or "linkedin.com/company" in url,
-                timeout=180000
-            )
+                current = page.url.lower()
+
+                if (
+                    "linkedin.com/feed" in current
+                    or "linkedin.com/search" in current
+                    or "linkedin.com/company" in current
+                ):
+                    break
+
+                page.wait_for_timeout(1000)
+
+            print("Current URL:", page.url)
+
+            if (
+                "linkedin.com/feed" not in page.url.lower()
+                and "linkedin.com/search" not in page.url.lower()
+                and "linkedin.com/company" not in page.url.lower()
+            ):
+                raise Exception(
+                    f"LinkedIn login did not finish. Current URL: {page.url}"
+                )
 
             print("LinkedIn login completed.")
             print("=" * 60)
