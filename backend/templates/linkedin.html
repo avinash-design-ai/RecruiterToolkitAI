@@ -196,30 +196,94 @@ document.addEventListener("DOMContentLoaded", function () {
       
             const data = await response.json();
 
-            if (data.login_required) {
+// ----------------------------------------------------
+// Verification required
+// ----------------------------------------------------
 
-                loginModal.show();
+            if (data.verification_required) {
 
-                return;
+                pendingRequest.session_id = data.session_id;
 
-             }
+                const code = prompt(
+                     "LinkedIn sent you a verification code.\n\nEnter the code:"
+                );
 
-       
-            if(!response.ok){
+                if (!code)
+                    return;
 
-                document.getElementById("status").innerHTML=`
-
-                    <div class="alert alert-danger">
-
-                        ${data.detail || data.message || "LinkedIn search failed."}
-
+                document.getElementById("status").innerHTML = `
+                    <div class="alert alert-info">
+                        Verifying LinkedIn...
                     </div>
-
                 `;
 
-                return;
+                const verifyResponse = await fetch(
+                    "/linkedin/verify",
+                    {
 
+                         method: "POST",
+
+                         headers: {
+                            "Content-Type": "application/json"
+                         },
+
+                         body: JSON.stringify({
+
+                             session_id: pendingRequest.session_id,
+
+                             verification_code: code
+
+                       })
+
+                    }
+                );
+
+                const verifyData = await verifyResponse.json();
+
+                if (!verifyData.success) {
+
+                   document.getElementById("status").innerHTML = `
+                       <div class="alert alert-danger">
+                           ${verifyData.message}
+                       </div>
+                   `;
+
+                    return;
+                }
+
+               document.getElementById("status").innerHTML = `
+                   <div class="alert alert-success">
+                        <h5>✅ Search Completed Successfully</h5>
+                        <br>
+                        Profiles Found :
+                        <strong>${verifyData.count}</strong>
+                   </div>
+               `;
+
+               document.getElementById("results").innerHTML = `
+                   <a class="btn btn-success"
+                      href="/linkedin/download/${encodeURIComponent(verifyData.filename)}">
+                      ⬇ Download CSV
+                   </a>
+               `;
+
+               return;
             }
+
+// ----------------------------------------------------
+// Existing error handling
+// ----------------------------------------------------
+
+        if (!response.ok || !data.success) {
+
+            document.getElementById("status").innerHTML = `
+                <div class="alert alert-danger">
+                    ${data.message}
+                </div>
+             `;
+
+            return;
+         }
 
             document.getElementById("status").innerHTML=`
 
@@ -371,6 +435,78 @@ linkedinLoginBtn.addEventListener(
 
         const data =
             await response.json();
+
+         if (data.verification_required) {
+
+                pendingRequest.session_id = data.session_id;
+
+                const code = prompt(
+                     "LinkedIn sent you a verification code.\n\nEnter the code:"
+                );
+
+                if (!code)
+                    return;
+
+                document.getElementById("status").innerHTML = `
+                    <div class="alert alert-info">
+                        Verifying LinkedIn...
+                    </div>
+                `;
+
+                const verifyResponse = await fetch(
+                    "/linkedin/verify",
+                    {
+
+                         method: "POST",
+
+                         headers: {
+                            "Content-Type": "application/json"
+                         },
+
+                         body: JSON.stringify({
+
+                             session_id: pendingRequest.session_id,
+
+                             verification_code: code
+
+                       })
+
+                    }
+                );
+
+                const verifyData = await verifyResponse.json();
+
+                if (!verifyData.success) {
+
+                   document.getElementById("status").innerHTML = `
+                       <div class="alert alert-danger">
+                           ${verifyData.message}
+                       </div>
+                   `;
+
+                    return;
+                }
+
+               document.getElementById("status").innerHTML = `
+                   <div class="alert alert-success">
+                        <h5>✅ Search Completed Successfully</h5>
+                        <br>
+                        Profiles Found :
+                        <strong>${verifyData.count}</strong>
+                   </div>
+               `;
+
+               document.getElementById("results").innerHTML = `
+                   <a class="btn btn-success"
+                      href="/linkedin/download/${encodeURIComponent(verifyData.filename)}">
+                      ⬇ Download CSV
+                   </a>
+               `;
+
+               return;
+            }
+
+
 
         if (!response.ok || !data.success) {
 

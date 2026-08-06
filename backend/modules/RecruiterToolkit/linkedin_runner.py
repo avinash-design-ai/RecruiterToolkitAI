@@ -122,7 +122,13 @@ def run_linkedin(
                 and "linkedin.com/search" not in page.url.lower()
                 and "linkedin.com/company" not in page.url.lower()
             ):
-                session_id = create_session(browser, page)
+                session_id = create_session(
+                    browser,
+                    page,
+                    company,
+                    location,
+                    max_profiles,
+                )
 
                 keep_browser_alive = True
 

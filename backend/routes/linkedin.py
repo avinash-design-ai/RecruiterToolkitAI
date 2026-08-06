@@ -7,6 +7,12 @@ from fastapi.templating import Jinja2Templates
 from models.linkedin import LinkedInRequest
 from modules.RecruiterToolkit.linkedin_runner import run_linkedin
 from automation.search_controller import request_stop
+from models.linkedin_verify import LinkedInVerifyRequest
+from automation.active_sessions import (
+    get_session,
+    remove_session,
+)
+from workflows.search_workflow import SearchWorkflow
 
 router = APIRouter()
 
@@ -87,7 +93,115 @@ def linkedin_search(data: LinkedInRequest):
 
         }
 
+@router.post("/linkedin/verify")
+def linkedin_verify(data: LinkedInVerifyRequest):
 
+    session = get_session(data.session_id)
+
+    if not session:
+
+        return {
+
+            "success": False,
+
+            "message": "Session expired."
+
+        }
+
+    page = session["page"]
+
+    browser = session["browser"]
+
+    company = session["company"]
+
+    location = session["location"]
+
+    max_profiles = session["max_profiles"]
+
+    try:
+
+        print("=" * 60)
+        print("VERIFYING LINKEDIN")
+        print("=" * 60)
+
+        verification_box = page.locator(
+            "input[type='text'], input[type='number']"
+        ).first
+
+        verification_box.wait_for(timeout=10000)
+
+        verification_box.fill(
+            data.verification_code
+        )
+
+        verification_box.press("Enter")
+
+        page.keyboard.press("Enter")
+
+        page.wait_for_url(
+            lambda url:
+                "linkedin.com" in url
+                and "checkpoint" not in url
+                and "challenge" not in url
+                and "login" not in url,
+            timeout=180000
+        )
+
+        print("Verification successful.")
+
+        workflow = SearchWorkflow(page)
+
+        result = workflow.run(
+
+            company=company,
+
+            location=location,
+
+            max_profiles=max_profiles
+
+        )
+
+        browser.close()
+
+        remove_session(
+            data.session_id
+        )
+
+        return {
+
+            "success": True,
+
+            "count": result["count"],
+
+            "filename": os.path.basename(
+                result["csv"]
+            )
+
+        }
+
+    except Exception as ex:
+
+        import traceback
+
+        traceback.print_exc()
+
+        try:
+
+            browser.close()
+        except Exception:
+            pass
+
+        remove_session(
+            data.session_id
+        )
+
+        return {
+
+            "success": False,
+
+            "message": str(ex)
+
+        }
 # ----------------------------------------------------
 # Stop LinkedIn Search
 # ----------------------------------------------------
