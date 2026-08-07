@@ -197,6 +197,21 @@ document.addEventListener("DOMContentLoaded", function () {
             const data = await response.json();
 
 // ----------------------------------------------------
+// LinkedIn login required
+// ----------------------------------------------------
+
+           if (data.login_required) {
+
+               loginModal.show();
+
+               startBtn.disabled = false;
+               stopBtn.disabled = true;
+               startBtn.innerHTML = "▶ Start Search";
+
+               return;
+           }
+
+// ----------------------------------------------------
 // Verification required
 // ----------------------------------------------------
 
