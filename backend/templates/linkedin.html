@@ -4,7 +4,7 @@
 
 <div class="container">
 
-    <div class="row justify-content-center">
+     <div class="row justify-content-center">
 
         <div class="col-lg-10">
 
@@ -132,6 +132,87 @@ document.addEventListener("DOMContentLoaded", function () {
    const linkedinLoginBtn =
        document.getElementById("linkedinLoginBtn");
 
+   const verificationModal =
+       new bootstrap.Modal(
+           document.getElementById("verificationModal")
+       );
+
+   const verifyBtn =
+       document.getElementById("verifyBtn");
+
+   verifyBtn.addEventListener("click", async function () {
+
+       verificationModal.hide();
+
+       const code =
+           document.getElementById("verificationCode").value;
+
+       if (!code.trim()) {
+
+            alert("Please enter the verification code.");
+
+            verificationModal.show();
+
+            return;
+       }
+
+       document.getElementById("status").innerHTML = `
+           <div class="alert alert-info">
+               Verifying LinkedIn...
+           </div>
+       `;
+
+       const verifyResponse = await fetch("/linkedin/verify", {
+
+           method: "POST",
+
+           headers: {
+               "Content-Type": "application/json"
+           },
+
+           body: JSON.stringify({
+
+               session_id: pendingRequest.session_id,
+
+               verification_code: code
+
+           })
+
+       });
+
+       const verifyData = await verifyResponse.json();
+
+       if (!verifyData.success) {
+
+           document.getElementById("status").innerHTML = `
+               <div class="alert alert-danger">
+                   ${verifyData.message}
+               </div>
+           `;
+
+           return;
+
+       }
+
+       document.getElementById("status").innerHTML = `
+           <div class="alert alert-success">
+               <h5>✅ Search Completed Successfully</h5>
+               <br>
+               Profiles Found:
+               <strong>${verifyData.count}</strong>
+           </div>
+       `;
+
+       document.getElementById("results").innerHTML = `
+           <a class="btn btn-success"
+              href="/linkedin/download/${encodeURIComponent(verifyData.filename)}">
+              ⬇ Download CSV
+           </a>
+       `;
+
+   });
+
+
 //------------------------------------------------------
 // Start Search
 //------------------------------------------------------
@@ -211,6 +292,7 @@ document.addEventListener("DOMContentLoaded", function () {
                return;
            }
 
+
 // ----------------------------------------------------
 // Verification required
 // ----------------------------------------------------
@@ -219,72 +301,13 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 pendingRequest.session_id = data.session_id;
 
-                const code = prompt(
-                     "LinkedIn sent you a verification code.\n\nEnter the code:"
-                );
+                verificationModal.show();
+               
+                 return;
+                
+             }
 
-                if (!code)
-                    return;
-
-                document.getElementById("status").innerHTML = `
-                    <div class="alert alert-info">
-                        Verifying LinkedIn...
-                    </div>
-                `;
-
-                const verifyResponse = await fetch(
-                    "/linkedin/verify",
-                    {
-
-                         method: "POST",
-
-                         headers: {
-                            "Content-Type": "application/json"
-                         },
-
-                         body: JSON.stringify({
-
-                             session_id: pendingRequest.session_id,
-
-                             verification_code: code
-
-                       })
-
-                    }
-                );
-
-                const verifyData = await verifyResponse.json();
-
-                if (!verifyData.success) {
-
-                   document.getElementById("status").innerHTML = `
-                       <div class="alert alert-danger">
-                           ${verifyData.message}
-                       </div>
-                   `;
-
-                    return;
-                }
-
-               document.getElementById("status").innerHTML = `
-                   <div class="alert alert-success">
-                        <h5>✅ Search Completed Successfully</h5>
-                        <br>
-                        Profiles Found :
-                        <strong>${verifyData.count}</strong>
-                   </div>
-               `;
-
-               document.getElementById("results").innerHTML = `
-                   <a class="btn btn-success"
-                      href="/linkedin/download/${encodeURIComponent(verifyData.filename)}">
-                      ⬇ Download CSV
-                   </a>
-               `;
-
-               return;
-            }
-
+               
 // ----------------------------------------------------
 // Existing error handling
 // ----------------------------------------------------
@@ -455,74 +478,13 @@ linkedinLoginBtn.addEventListener(
 
                 pendingRequest.session_id = data.session_id;
 
-                const code = prompt(
-                     "LinkedIn sent you a verification code.\n\nEnter the code:"
-                );
+                verificationModal.show();
+                
+                return;
+                
+             }
 
-                if (!code)
-                    return;
-
-                document.getElementById("status").innerHTML = `
-                    <div class="alert alert-info">
-                        Verifying LinkedIn...
-                    </div>
-                `;
-
-                const verifyResponse = await fetch(
-                    "/linkedin/verify",
-                    {
-
-                         method: "POST",
-
-                         headers: {
-                            "Content-Type": "application/json"
-                         },
-
-                         body: JSON.stringify({
-
-                             session_id: pendingRequest.session_id,
-
-                             verification_code: code
-
-                       })
-
-                    }
-                );
-
-                const verifyData = await verifyResponse.json();
-
-                if (!verifyData.success) {
-
-                   document.getElementById("status").innerHTML = `
-                       <div class="alert alert-danger">
-                           ${verifyData.message}
-                       </div>
-                   `;
-
-                    return;
-                }
-
-               document.getElementById("status").innerHTML = `
-                   <div class="alert alert-success">
-                        <h5>✅ Search Completed Successfully</h5>
-                        <br>
-                        Profiles Found :
-                        <strong>${verifyData.count}</strong>
-                   </div>
-               `;
-
-               document.getElementById("results").innerHTML = `
-                   <a class="btn btn-success"
-                      href="/linkedin/download/${encodeURIComponent(verifyData.filename)}">
-                      ⬇ Download CSV
-                   </a>
-               `;
-
-               return;
-            }
-
-
-
+               
         if (!response.ok || !data.success) {
 
             document.getElementById(
@@ -634,5 +596,46 @@ linkedinLoginBtn.addEventListener(
     </div>
 
 </div>
+
+
+     <div class="modal fade" id="verificationModal" tabindex="-1">
+         <div class="modal-dialog">
+             <div class="modal-content">
+
+                 <div class="modal-header">
+                     <h5 class="modal-title">
+                         LinkedIn Verification Required
+                     </h5>
+                 </div>
+
+                 <div class="modal-body">
+
+                     <p>
+                         LinkedIn has sent a verification code to your email.
+                     </p>
+
+                     <input
+                         type="text"
+                         id="verificationCode"
+                         class="form-control"
+                         placeholder="Enter verification code">
+
+                 </div>
+
+                 <div class="modal-footer">
+
+                     <button
+                         class="btn btn-primary"
+                         id="verifyBtn">
+
+                         Verify & Continue
+
+                     </button>
+
+                 </div>
+
+             </div>
+         </div>
+     </div>
 
 {% endblock %}
