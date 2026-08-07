@@ -172,6 +172,18 @@ def run_linkedin(
 
             for i, p in enumerate(browser.pages()):
 
+                print("=" * 60)
+                print(f"PAGE {i}")
+                print("=" * 60)
+
+                try:
+                    print("TITLE :", p.title())
+                    print("URL   :", p.url)
+                except Exception as ex:
+                    print(ex)
+        
+            for i, p in enumerate(browser.pages()):
+
                 try:
 
                     print(f"PAGE {i}")
