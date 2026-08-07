@@ -1,40 +1,30 @@
-from fastapi import FastAPI, Request, UploadFile, File
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import RedirectResponse, FileResponse
-
-from pathlib import Path
-import shutil
-
-from modules.ResumeFormatterV2.formatter_service import format_resume
-
-from routes.wage import router as wage_router
-from routes.excel import router as excel_router
-from routes.linkedin import router as linkedin_router
-from routes.auth import router as auth_router
+from fastapi.responses import RedirectResponse
 
 from database.database import Base, engine
 import database.models
 
+from routes.linkedin import router as linkedin_router
+from routes.auth import router as auth_router
 
 print("1 - app.py started")
 
 Base.metadata.create_all(bind=engine)
+
 print("2 - Database initialized")
 
-app = FastAPI(title="Recruiter Toolkit AI")
-print("3 - FastAPI app created")
+app = FastAPI(title="Recruiter Toolkit AI - LinkedIn")
 
+print("3 - FastAPI app created")
 
 # ---------------------------------------------------
 # Routers
 # ---------------------------------------------------
 
 app.include_router(auth_router)
-app.include_router(wage_router)
-app.include_router(excel_router)
 app.include_router(linkedin_router)
-
 
 # ---------------------------------------------------
 # Static Files
@@ -47,7 +37,6 @@ app.mount(
 )
 
 templates = Jinja2Templates(directory="templates")
-
 
 # ---------------------------------------------------
 # Startup
@@ -73,19 +62,8 @@ def index():
 def home(request: Request):
 
     return templates.TemplateResponse(
-        request,
-        "home.html",
-        {}
-    )
-
-
-@app.get("/about")
-def about(request: Request):
-
-    return templates.TemplateResponse(
-        request,
-        "about.html",
-        {}
+        request=request,
+        name="home.html"
     )
 
 
@@ -93,75 +71,24 @@ def about(request: Request):
 def tools(request: Request):
 
     return templates.TemplateResponse(
-        request,
-        "tools.html",
-        {}
+        request=request,
+        name="tools.html"
     )
 
 
-@app.get("/contact")
-def contact(request: Request):
+@app.get("/login")
+def login_page(request: Request):
 
     return templates.TemplateResponse(
-        request,
-        "contact.html",
-        {}
+        request=request,
+        name="login.html"
     )
 
 
-@app.get("/tools/wage")
-def wage_page(request: Request):
+@app.get("/register")
+def register_page(request: Request):
 
     return templates.TemplateResponse(
-        request,
-        "wage.html",
-        {}
+        request=request,
+        name="register.html"
     )
-
-
-@app.get("/tools/resume")
-def resume_page(request: Request):
-
-    return templates.TemplateResponse(
-        request,
-        "resume_formatter.html",
-        {}
-    )
-
-
-# ---------------------------------------------------
-# Resume Formatter API
-# ---------------------------------------------------
-
-@app.post("/api/resume/format")
-async def resume_formatter(
-    resume: UploadFile = File(...)
-):
-
-    input_folder = Path("uploads/input")
-
-    input_folder.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    input_file = input_folder / resume.filename
-
-    with open(input_file, "wb") as buffer:
-
-        shutil.copyfileobj(
-            resume.file,
-            buffer
-        )
-
-    output_file = format_resume(
-        str(input_file)
-    )
-
-    return FileResponse(
-        path=output_file,
-        filename=Path(output_file).name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
-
-

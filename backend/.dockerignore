@@ -34,3 +34,6 @@ user_data/
 *.docx
 *.doc
 *.pdf
+
+.pytest_cache/
+.mypy_cache/

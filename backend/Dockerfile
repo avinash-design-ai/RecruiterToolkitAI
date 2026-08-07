@@ -3,6 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update && apt-get install -y \
     wget \
@@ -29,8 +30,9 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt .
 
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip
+
+RUN pip install --no-cache-dir -r requirements.txt
 
 RUN python -m playwright install --with-deps chromium
 
@@ -38,4 +40,4 @@ COPY . .
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000"]
