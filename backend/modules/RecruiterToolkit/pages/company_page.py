@@ -16,7 +16,20 @@ class CompanyPage(BasePage):
         search_box.fill(company)
         search_box.press("Enter")
 
+        print("=" * 60)
+        print("CHECKING PAGE BEFORE WAIT")
+        print("=" * 60)
+
+        try:
+            print("URL:", self.page.url)
+            print("TITLE:", self.page.title())
+        except Exception as ex:
+            print("PAGE ALREADY CRASHED:", repr(ex))
+            raise
+
         self.page.wait_for_timeout(5000)
+
+        print("PAGE SURVIVED WAIT")
     
     def open_company_result(self, company):
 

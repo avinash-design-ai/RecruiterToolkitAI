@@ -37,6 +37,15 @@ class BrowserManager:
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-features=Translate,BackForwardCache",
+                "--no-first-run",
+                "--no-default-browser-check",
             ],
         )
         # Default timeout
