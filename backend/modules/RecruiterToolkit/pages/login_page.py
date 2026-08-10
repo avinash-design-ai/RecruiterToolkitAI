@@ -95,8 +95,13 @@ class LoginPage(BasePage):
         print("=" * 60)
         print("PAGE TITLE")
         print("=" * 60)
-        print(self.page.title())
-        print(self.page.url)
+
+        try:
+            print(self.page.title())
+        except Exception as ex:
+            print("TITLE ERROR:", ex)
+
+        print("URL:", self.page.url)
 
         print("=" * 60)
         print("INPUT ELEMENTS")
@@ -127,21 +132,31 @@ class LoginPage(BasePage):
 
             except Exception as ex:
 
-                print(ex)
+                print("INPUT ERROR:", ex)
 
         print("=" * 60)
 
         os.makedirs("screenshots", exist_ok=True)
 
-        self.page.screenshot(
-            path="screenshots/login_page.png",
-            full_page=True
-        )
+        try:
 
-        print(
-            "Screenshot saved:",
-            os.path.exists("screenshots/login_page.png")
-        )
+            self.page.screenshot(
+                path="screenshots/login_page.png",
+                full_page=True
+            )
+
+            print(
+                "Screenshot saved:",
+                os.path.exists("screenshots/login_page.png")
+            )
+
+        except Exception as ex:
+
+            print("Screenshot error:", ex)
+
+        print("=" * 60)
+        print("FILLING LOGIN FORM")
+        print("=" * 60)
 
         print("Filling username...")
 
@@ -161,9 +176,44 @@ class LoginPage(BasePage):
 
         self.click_login()
 
-        print("Waiting after login...")
+        print("=" * 60)
+        print("LOGIN FORM SUBMITTED")
+        print("=" * 60)
 
-        self.page.wait_for_load_state("domcontentloaded")
+        # Do NOT wait for domcontentloaded again here.
+        # LinkedIn may keep the document alive while redirecting,
+        # especially in the Railway headless environment.
+
+        try:
+            print("URL immediately after submit:", self.page.url)
+        except Exception as ex:
+            print("URL ERROR:", ex)
+
+        try:
+            print("TITLE immediately after submit:", self.page.title())
+        except Exception as ex:
+            print("TITLE ERROR:", ex)
+
+        print("=" * 60)
+        print("WAITING FOR LINKEDIN LOGIN RESULT")
+        print("=" * 60)
+
+        # Give LinkedIn time to process authentication,
+        # but don't wait on a navigation event.
         self.page.wait_for_timeout(5000)
 
-        print("Login completed.")
+        print("=" * 60)
+        print("LOGIN RESULT")
+        print("=" * 60)
+
+        try:
+            print("FINAL URL:", self.page.url)
+        except Exception as ex:
+            print("FINAL URL ERROR:", ex)
+
+        try:
+            print("FINAL TITLE:", self.page.title())
+        except Exception as ex:
+            print("FINAL TITLE ERROR:", ex)
+
+        print("Login method completed.")
