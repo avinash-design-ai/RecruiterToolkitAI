@@ -48,14 +48,52 @@ class BrowserManager:
                 "--no-default-browser-check",
             ],
         )
+
+        # -------------------------------------------------
+        # Browser crash diagnostics
+        # -------------------------------------------------
+
+        self.browser.on(
+            "close",
+            lambda: log.error(
+                "PLAYWRIGHT BROWSER CONTEXT CLOSED"
+            )
+        )
+
         # Default timeout
         self.browser.set_default_timeout(TIMEOUT)
 
-        log.success(f"Browser started successfully (Profile: {profile})")
+        log.success(
+            f"Browser started successfully (Profile: {profile})"
+        )
 
     def new_page(self):
-       
-        return self.browser.new_page()
+
+        page = self.browser.new_page()
+
+        # -------------------------------------------------
+        # Page crash diagnostics
+        # -------------------------------------------------
+
+        page.on(
+            "crash",
+            lambda crashed_page: log.error(
+                f"PLAYWRIGHT PAGE CRASHED: {crashed_page.url}"
+            )
+        )
+
+        page.on(
+            "close",
+            lambda closed_page: log.error(
+                f"PLAYWRIGHT PAGE CLOSED: {closed_page.url}"
+            )
+        )
+
+        log.info(
+            f"New Playwright page created: {page.url}"
+        )
+
+        return page
 
     def pages(self):
         """
@@ -64,10 +102,24 @@ class BrowserManager:
         return self.browser.pages
 
     def new_tab(self):
-        """
-        Opens a new browser tab.
-        """
-        return self.browser.new_page()
+
+        page = self.browser.new_page()
+
+        page.on(
+            "crash",
+            lambda crashed_page: log.error(
+                f"PLAYWRIGHT TAB CRASHED: {crashed_page.url}"
+            )
+        )
+
+        page.on(
+            "close",
+            lambda closed_page: log.error(
+                f"PLAYWRIGHT TAB CLOSED: {closed_page.url}"
+            )
+        )
+
+        return page
 
     def close(self):
 
@@ -102,15 +154,35 @@ class BrowserManager:
         return self.browser.cookies()
 
     def clear_cookies(self):
-        """
-        Clears all cookies.
-        """
+
         self.browser.clear_cookies()
+
         log.info("Cookies cleared.")
 
     def storage_state(self, path="storage_state.json"):
-        """
-        Saves storage state.
-        """
-        self.browser.storage_state(path=path)
-        log.success(f"Storage state saved -> {path}")
+
+        self.browser.storage_state(
+            path=path
+        )
+
+        log.success(
+            f"Storage state saved -> {path}"
+        )
+    ```
+
+### Why we're doing this
+
+Your Railway sequence is currently:
+
+```text
+LinkedIn login
+      ↓
+login successful
+      ↓
+SearchWorkflow
+      ↓
+CompanyPage.search_company()
+      ↓
+page.wait_for_timeout(5000)
+      ↓
+TargetClosedError: Page crashed
