@@ -168,21 +168,4 @@ class BrowserManager:
         log.success(
             f"Storage state saved -> {path}"
         )
-    ```
-
-### Why we're doing this
-
-Your Railway sequence is currently:
-
-```text
-LinkedIn login
-      ↓
-login successful
-      ↓
-SearchWorkflow
-      ↓
-CompanyPage.search_company()
-      ↓
-page.wait_for_timeout(5000)
-      ↓
-TargetClosedError: Page crashed
+    
