@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, UploadFile, File
+﻿from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse, FileResponse
@@ -169,4 +169,5 @@ async def resume_formatter(
         filename=Path(output_file).name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
+
 
