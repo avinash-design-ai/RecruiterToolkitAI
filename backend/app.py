@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, Request, UploadFile, File
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse, FileResponse
@@ -44,12 +44,6 @@ app.mount(
     "/static",
     StaticFiles(directory="static"),
     name="static"
-)
-
-app.mount(
-    "/downloads",
-    StaticFiles(directory="downloads"),
-    name="downloads"
 )
 
 templates = Jinja2Templates(directory="templates")
