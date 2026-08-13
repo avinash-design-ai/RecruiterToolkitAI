@@ -26,3 +26,5 @@ logs/
 # Cache
 Code Cache/
 GPUCache/
+
+backend/downloads/*.exe
