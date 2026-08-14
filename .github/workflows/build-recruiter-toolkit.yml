@@ -20,7 +20,8 @@ jobs:
           python-version: "3.13"
 
       - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+        run: |
+          python -m pip install --upgrade pip
 
       - name: Install dependencies
         working-directory: backend/modules/RecruiterToolkit
@@ -28,44 +29,103 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
+      - name: Show repository files
+        shell: pwsh
+        run: |
+          Write-Host "=== RecruiterToolkit directory ==="
+          Get-ChildItem "backend/modules/RecruiterToolkit" -Force
+
+          Write-Host "=== Spec file ==="
+          Get-Item "backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec"
+
       - name: Build Recruiter Toolkit
         run: |
           python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec
 
-          - name: Verify build
+      - name: Locate build output
         shell: pwsh
         run: |
-          Write-Host "===== Repository root ====="
+          Write-Host "======================================"
+          Write-Host "BUILD OUTPUT SEARCH"
+          Write-Host "======================================"
+
+          Write-Host "Current directory:"
           Get-Location
 
-          Write-Host "===== All dist directories ====="
-          Get-ChildItem -Path "${{ github.workspace }}" -Directory -Recurse -Filter "dist" |
-            ForEach-Object {
-              Write-Host "DIST: $($_.FullName)"
-            }
+          Write-Host ""
+          Write-Host "All EXE files:"
+          Get-ChildItem "." -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
 
-          Write-Host "===== All RecruiterToolkitV1.exe files ====="
-          Get-ChildItem -Path "${{ github.workspace }}" -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              Write-Host "EXE: $($_.FullName)"
-            }
+          Write-Host ""
+          Write-Host "All dist directories:"
+          Get-ChildItem "." -Recurse -Directory -Filter "dist" -ErrorAction SilentlyContinue |
+            Select-Object FullName
 
-          Write-Host "===== All RecruiterToolkitV1 directories ====="
-          Get-ChildItem -Path "${{ github.workspace }}" -Directory -Recurse -Filter "RecruiterToolkitV1" -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              Write-Host "DIR: $($_.FullName)"
-            }
+          Write-Host ""
+          Write-Host "Searching for RecruiterToolkitV1.exe..."
 
-          Write-Host "Build successful:"
-          Get-ChildItem $build -Recurse
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Host ""
+            Write-Host "ERROR: RecruiterToolkitV1.exe was not found anywhere."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host "BUILD SUCCESSFUL"
+          Write-Host "======================================"
+          Write-Host "EXE:"
+          Write-Host $exe.FullName
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host $exe.Length
 
       - name: Package Windows application
         shell: pwsh
         run: |
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Host "ERROR: RecruiterToolkitV1.exe not found."
+            exit 1
+          }
+
+          $buildFolder = $exe.Directory.FullName
+
+          Write-Host "======================================"
+          Write-Host "PACKAGING APPLICATION"
+          Write-Host "======================================"
+          Write-Host "Build folder:"
+          Write-Host $buildFolder
+
           Compress-Archive `
-            -Path "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1" `
+            -Path "$buildFolder" `
             -DestinationPath "RecruiterToolkitV1-Windows.zip" `
             -Force
+
+          Write-Host ""
+          Write-Host "Package created:"
+          Get-Item "RecruiterToolkitV1-Windows.zip"
+
+      - name: Verify ZIP package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "RecruiterToolkitV1-Windows.zip")) {
+            Write-Host "ERROR: ZIP package was not created."
+            exit 1
+          }
+
+          Write-Host "======================================"
+          Write-Host "ZIP PACKAGE READY"
+          Write-Host "======================================"
+
+          Get-Item "RecruiterToolkitV1-Windows.zip" |
+            Select-Object FullName, Length
 
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
