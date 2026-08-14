@@ -35,32 +35,28 @@ jobs:
       - name: Verify build
         shell: pwsh
         run: |
-          Write-Host "Checking dist directory..."
-          Get-ChildItem -Path backend/modules/RecruiterToolkit/dist -Recurse
+          $build = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1"
 
-      - name: Package EXE
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem `
-            -Path backend/modules/RecruiterToolkit/dist `
-            -Filter "RecruiterToolkitV1.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue
-
-          if (-not $exe) {
-            Write-Host "RecruiterToolkitV1.exe not found. Contents of dist:"
-            Get-ChildItem -Path backend/modules/RecruiterToolkit/dist -Recurse
+          if (-not (Test-Path "$build/RecruiterToolkitV1.exe")) {
+            Write-Host "Build output not found."
+            Get-ChildItem "backend/modules/RecruiterToolkit/dist" -Recurse
             exit 1
           }
 
+          Write-Host "Build successful:"
+          Get-ChildItem $build -Recurse
+
+      - name: Package Windows application
+        shell: pwsh
+        run: |
           Compress-Archive `
-            -Path $exe.FullName `
-            -DestinationPath "${{ github.workspace }}\RecruiterToolkit-Windows.zip" `
+            -Path "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1" `
+            -DestinationPath "RecruiterToolkitV1-Windows.zip" `
             -Force
 
-      - name: Upload Windows build
+      - name: Upload Windows application
         uses: actions/upload-artifact@v4
         with:
-          name: RecruiterToolkit-Windows
-          path: RecruiterToolkit-Windows.zip
+          name: RecruiterToolkitV1-Windows
+          path: RecruiterToolkitV1-Windows.zip
           if-no-files-found: error
