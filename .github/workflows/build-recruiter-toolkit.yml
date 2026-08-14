@@ -1,0 +1,59 @@
+name: Build Recruiter Toolkit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/modules/RecruiterToolkit/requirements.txt
+          pip install pyinstaller
+
+      - name: Build Recruiter Toolkit
+        working-directory: backend/modules/RecruiterToolkit
+        run: |
+          python -m PyInstaller --clean --noconfirm RecruiterToolkitV1.spec
+
+      - name: Verify EXE
+        shell: powershell
+        run: |
+          $exe = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1/RecruiterToolkitV1.exe"
+
+          if (!(Test-Path $exe)) {
+              Write-Error "RecruiterToolkitV1.exe was not created."
+              exit 1
+          }
+
+          Get-Item $exe | Format-List FullName,Length,LastWriteTime
+
+      - name: Create ZIP
+        shell: powershell
+        run: |
+          $source = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1"
+          $zip = "RecruiterToolkitV1.zip"
+
+          Compress-Archive -Path "$source\*" -DestinationPath $zip -Force
+
+          Get-Item $zip | Format-List FullName,Length,LastWriteTime
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecruiterToolkitV1-Windows
+          path: RecruiterToolkitV1.zip
+          if-no-files-found: error
