@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+PROJECT_DIR = Path(SPECPATH)
+
 a = Analysis(
-    ['D:\\RecruiterToolKitAI\\backend\\modules\\RecruiterToolkit\\ui.py'],
-    pathex=['D:\\RecruiterToolKitAI\\backend\\modules\\RecruiterToolkit'],
+    [str(PROJECT_DIR / "ui.py")],
+    pathex=[str(PROJECT_DIR)],
     binaries=[],
     datas=[],
     hiddenimports=[],
@@ -21,7 +25,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='RecruiterToolkitV1',
+    name="RecruiterToolkitV1",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +45,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='RecruiterToolkitV1',
+    name="RecruiterToolkitV1",
 )
