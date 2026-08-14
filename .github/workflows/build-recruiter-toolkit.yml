@@ -29,46 +29,38 @@ jobs:
           python -m pip install pyinstaller
 
       - name: Build Recruiter Toolkit
-        working-directory: backend/modules/RecruiterToolkit
         run: |
-          python -m PyInstaller --clean --noconfirm RecruiterToolkitV1.spec
+          python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec
 
-      - name: Verify EXE
-        shell: powershell
+      - name: Verify build
+        shell: pwsh
         run: |
-          $exe = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1/RecruiterToolkitV1.exe"
+          Write-Host "Checking dist directory..."
+          Get-ChildItem -Path backend/modules/RecruiterToolkit/dist -Recurse
 
-          Write-Host "Checking:"
-          Write-Host $exe
+      - name: Package EXE
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem `
+            -Path backend/modules/RecruiterToolkit/dist `
+            -Filter "RecruiterToolkitV1.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue
 
-          if (!(Test-Path $exe)) {
-              Write-Error "RecruiterToolkitV1.exe was NOT created."
-              exit 1
+          if (-not $exe) {
+            Write-Host "RecruiterToolkitV1.exe not found. Contents of dist:"
+            Get-ChildItem -Path backend/modules/RecruiterToolkit/dist -Recurse
+            exit 1
           }
 
-          $file = Get-Item $exe
+          Compress-Archive `
+            -Path $exe.FullName `
+            -DestinationPath "${{ github.workspace }}\RecruiterToolkit-Windows.zip" `
+            -Force
 
-          Write-Host "EXE successfully created."
-          Write-Host "Size: $($file.Length) bytes"
-          Write-Host "Path: $($file.FullName)"
-
-      - name: Create ZIP
-        shell: powershell
-        run: |
-          $source = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1"
-          $zip = "RecruiterToolkitV1.zip"
-
-          Compress-Archive -Path "$source\*" -DestinationPath $zip -Force
-
-          $file = Get-Item $zip
-
-          Write-Host "ZIP successfully created."
-          Write-Host "Size: $($file.Length) bytes"
-          Write-Host "Path: $($file.FullName)"
-
-      - name: Upload build artifact
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: RecruiterToolkitV1-Windows
-          path: RecruiterToolkitV1.zip
+          name: RecruiterToolkit-Windows
+          path: RecruiterToolkit-Windows.zip
           if-no-files-found: error
