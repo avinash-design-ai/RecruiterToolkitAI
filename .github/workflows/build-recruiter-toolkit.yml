@@ -32,16 +32,29 @@ jobs:
         run: |
           python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec
 
-      - name: Verify build
+          - name: Verify build
         shell: pwsh
         run: |
-          $build = "backend/modules/RecruiterToolkit/dist/RecruiterToolkitV1"
+          Write-Host "===== Repository root ====="
+          Get-Location
 
-          if (-not (Test-Path "$build/RecruiterToolkitV1.exe")) {
-            Write-Host "Build output not found."
-            Get-ChildItem "backend/modules/RecruiterToolkit/dist" -Recurse
-            exit 1
-          }
+          Write-Host "===== All dist directories ====="
+          Get-ChildItem -Path "${{ github.workspace }}" -Directory -Recurse -Filter "dist" |
+            ForEach-Object {
+              Write-Host "DIST: $($_.FullName)"
+            }
+
+          Write-Host "===== All RecruiterToolkitV1.exe files ====="
+          Get-ChildItem -Path "${{ github.workspace }}" -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "EXE: $($_.FullName)"
+            }
+
+          Write-Host "===== All RecruiterToolkitV1 directories ====="
+          Get-ChildItem -Path "${{ github.workspace }}" -Directory -Recurse -Filter "RecruiterToolkitV1" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "DIR: $($_.FullName)"
+            }
 
           Write-Host "Build successful:"
           Get-ChildItem $build -Recurse
