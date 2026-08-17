@@ -13,7 +13,6 @@ venv/
 .idea/
 
 **/exports/
-**/screenshots/
 **/output/
 **/logs/
 **/uploads/
@@ -27,7 +26,6 @@ user_data/
 *.xlsx
 *.db
 
-*.png
 *.jpg
 *.jpeg
 
