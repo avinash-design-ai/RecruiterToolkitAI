@@ -114,6 +114,25 @@ def extract_name(
 ):
 
     # ------------------------------------------------------
+    # Prefer the name already detected by the rule-based
+    # structure parser.
+    # ------------------------------------------------------
+
+    detected_header = structure.get(
+        "header",
+        {}
+    )
+
+    detected_name = clean_text(
+        detected_header.get(
+            "name",
+            ""
+        )
+    )
+
+    if detected_name:
+        return detected_name
+    # ------------------------------------------------------
     # Find first structural content block.
     #
     # Anything before this is likely header/contact content.
@@ -476,16 +495,16 @@ def extract_environment_value(
     text
 ):
 
-    match = re.match(
+    match = re.search(
 
-        r'^\s*'
         r'(?:technical\s+environment|'
         r'environment|'
         r'technology\s+stack|'
         r'technologies|'
         r'technology|'
         r'tools)'
-        r'\s*:\s*(.+)$',
+        r'\s*:\s*'
+        r'(.+?)(?:\n|$)',
 
         text,
 
@@ -500,7 +519,6 @@ def extract_environment_value(
     return clean_text(
         match.group(1)
     )
-
 
 def extract_project_value(
     text
@@ -866,6 +884,25 @@ def build_experience(
             block = document.blocks[
                 block_index
             ]
+            # ------------------------------------------------
+            # Skip the block that was identified as the job role.
+            #
+            # Some resumes place the role immediately BEFORE
+            # the company/date header. That role is already
+            # stored in job.role and must not be processed
+            # again as project/environment content.
+            # ------------------------------------------------
+
+            role_block = item.get(
+                "role_block"
+            )
+
+            if (
+                role_block is not None
+                and block_index == role_block
+            ):
+
+                continue
 
             text = clean_text(
                 block.text
@@ -1075,6 +1112,11 @@ def build_experience(
 
         job.projects = valid_projects
 
+        print(
+             "DEBUG ENV BEFORE CLEANUP:",
+             job.employer,
+             job.environment
+        )
         # --------------------------------------------------
         # Cleanup environment
         # --------------------------------------------------

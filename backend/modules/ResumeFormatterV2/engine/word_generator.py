@@ -404,27 +404,45 @@ def write_experience(
 
         # Client
 
+                # Client / Employer
+
         separator()
 
-        if job.client:
+        if job.employer and job.client:
 
-            run = p.add_run(job.client)
-
-            style_run(
-                run,
-                bold=True
+            display_client = (
+                f"{job.employer}/{job.client}"
             )
+
+        elif job.employer:
+
+            display_client = job.employer
+
+        elif job.client:
+
+            display_client = job.client
 
         else:
 
-            run = p.add_run(
-                "ADD CLIENT"
-            )
+            display_client = "ADD CLIENT"
+
+        run = p.add_run(
+            display_client
+        )
+
+        if display_client == "ADD CLIENT":
 
             style_run(
                 run,
                 bold=True,
                 highlight=True
+            )
+
+        else:
+
+            style_run(
+                run,
+                bold=True
             )
 
         # Location
