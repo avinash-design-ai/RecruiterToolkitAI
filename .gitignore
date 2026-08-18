@@ -34,3 +34,10 @@ node_modules/
 # Build
 dist/
 build/
+# Resume Formatter test files
+test_resume/
+
+# Resume Formatter backup files
+backend/modules/ResumeFormatterV2/engine/*.backup
+backend/modules/ResumeFormatterV2/*_backup.py
+backend/modules/ResumeFormatterV2/*.ai_backup

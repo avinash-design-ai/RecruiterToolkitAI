@@ -138,8 +138,13 @@ def resume_page(request: Request):
 # Resume Formatter API
 # ---------------------------------------------------
 
+# ---------------------------------------------------
+# Resume Formatter API
+# ---------------------------------------------------
+
 @app.post("/api/resume/format")
 async def resume_formatter(
+    request: Request,
     resume: UploadFile = File(...)
 ):
 
@@ -163,10 +168,43 @@ async def resume_formatter(
         str(input_file)
     )
 
-    return FileResponse(
-        path=output_file,
-        filename=Path(output_file).name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    output_filename = Path(output_file).name
+
+    return templates.TemplateResponse(
+        request,
+        "resume_result.html",
+        {
+            "filename": output_filename,
+            "download_url": f"/api/resume/download/{output_filename}",
+        }
     )
 
+
+# ---------------------------------------------------
+# Resume Formatter Download
+# ---------------------------------------------------
+
+@app.get("/api/resume/download/{filename}")
+async def download_resume(
+    filename: str
+):
+
+    output_folder = Path("uploads/output")
+
+    file_path = output_folder / filename
+
+    if not file_path.exists():
+
+        return {
+            "error": "Formatted resume not found."
+        }
+
+    return FileResponse(
+        path=file_path,
+        filename=file_path.name,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        )
+    )
 

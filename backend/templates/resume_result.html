@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="resume-page">
+
+    <div class="container">
+
+        <div class="text-center mb-5">
+
+            <span class="section-tag">
+                RESUME FORMATTER
+            </span>
+
+            <h1 class="display-5 fw-bold mt-3">
+                Resume Formatted Successfully
+            </h1>
+
+            <p class="lead text-muted">
+                Your resume has been formatted using the SmartWorks recruiter template.
+            </p>
+
+        </div>
+
+        <div class="resume-card text-center">
+
+            <div class="mb-4">
+
+                <div class="upload-icon">
+                    ✓
+                </div>
+
+            </div>
+
+            <h3 class="mb-3">
+                SmartWorks Resume Ready
+            </h3>
+
+            <p class="text-muted mb-4">
+                Your formatted resume is ready to download.
+            </p>
+
+            <a
+                href="{{ download_url }}"
+                class="btn btn-primary btn-lg">
+
+                📄 Download SmartWorks Resume
+
+            </a>
+
+            <div class="mt-4">
+
+                <a
+                    href="/tools/resume"
+                    class="btn btn-outline-secondary">
+
+                    Format Another Resume
+
+                </a>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+{% endblock %}
