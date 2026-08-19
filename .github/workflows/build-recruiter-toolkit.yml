@@ -29,53 +29,48 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
-      - name: Show repository files
+      - name: Verify V2 files
         shell: pwsh
         run: |
-          Write-Host "=== RecruiterToolkit directory ==="
-          Get-ChildItem "backend/modules/RecruiterToolkit" -Force
+          Write-Host "======================================"
+          Write-Host "VERIFYING RECRUITER TOOLKIT V2"
+          Write-Host "======================================"
 
-          Write-Host "=== V2 spec file ==="
-          Get-Item "backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec"
+          if (-not (Test-Path "backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec")) {
+            Write-Host "ERROR: RecruiterToolkitV2.spec not found."
+            exit 1
+          }
+
+          Write-Host "V2 spec found."
+
+          Get-Item "backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec" |
+            Select-Object FullName, Length
 
       - name: Build Recruiter Toolkit V2
         run: |
           python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec
 
-      - name: Locate build output
+      - name: Locate V2 build output
         shell: pwsh
         run: |
           Write-Host "======================================"
           Write-Host "V2 BUILD OUTPUT SEARCH"
           Write-Host "======================================"
 
-          Write-Host "All EXE files:"
-          Get-ChildItem "." -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
-            Select-Object FullName, Length
-
-          Write-Host ""
-          Write-Host "Searching for RecruiterToolkitV2.exe..."
-
           $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if (-not $exe) {
-            Write-Host ""
             Write-Host "ERROR: RecruiterToolkitV2.exe was not found."
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host "V2 BUILD SUCCESSFUL"
-          Write-Host "======================================"
-          Write-Host "EXE:"
+          Write-Host "V2 EXE:"
           Write-Host $exe.FullName
-          Write-Host ""
           Write-Host "Size:"
           Write-Host $exe.Length
 
-      - name: Package Windows application
+      - name: Package V2 Windows application
         shell: pwsh
         run: |
           $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" -ErrorAction SilentlyContinue |
@@ -89,7 +84,7 @@ jobs:
           $buildFolder = $exe.Directory.FullName
 
           Write-Host "======================================"
-          Write-Host "PACKAGING V2 APPLICATION"
+          Write-Host "PACKAGING RECRUITER TOOLKIT V2"
           Write-Host "======================================"
           Write-Host "Build folder:"
           Write-Host $buildFolder
@@ -99,15 +94,14 @@ jobs:
             -DestinationPath "RecruiterToolkitV2-Windows.zip" `
             -Force
 
-          Write-Host ""
           Write-Host "Package created:"
           Get-Item "RecruiterToolkitV2-Windows.zip"
 
-      - name: Verify ZIP package
+      - name: Verify V2 ZIP package
         shell: pwsh
         run: |
           if (-not (Test-Path "RecruiterToolkitV2-Windows.zip")) {
-            Write-Host "ERROR: ZIP package was not created."
+            Write-Host "ERROR: RecruiterToolkitV2-Windows.zip was not created."
             exit 1
           }
 
@@ -118,7 +112,7 @@ jobs:
           Get-Item "RecruiterToolkitV2-Windows.zip" |
             Select-Object FullName, Length
 
-      - name: Upload Windows application
+      - name: Upload V2 Windows application
         uses: actions/upload-artifact@v4
         with:
           name: RecruiterToolkitV2-Windows
