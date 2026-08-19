@@ -1,4 +1,4 @@
-name: Test Recruiter Toolkit EXE
+name: Test Recruiter Toolkit V2 EXE
 
 on:
   workflow_dispatch:
@@ -26,31 +26,33 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
-      - name: Build Recruiter Toolkit
+      - name: Build Recruiter Toolkit V2
         run: |
-          python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec
+          python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec
 
-      - name: Find EXE
+      - name: Find V2 EXE
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" |
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" |
             Select-Object -First 1
 
           if (-not $exe) {
-            Write-Host "ERROR: EXE not found"
+            Write-Host "ERROR: RecruiterToolkitV2.exe not found"
             exit 1
           }
 
-          Write-Host "EXE FOUND:"
+          Write-Host "V2 EXE FOUND:"
           Write-Host $exe.FullName
+          Write-Host "Size:"
+          Write-Host $exe.Length
 
-      - name: Launch EXE test
+      - name: Launch V2 EXE test
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" |
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" |
             Select-Object -First 1
 
-          Write-Host "Launching:"
+          Write-Host "Launching V2:"
           Write-Host $exe.FullName
 
           $process = Start-Process `
@@ -65,14 +67,14 @@ jobs:
           $running = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
 
           if (-not $running) {
-            Write-Host "ERROR: Application exited during startup."
+            Write-Host "ERROR: V2 application exited during startup."
             exit 1
           }
 
           Write-Host "================================"
-          Write-Host "EXE STARTED SUCCESSFULLY"
+          Write-Host "V2 EXE STARTED SUCCESSFULLY"
           Write-Host "================================"
 
           Stop-Process -Id $process.Id -Force
 
-          Write-Host "Test completed successfully."
+          Write-Host "V2 EXE test completed successfully."

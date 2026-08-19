@@ -1,4 +1,4 @@
-name: Build Recruiter Toolkit
+name: Build Recruiter Toolkit V2
 
 on:
   workflow_dispatch:
@@ -35,48 +35,39 @@ jobs:
           Write-Host "=== RecruiterToolkit directory ==="
           Get-ChildItem "backend/modules/RecruiterToolkit" -Force
 
-          Write-Host "=== Spec file ==="
-          Get-Item "backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec"
+          Write-Host "=== V2 spec file ==="
+          Get-Item "backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec"
 
-      - name: Build Recruiter Toolkit
+      - name: Build Recruiter Toolkit V2
         run: |
-          python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV1.spec
+          python -m PyInstaller --clean --noconfirm backend/modules/RecruiterToolkit/RecruiterToolkitV2.spec
 
       - name: Locate build output
         shell: pwsh
         run: |
           Write-Host "======================================"
-          Write-Host "BUILD OUTPUT SEARCH"
+          Write-Host "V2 BUILD OUTPUT SEARCH"
           Write-Host "======================================"
 
-          Write-Host "Current directory:"
-          Get-Location
-
-          Write-Host ""
           Write-Host "All EXE files:"
           Get-ChildItem "." -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
             Select-Object FullName, Length
 
           Write-Host ""
-          Write-Host "All dist directories:"
-          Get-ChildItem "." -Recurse -Directory -Filter "dist" -ErrorAction SilentlyContinue |
-            Select-Object FullName
+          Write-Host "Searching for RecruiterToolkitV2.exe..."
 
-          Write-Host ""
-          Write-Host "Searching for RecruiterToolkitV1.exe..."
-
-          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if (-not $exe) {
             Write-Host ""
-            Write-Host "ERROR: RecruiterToolkitV1.exe was not found anywhere."
+            Write-Host "ERROR: RecruiterToolkitV2.exe was not found."
             exit 1
           }
 
           Write-Host ""
           Write-Host "======================================"
-          Write-Host "BUILD SUCCESSFUL"
+          Write-Host "V2 BUILD SUCCESSFUL"
           Write-Host "======================================"
           Write-Host "EXE:"
           Write-Host $exe.FullName
@@ -87,49 +78,49 @@ jobs:
       - name: Package Windows application
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV1.exe" -ErrorAction SilentlyContinue |
+          $exe = Get-ChildItem "." -Recurse -Filter "RecruiterToolkitV2.exe" -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if (-not $exe) {
-            Write-Host "ERROR: RecruiterToolkitV1.exe not found."
+            Write-Host "ERROR: RecruiterToolkitV2.exe not found."
             exit 1
           }
 
           $buildFolder = $exe.Directory.FullName
 
           Write-Host "======================================"
-          Write-Host "PACKAGING APPLICATION"
+          Write-Host "PACKAGING V2 APPLICATION"
           Write-Host "======================================"
           Write-Host "Build folder:"
           Write-Host $buildFolder
 
           Compress-Archive `
             -Path "$buildFolder" `
-            -DestinationPath "RecruiterToolkitV1-Windows.zip" `
+            -DestinationPath "RecruiterToolkitV2-Windows.zip" `
             -Force
 
           Write-Host ""
           Write-Host "Package created:"
-          Get-Item "RecruiterToolkitV1-Windows.zip"
+          Get-Item "RecruiterToolkitV2-Windows.zip"
 
       - name: Verify ZIP package
         shell: pwsh
         run: |
-          if (-not (Test-Path "RecruiterToolkitV1-Windows.zip")) {
+          if (-not (Test-Path "RecruiterToolkitV2-Windows.zip")) {
             Write-Host "ERROR: ZIP package was not created."
             exit 1
           }
 
           Write-Host "======================================"
-          Write-Host "ZIP PACKAGE READY"
+          Write-Host "V2 ZIP PACKAGE READY"
           Write-Host "======================================"
 
-          Get-Item "RecruiterToolkitV1-Windows.zip" |
+          Get-Item "RecruiterToolkitV2-Windows.zip" |
             Select-Object FullName, Length
 
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
         with:
-          name: RecruiterToolkitV1-Windows
-          path: RecruiterToolkitV1-Windows.zip
+          name: RecruiterToolkitV2-Windows
+          path: RecruiterToolkitV2-Windows.zip
           if-no-files-found: error

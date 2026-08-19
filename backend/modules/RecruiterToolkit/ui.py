@@ -5,7 +5,7 @@ from tkinter import *
 from tkinter import messagebox
 
 from automation.browser import BrowserManager
-from workflows.search_workflow import SearchWorkflow
+from workflows.search_workflow_v2 import SearchWorkflowV2
 
 
 class RecruiterUI:
@@ -124,18 +124,23 @@ class RecruiterUI:
             print("Current URL:")
             print(page.url)
 
-            workflow = SearchWorkflow(
-                browser
+            workflow = SearchWorkflowV2(
+                page
             )
 
             self.status_var.set(
                 "Running workflow..."
             )
 
-            results = workflow.run(
+            result_data = workflow.run(
                 company=company,
                 location=location,
                 max_profiles=max_profiles
+            )
+
+            results = result_data.get(
+                "results",
+                []
             )
 
             self.status_var.set(
