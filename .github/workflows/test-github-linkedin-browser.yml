@@ -25,9 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
          
-      - name: Install Chromium
+       - name: Install Chromium
         run: |
-          python -m playwright install --with-deps chromium
+          sudo mkdir -p /ms-playwright
+          sudo chmod 777 /ms-playwright
+          PLAYWRIGHT_BROWSERS_PATH=/ms-playwright python -m playwright install --with-deps chromium
 
       - name: Test V2 LinkedIn browser
         working-directory: backend/modules/RecruiterToolkit
