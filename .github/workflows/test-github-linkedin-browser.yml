@@ -20,12 +20,11 @@ jobs:
           python-version: "3.13"
 
       - name: Install Recruiter Toolkit dependencies
-        working-directory: backend/modules/RecruiterToolkit
+        working-directory: backend
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install playwright
-
+         
       - name: Install Chromium
         run: |
           python -m playwright install --with-deps chromium
