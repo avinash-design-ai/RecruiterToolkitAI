@@ -1,0 +1,88 @@
+name: LinkedIn V2 Storage Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      company:
+        description: "Company"
+        required: true
+        default: "SmartWorks, LLC"
+      location:
+        description: "Location"
+        required: true
+        default: "New Jersey"
+      max_profiles:
+        description: "Maximum profiles"
+        required: true
+        default: "5"
+
+permissions:
+  contents: read
+
+jobs:
+  linkedin-v2-search:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Restore authenticated LinkedIn state
+        env:
+          LINKEDIN_STORAGE_STATE: ${{ secrets.LINKEDIN_STORAGE_STATE }}
+        run: |
+          test -n "$LINKEDIN_STORAGE_STATE"
+
+          printf '%s' "$LINKEDIN_STORAGE_STATE" > linkedin_storage_state.json
+
+          python - <<'PY'
+          import json
+
+          with open("linkedin_storage_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          if not isinstance(state, dict):
+              raise SystemExit("Invalid storage state")
+
+          if not state.get("cookies"):
+              raise SystemExit("No cookies in storage state")
+
+          print("Storage state validated.")
+          print("Cookies:", len(state["cookies"]))
+          PY
+
+      - name: Run LinkedIn V2
+        working-directory: backend/modules/RecruiterToolkit
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend/modules/RecruiterToolkit
+          COMPANY: ${{ inputs.company }}
+          LOCATION: ${{ inputs.location }}
+          MAX_PROFILES: ${{ inputs.max_profiles }}
+          LINKEDIN_STORAGE_STATE: ${{ github.workspace }}/linkedin_storage_state.json
+        run: |
+          python test_search_v2_github.py
+
+      - name: Upload CSV
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linkedin-v2-results
+          path: backend/modules/RecruiterToolkit/exports/*.csv
+          if-no-files-found: error
+
+      - name: Delete authentication state
+        if: always()
+        run: |
+          rm -f linkedin_storage_state.json
