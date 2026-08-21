@@ -1,0 +1,105 @@
+name: Test GitHub V2 LinkedIn Browser
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linkedin-browser-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Recruiter Toolkit dependencies
+        working-directory: backend/modules/RecruiterToolkit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install playwright
+
+      - name: Install Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Test V2 LinkedIn browser
+        working-directory: backend/modules/RecruiterToolkit
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+        run: |
+          python - <<'PY'
+          import traceback
+
+          from automation.browser import BrowserManager
+
+          browser = None
+
+          try:
+              print("================================")
+              print("V2 LINKEDIN BROWSER TEST")
+              print("================================")
+
+              print("Starting BrowserManager...")
+
+              browser = BrowserManager(
+                  profile="github-test"
+              )
+
+              print("BrowserManager started successfully.")
+
+              page = browser.new_page()
+
+              print("New page created.")
+              print("Opening LinkedIn login page...")
+
+              page.goto(
+                  "https://www.linkedin.com/login",
+                  wait_until="domcontentloaded",
+                  timeout=60000
+              )
+
+              page.wait_for_timeout(5000)
+
+              print("--------------------------------")
+              print("PAGE URL:")
+              print(page.url)
+
+              print("--------------------------------")
+              print("PAGE TITLE:")
+              print(page.title())
+
+              print("--------------------------------")
+
+              if "linkedin.com" not in page.url.lower():
+                  raise RuntimeError(
+                      f"Unexpected URL: {page.url}"
+                  )
+
+              print("LINKEDIN PAGE REACHED SUCCESSFULLY")
+              print("================================")
+              print("V2 BROWSER TEST PASSED")
+              print("================================")
+
+          except Exception as ex:
+              print("================================")
+              print("V2 BROWSER TEST FAILED")
+              print("================================")
+              print(str(ex))
+              traceback.print_exc()
+              raise
+
+          finally:
+              if browser:
+                  try:
+                      browser.close()
+                  except Exception:
+                      pass
+          PY
