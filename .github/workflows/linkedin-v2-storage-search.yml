@@ -47,6 +47,38 @@ jobs:
 
           printf '%s' "$LINKEDIN_STORAGE_STATE" > linkedin_storage_state.json
 
+          echo "Storage state file size:"
+          wc -c linkedin_storage_state.json
+
+          python - <<'PY'
+          import json
+
+          with open("linkedin_storage_state.json", encoding="utf-8") as f:
+              state = json.load(f)
+
+          cookies = state.get("cookies", [])
+
+          print("Total cookies:", len(cookies))
+
+          linkedin = [
+              c for c in cookies
+              if "linkedin.com" in c.get("domain", "")
+          ]
+
+          print("LinkedIn cookies:", len(linkedin))
+
+          for c in linkedin:
+              print(
+                  "name=",
+                  c.get("name"),
+                  "domain=",
+                  c.get("domain"),
+                  "secure=",
+                  c.get("secure"),
+              )
+          PY
+
+
           python - <<'PY'
           import json
 
