@@ -329,7 +329,7 @@ def get_github_run(run_id):
         f"{GITHUB_API}/repos/"
         f"{GITHUB_OWNER}/"
         f"{GITHUB_REPO}/"
-        f"/actions/runs/"
+        f"actions/runs/"
         f"{run_id}"
     )
 
