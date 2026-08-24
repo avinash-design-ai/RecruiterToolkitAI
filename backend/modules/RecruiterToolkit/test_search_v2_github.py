@@ -29,6 +29,34 @@ try:
     page = browser.new_page()
 
     print("=" * 70)
+    print("LOADED STORAGE STATE DIAGNOSTICS")
+    print("=" * 70)
+
+    cookies = page.context.cookies("https://www.linkedin.com")
+
+    print("Total context cookies:", len(cookies))
+
+    linkedin_cookies = [
+        c for c in cookies
+        if "linkedin.com" in c.get("domain", "")
+    ]
+
+    print("LinkedIn context cookies:", len(linkedin_cookies))
+
+    for c in linkedin_cookies:
+        if c["name"] in ["li_at", "JSESSIONID", "bcookie", "bscookie"]:
+            print(
+                "name=", c["name"],
+                "domain=", c.get("domain"),
+                "path=", c.get("path"),
+                "secure=", c.get("secure"),
+                "expires=", c.get("expires"),
+            )
+
+    print("=" * 70)
+
+
+    print("=" * 70)
     print("OPENING LINKEDIN")
     print("=" * 70)
 
