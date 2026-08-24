@@ -1,4 +1,5 @@
 from pages.base_page import BasePage
+from urllib.parse import urlparse, parse_qs
 
 
 class CompanyPage(BasePage):
@@ -30,7 +31,7 @@ class CompanyPage(BasePage):
         self.page.wait_for_timeout(5000)
 
         print("PAGE SURVIVED WAIT")
-    
+
     def open_company_result(self, company):
 
         company_links = self.page.locator(
@@ -62,7 +63,6 @@ class CompanyPage(BasePage):
                     f"{i}: {first_line}"
                 )
 
-                # Exact match only
                 if (
                     first_line.lower()
                     == company.lower()
@@ -102,7 +102,6 @@ class CompanyPage(BasePage):
             self.page.url
         )
 
-        # Validation
         try:
 
             page_title = (
@@ -122,9 +121,24 @@ class CompanyPage(BasePage):
 
         return True
 
+    # ============================================================
+    # OPEN COMPANY EMPLOYEES / PEOPLE SEARCH
+    # ============================================================
+
     def open_employees_page(self):
 
-        print("Looking for employee search URL...")
+        print("=" * 60)
+        print("OPENING COMPANY EMPLOYEES / PEOPLE SEARCH")
+        print("=" * 60)
+
+        print("Current URL:")
+        print(self.page.url)
+
+        # --------------------------------------------------------
+        # 1. First inspect all links for an existing people search
+        # --------------------------------------------------------
+
+        print("Looking for existing employee search URL...")
 
         links = self.page.locator("a")
 
@@ -143,92 +157,327 @@ class CompanyPage(BasePage):
                 if not href:
                     continue
 
-                if (
-                    "/search/results/people/"
-                    not in href
-                ):
-                    continue
+                href = href.strip()
 
-                if (
-                    "currentCompany"
-                    not in href
-                ):
-                    continue
+                if "/search/results/people/" in href:
 
-                candidate_urls.append(href)
+                    candidate_urls.append(href)
+
+                    print(
+                        "Candidate employee URL:",
+                        href
+                    )
 
             except Exception:
                 pass
 
-        if not candidate_urls:
-
-            print(
-                "Employee search URL not found"
-            )
-
-            return False
-
-        print(
-            f"Found {len(candidate_urls)} candidate URLs"
-        )
+        # --------------------------------------------------------
+        # 2. Prefer currentCompany people-search URL
+        # --------------------------------------------------------
 
         best_url = None
 
         for url in candidate_urls:
 
-            score = 0
-
-            if "schoolFilter" not in url:
-                score += 1
-
-            if "network=" not in url:
-                score += 1
-
-            if "origin=SCHOOL_HIRES" not in url:
-                score += 1
-
-            if "origin=SHARED_CONNECTIONS" not in url:
-                score += 1
-
-            if "origin=JOB_PAGE" not in url:
-                score += 1
-
-            if score >= 4:
+            if "currentCompany" in url:
 
                 best_url = url
+
+                print(
+                    "Selected existing currentCompany URL:"
+                )
+
+                print(best_url)
+
                 break
 
-        if not best_url:
+        if not best_url and candidate_urls:
 
             best_url = candidate_urls[0]
 
-        remove_values = [
-
-            "&network=%5B%22F%22%5D",
-            "&network=%5B%22S%22%5D",
-            "&network=%5B%22O%22%5D",
-
-            "&schoolFilter=%5B%22%22%5D",
-
-            "&origin=SCHOOL_HIRES_IN_COMPANY_CANNED_SEARCH",
-            "&origin=SHARED_CONNECTIONS_IN_COMPANY_CANNED_SEARCH",
-            "&origin=JOB_PAGE_CANNED_SEARCH"
-        ]
-
-        for value in remove_values:
-
-            best_url = best_url.replace(
-                value,
-                ""
+            print(
+                "Selected existing people-search URL:"
             )
 
-        print("Using URL:")
-        print(best_url)
+            print(best_url)
 
-        self.page.goto(
-            best_url,
-            wait_until="domcontentloaded"
+        # --------------------------------------------------------
+        # 3. If LinkedIn does not expose the URL, get company ID
+        # --------------------------------------------------------
+
+        if not best_url:
+
+            print(
+                "No employee search URL exposed by LinkedIn."
+            )
+
+            print(
+                "Attempting to determine company ID..."
+            )
+
+            company_id = None
+
+            # ----------------------------------------------------
+            # Inspect current company URL
+            # ----------------------------------------------------
+
+            current_url = self.page.url
+
+            print(
+                "Company page URL:",
+                current_url
+            )
+
+            parsed = urlparse(
+                current_url
+            )
+
+            path_parts = [
+                part
+                for part in parsed.path.split("/")
+                if part
+            ]
+
+            # Typical:
+            # /company/company-name/
+            #
+            # Company numeric ID may not always be in URL,
+            # so this is only a first attempt.
+
+            # ----------------------------------------------------
+            # Look for currentCompany anywhere in href attributes
+            # ----------------------------------------------------
+
+            for i in range(count):
+
+                try:
+
+                    href = links.nth(i).get_attribute(
+                        "href"
+                    )
+
+                    if not href:
+                        continue
+
+                    if "currentCompany" in href:
+
+                        parsed_href = urlparse(
+                            href
+                        )
+
+                        params = parse_qs(
+                            parsed_href.query
+                        )
+
+                        values = params.get(
+                            "currentCompany"
+                        )
+
+                        if values:
+
+                            company_id = (
+                                values[0]
+                            )
+
+                            print(
+                                "Company ID found:",
+                                company_id
+                            )
+
+                            break
+
+                except Exception:
+                    pass
+
+            # ----------------------------------------------------
+            # Search page HTML for currentCompany
+            # ----------------------------------------------------
+
+            if not company_id:
+
+                print(
+                    "Searching page HTML for company ID..."
+                )
+
+                try:
+
+                    html = self.page.content()
+
+                    import re
+
+                    patterns = [
+
+                        r'currentCompany[^0-9]{0,50}([0-9]{3,20})',
+
+                        r'"companyId"\s*:\s*"([0-9]{3,20})"',
+
+                        r'"companyId"\s*:\s*([0-9]{3,20})',
+
+                        r'urn:li:fsd_company:([0-9]{3,20})',
+
+                        r'urn:li:organization:([0-9]{3,20})',
+
+                    ]
+
+                    for pattern in patterns:
+
+                        match = re.search(
+                            pattern,
+                            html,
+                            re.IGNORECASE
+                        )
+
+                        if match:
+
+                            company_id = (
+                                match.group(1)
+                            )
+
+                            print(
+                                "Company ID extracted from page:"
+                            )
+
+                            print(company_id)
+
+                            break
+
+                except Exception as ex:
+
+                    print(
+                        "Company ID HTML search failed:",
+                        repr(ex)
+                    )
+
+            # ----------------------------------------------------
+            # 4. Construct LinkedIn employee search URL
+            # ----------------------------------------------------
+
+            if company_id:
+
+                best_url = (
+                    "https://www.linkedin.com/"
+                    "search/results/people/"
+                    f"?currentCompany=%5B%22{company_id}%22%5D"
+                )
+
+                print(
+                    "Constructed employee search URL:"
+                )
+
+                print(best_url)
+
+        # --------------------------------------------------------
+        # 5. Last fallback: click People / employees UI
+        # --------------------------------------------------------
+
+        if not best_url:
+
+            print(
+                "Trying visible People / employees controls..."
+            )
+
+            possible_texts = [
+                "People",
+                "employees",
+                "See all employees",
+                "See all people",
+                "View all employees",
+                "View all people",
+            ]
+
+            for text in possible_texts:
+
+                try:
+
+                    locator = self.page.get_by_text(
+                        text,
+                        exact=False
+                    ).first
+
+                    if locator.count() == 0:
+                        continue
+
+                    if not locator.is_visible():
+                        continue
+
+                    print(
+                        "Clicking employee control:",
+                        text
+                    )
+
+                    locator.click()
+
+                    self.page.wait_for_timeout(
+                        5000
+                    )
+
+                    print(
+                        "URL after employee control:",
+                        self.page.url
+                    )
+
+                    if (
+                        "/search/results/people/"
+                        in self.page.url
+                    ):
+
+                        print(
+                            "Employee search page opened."
+                        )
+
+                        return True
+
+                except Exception as ex:
+
+                    print(
+                        "Employee control attempt failed:",
+                        repr(ex)
+                    )
+
+        # --------------------------------------------------------
+        # 6. Nothing worked
+        # --------------------------------------------------------
+
+        if not best_url:
+
+            print(
+                "Employee search URL could not be determined."
+            )
+
+            return False
+
+        # --------------------------------------------------------
+        # 7. Navigate to employee search
+        # --------------------------------------------------------
+
+        print("=" * 60)
+        print("NAVIGATING TO EMPLOYEE SEARCH")
+        print("=" * 60)
+
+        print(
+            "Using URL:"
         )
+
+        print(
+            best_url
+        )
+
+        try:
+
+            self.page.goto(
+                best_url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+        except Exception as ex:
+
+            print(
+                "Employee search navigation failed:",
+                repr(ex)
+            )
+
+            return False
 
         self.page.wait_for_timeout(
             5000
@@ -238,7 +487,27 @@ class CompanyPage(BasePage):
             "Employee page loaded:"
         )
 
-        print(self.page.url)
+        print(
+            self.page.url
+        )
+
+        # --------------------------------------------------------
+        # Validate
+        # --------------------------------------------------------
+
+        current_url = self.page.url.lower()
+
+        if "/search/results/people/" not in current_url:
+
+            print(
+                "WARNING: LinkedIn did not open people search."
+            )
+
+            return False
+
+        print(
+            "Employee search page confirmed."
+        )
 
         return True
 
@@ -340,12 +609,10 @@ class CompanyPage(BasePage):
                     clean_url = (
                         "https://www.linkedin.com"
                         + clean_url
-                  )
+                    )
 
                 if clean_url in seen:
                     continue
-
-                # Skip obvious mutual connections
 
                 if text.count(" ") > 4:
                     continue
@@ -356,7 +623,7 @@ class CompanyPage(BasePage):
                 seen.add(
                     clean_url
                 )
-                
+
                 profiles.append(
                     {
                         "full_name": text,
@@ -377,39 +644,59 @@ class CompanyPage(BasePage):
 
         try:
 
-            print("Trying next page...")
-            print("NEW NEXT_PAGE EXECUTING")
+            print(
+                "Trying next page..."
+            )
 
-            buttons = self.page.locator("button")
+            print(
+                "NEW NEXT_PAGE EXECUTING"
+            )
 
-            for i in range(buttons.count()):
+            buttons = self.page.locator(
+                "button"
+            )
+
+            for i in range(
+                buttons.count()
+            ):
 
                 try:
 
                     btn = buttons.nth(i)
 
-                    text = btn.inner_text().strip()
+                    text = (
+                        btn.inner_text()
+                        .strip()
+                    )
 
                     if text == "Next":
 
-                        print("Clicking Next")
+                        print(
+                            "Clicking Next"
+                        )
 
                         btn.click()
 
-                        self.page.wait_for_timeout(5000)
+                        self.page.wait_for_timeout(
+                            5000
+                        )
 
                         print(
                             "Current URL after next:"
                         )
 
-                        print(self.page.url)
+                        print(
+                            self.page.url
+                        )
 
                         return True
 
                 except Exception:
                     pass
 
-            print("Next button not found")
+            print(
+                "Next button not found"
+            )
 
             return False
 
