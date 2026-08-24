@@ -221,7 +221,7 @@ def get_github_runs():
         f"{GITHUB_API}/repos/"
         f"{GITHUB_OWNER}/"
         f"{GITHUB_REPO}/"
-        f"actions/workflows/
+        f"actions/workflows/"
         f"{GITHUB_WORKFLOW}/runs"
     )
 
