@@ -106,15 +106,43 @@ jobs:
         run: |
           python test_search_v2_github.py
 
+      - name: Prepare CSV result
+        if: success()
+        shell: bash
+        run: |
+          set -e
+
+          echo "Looking for generated CSV..."
+
+          CSV_FILE=$(find backend/modules/RecruiterToolkit/exports \
+            -maxdepth 1 \
+            -type f \
+            -name "*.csv" \
+            | head -n 1)
+
+          if [ -z "$CSV_FILE" ]; then
+            echo "ERROR: No CSV file was generated."
+            exit 1
+          fi
+
+          echo "CSV generated:"
+          echo "$CSV_FILE"
+
+          CSV_NAME=$(basename "$CSV_FILE")
+
+          echo "CSV_NAME=$CSV_NAME" >> "$GITHUB_OUTPUT"
+
+          mkdir -p github-result
+
+          cp "$CSV_FILE" "github-result/$CSV_NAME"
+
+          echo "Prepared:"
+          ls -lh github-result/
+
       - name: Upload CSV
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: linkedin-v2-results
-          path: backend/modules/RecruiterToolkit/exports/*.csv
+          path: github-result/*.csv
           if-no-files-found: error
-
-      - name: Delete authentication state
-        if: always()
-        run: |
-          rm -f linkedin_storage_state.json

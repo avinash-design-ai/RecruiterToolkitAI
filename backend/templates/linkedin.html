@@ -1,6 +1,1204 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block content %}
+
+<!-- ============================================================
+     LINKEDIN V2 WEB SEARCH
+     ============================================================ -->
+
+<div class="container py-4">
+
+    <div class="card shadow border-0 mb-5">
+
+        <div class="card-header bg-primary text-white">
+            <h2 class="mb-0">
+                LinkedIn Automation V2 — Web Search
+            </h2>
+        </div>
+
+        <div class="card-body p-4">
+
+            <p class="text-muted">
+                Run the Recruiter Toolkit LinkedIn V2 workflow directly
+                from the web. The search runs through GitHub Actions
+                using the authenticated LinkedIn session.
+            </p>
+
+            <!-- ====================================================
+                 SEARCH FORM
+                 ==================================================== -->
+
+            <form id="linkedinV2Form">
+
+                <div class="row">
+
+                    <!-- COMPANY -->
+
+                    <div class="col-md-5 mb-3">
+
+                        <label
+                            for="v2Company"
+                            class="form-label fw-bold"
+                        >
+                            Company Name
+                        </label>
+
+                        <input
+                            type="text"
+                            class="form-control form-control-lg"
+                            id="v2Company"
+                            placeholder="e.g. SmartWorks, LLC"
+                            value="SmartWorks, LLC"
+                            required
+                        >
+
+                    </div>
+
+
+                    <!-- LOCATION -->
+
+                    <div class="col-md-5 mb-3">
+
+                        <label
+                            for="v2Location"
+                            class="form-label fw-bold"
+                        >
+                            Location
+                        </label>
+
+                        <input
+                            type="text"
+                            class="form-control form-control-lg"
+                            id="v2Location"
+                            placeholder="e.g. New Jersey"
+                            value="New Jersey"
+                            required
+                        >
+
+                    </div>
+
+
+                    <!-- MAX PROFILES -->
+
+                    <div class="col-md-2 mb-3">
+
+                        <label
+                            for="v2MaxProfiles"
+                            class="form-label fw-bold"
+                        >
+                            Max Profiles
+                        </label>
+
+                        <select
+                            class="form-select form-select-lg"
+                            id="v2MaxProfiles"
+                            required
+                        >
+
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+
+                        </select>
+
+                    </div>
+
+                </div>
+
+
+                <!-- RUN BUTTON -->
+
+                <div class="mt-3">
+
+                    <button
+                        type="submit"
+                        id="v2RunButton"
+                        class="btn btn-primary btn-lg px-5"
+                    >
+                        Run LinkedIn V2 Search
+                    </button>
+
+                </div>
+
+            </form>
+
+
+            <!-- ====================================================
+                 STATUS
+                 ==================================================== -->
+
+            <div
+                id="v2Status"
+                class="alert alert-secondary mt-4 d-none"
+            >
+
+                <strong>Status:</strong>
+                <span id="v2StatusText"></span>
+
+            </div>
+
+
+            <!-- ====================================================
+                 RESULT
+                 ==================================================== -->
+
+            <div
+                id="v2Result"
+                class="alert alert-success mt-4 d-none"
+            >
+
+                <h5 class="fw-bold">
+                    LinkedIn V2 Search
+                </h5>
+
+                <div id="v2ResultText"></div>
+
+                <!-- CSV DOWNLOAD AREA -->
+
+                <div
+                    id="v2DownloadArea"
+                    class="mt-4 d-none"
+                >
+
+                    <hr>
+
+                    <h5 class="fw-bold">
+                        Search Results Ready
+                    </h5>
+
+                    <p class="mb-3">
+                        Your LinkedIn V2 search has completed successfully.
+                    </p>
+
+                    <a
+                        id="v2DownloadButton"
+                        href="#"
+                        class="btn btn-success btn-lg"
+                    >
+                        Download CSV
+                    </a>
+
+                </div>
+
+            </div>
+
+
+            <!-- ====================================================
+                 ERROR
+                 ==================================================== -->
+
+            <div
+                id="v2Error"
+                class="alert alert-danger mt-4 d-none"
+            >
+
+                <strong>Error:</strong>
+                <span id="v2ErrorText"></span>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<script>
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+
+        /* ========================================================
+           ELEMENTS
+           ======================================================== */
+
+        const form =
+            document.getElementById(
+                "linkedinV2Form"
+            );
+
+        const runButton =
+            document.getElementById(
+                "v2RunButton"
+            );
+
+        const statusBox =
+            document.getElementById(
+                "v2Status"
+            );
+
+        const statusText =
+            document.getElementById(
+                "v2StatusText"
+            );
+
+        const resultBox =
+            document.getElementById(
+                "v2Result"
+            );
+
+        const resultText =
+            document.getElementById(
+                "v2ResultText"
+            );
+
+        const errorBox =
+            document.getElementById(
+                "v2Error"
+            );
+
+        const errorText =
+            document.getElementById(
+                "v2ErrorText"
+            );
+
+        const downloadArea =
+            document.getElementById(
+                "v2DownloadArea"
+            );
+
+        const downloadButton =
+            document.getElementById(
+                "v2DownloadButton"
+            );
+
+
+        /* ========================================================
+           SEARCH STATE
+           ======================================================== */
+
+        let workflowId = null;
+
+        let statusPollTimer = null;
+
+
+        /* ========================================================
+           FORM SUBMIT
+           ======================================================== */
+
+        form.addEventListener(
+            "submit",
+            async function (event) {
+
+                event.preventDefault();
+
+
+                const company =
+                    document
+                        .getElementById(
+                            "v2Company"
+                        )
+                        .value
+                        .trim();
+
+
+                const location =
+                    document
+                        .getElementById(
+                            "v2Location"
+                        )
+                        .value
+                        .trim();
+
+
+                const maxProfiles =
+                    parseInt(
+                        document
+                            .getElementById(
+                                "v2MaxProfiles"
+                            )
+                            .value,
+                        10
+                    );
+
+
+                if (
+                    !company ||
+                    !location ||
+                    !maxProfiles
+                ) {
+
+                    return;
+
+                }
+
+
+                /* =================================================
+                   RESET UI
+                   ================================================= */
+
+                clearPolling();
+
+                workflowId = null;
+
+                statusBox.classList.remove(
+                    "d-none"
+                );
+
+                resultBox.classList.add(
+                    "d-none"
+                );
+
+                errorBox.classList.add(
+                    "d-none"
+                );
+
+                downloadArea.classList.add(
+                    "d-none"
+                );
+
+                downloadButton.href = "#";
+
+
+                statusText.textContent =
+                    "Starting LinkedIn V2 search...";
+
+
+                runButton.disabled = true;
+
+                runButton.textContent =
+                    "Starting Search...";
+
+
+                /* =================================================
+                   START SEARCH
+                   ================================================= */
+
+                try {
+
+                    const response =
+                        await fetch(
+                            "/linkedin/v2/github-search",
+                            {
+                                method: "POST",
+
+                                headers: {
+                                    "Content-Type":
+                                        "application/json"
+                                },
+
+                                body: JSON.stringify(
+                                    {
+                                        company:
+                                            company,
+
+                                        location:
+                                            location,
+
+                                        max_profiles:
+                                            maxProfiles
+                                    }
+                                )
+                            }
+                        );
+
+
+                    const data =
+                        await response.json();
+
+
+                    if (!response.ok) {
+
+                        throw new Error(
+                            data.message ||
+                            "Unable to start LinkedIn V2 search."
+                        );
+
+                    }
+
+
+                    /* =================================================
+                       LINKEDIN VERIFICATION REQUIRED
+                       ================================================= */
+
+                    if (
+                        data.verification_required
+                    ) {
+
+                        showVerificationUI(
+                            data,
+                            company,
+                            location,
+                            maxProfiles
+                        );
+
+                        return;
+
+                    }
+
+
+                    /* =================================================
+                       NORMAL SUCCESS
+                       ================================================= */
+
+                    if (!data.success) {
+
+                        throw new Error(
+                            data.message ||
+                            "Unable to start LinkedIn V2 search."
+                        );
+
+                    }
+
+
+                    statusText.textContent =
+                        "GitHub Actions workflow started.";
+
+
+                    resultBox.classList.remove(
+                        "d-none"
+                    );
+
+
+                    resultText.innerHTML = `
+
+                        <p class="mb-1">
+                            <strong>Company:</strong>
+                            ${escapeHtml(company)}
+                        </p>
+
+                        <p class="mb-1">
+                            <strong>Location:</strong>
+                            ${escapeHtml(location)}
+                        </p>
+
+                        <p class="mb-1">
+                            <strong>Maximum Profiles:</strong>
+                            ${maxProfiles}
+                        </p>
+
+                        <p class="mb-0">
+                            LinkedIn authentication completed.
+                            GitHub Actions is now running the
+                            LinkedIn V2 search remotely.
+                        </p>
+
+                    `;
+
+
+                    runButton.textContent =
+                        "Search Running";
+
+
+                    /*
+                     * The backend should return the GitHub
+                     * workflow/run identifier.
+                     */
+
+                    workflowId =
+                        data.run_id ||
+                        data.workflow_id ||
+                        null;
+
+
+                    /*
+                     * Start polling when a workflow identifier
+                     * is available.
+                     */
+
+                    if (workflowId) {
+
+                        startStatusPolling(
+                            workflowId
+                        );
+
+                    } else {
+
+                        statusText.textContent =
+                            "GitHub Actions workflow started. Waiting for results...";
+
+                        /*
+                         * If the backend currently does not return
+                         * a run_id, we leave the search running.
+                         *
+                         * The backend status endpoint will need a
+                         * way to identify the correct workflow run.
+                         */
+
+                    }
+
+
+                } catch (error) {
+
+                    showError(
+                        error.message
+                    );
+
+                }
+
+            }
+        );
+
+
+        /* ========================================================
+           LINKEDIN VERIFICATION UI
+           ======================================================== */
+
+        function showVerificationUI(
+            data,
+            company,
+            location,
+            maxProfiles
+        ) {
+
+            statusText.textContent =
+                "LinkedIn verification required.";
+
+
+            resultBox.classList.remove(
+                "d-none"
+            );
+
+
+            resultText.innerHTML = `
+
+                <div class="alert alert-warning mb-0">
+
+                    <h5 class="fw-bold">
+                        LinkedIn Verification Required
+                    </h5>
+
+                    <p class="mb-3">
+                        A verification code has been sent to your
+                        LinkedIn email or phone.
+                    </p>
+
+                    <div class="input-group">
+
+                        <input
+                            type="text"
+                            id="linkedinVerificationCode"
+                            class="form-control"
+                            placeholder="Enter verification code"
+                            autocomplete="one-time-code"
+                        >
+
+                        <button
+                            type="button"
+                            id="linkedinVerifyButton"
+                            class="btn btn-primary"
+                        >
+                            Verify
+                        </button>
+
+                    </div>
+
+                    <div
+                        id="linkedinVerificationMessage"
+                        class="mt-3"
+                    ></div>
+
+                </div>
+
+            `;
+
+
+            runButton.textContent =
+                "Waiting for Verification";
+
+            runButton.disabled = true;
+
+
+            const verifyButton =
+                document.getElementById(
+                    "linkedinVerifyButton"
+                );
+
+
+            const verificationInput =
+                document.getElementById(
+                    "linkedinVerificationCode"
+                );
+
+
+            const verificationMessage =
+                document.getElementById(
+                    "linkedinVerificationMessage"
+                );
+
+
+            verifyButton.addEventListener(
+                "click",
+                async function () {
+
+                    const verificationCode =
+                        verificationInput.value.trim();
+
+
+                    if (!verificationCode) {
+
+                        verificationMessage.innerHTML =
+                            `
+                            <div class="alert alert-danger">
+                                Please enter the verification code.
+                            </div>
+                            `;
+
+                        verificationInput.focus();
+
+                        return;
+
+                    }
+
+
+                    verifyButton.disabled = true;
+
+                    verifyButton.textContent =
+                        "Verifying...";
+
+
+                    verificationMessage.innerHTML =
+                        `
+                        <div class="alert alert-info">
+                            Verifying LinkedIn authentication...
+                        </div>
+                        `;
+
+
+                    try {
+
+                        const verifyResponse =
+                            await fetch(
+                                "/linkedin/verify",
+                                {
+                                    method: "POST",
+
+                                    headers: {
+                                        "Content-Type":
+                                            "application/json"
+                                    },
+
+                                    body: JSON.stringify(
+                                        {
+                                            session_id:
+                                                data.session_id,
+
+                                            verification_code:
+                                                verificationCode
+                                        }
+                                    )
+                                }
+                            );
+
+
+                        const verifyData =
+                            await verifyResponse.json();
+
+
+                        if (
+                            !verifyResponse.ok ||
+                            !verifyData.success
+                        ) {
+
+                            throw new Error(
+                                verifyData.message ||
+                                "LinkedIn verification failed."
+                            );
+
+                        }
+
+
+                        verificationMessage.innerHTML =
+                            `
+                            <div class="alert alert-success">
+                                LinkedIn verification successful.
+                            </div>
+                            `;
+
+
+                        statusText.textContent =
+                            "LinkedIn verified. Starting GitHub Actions search...";
+
+
+                        /*
+                         * Start GitHub Actions search after
+                         * successful LinkedIn verification.
+                         */
+
+                        const githubResponse =
+                            await fetch(
+                                "/linkedin/v2/github-search",
+                                {
+                                    method: "POST",
+
+                                    headers: {
+                                        "Content-Type":
+                                            "application/json"
+                                    },
+
+                                    body: JSON.stringify(
+                                        {
+                                            company:
+                                                company,
+
+                                            location:
+                                                location,
+
+                                            max_profiles:
+                                                maxProfiles
+                                        }
+                                    )
+                                }
+                            );
+
+
+                        const githubData =
+                            await githubResponse.json();
+
+
+                        if (
+                            !githubResponse.ok ||
+                            !githubData.success
+                        ) {
+
+                            throw new Error(
+                                githubData.message ||
+                                "Unable to start GitHub Actions search."
+                            );
+
+                        }
+
+
+                        statusText.textContent =
+                            "GitHub Actions workflow started.";
+
+
+                        resultText.innerHTML = `
+
+                            <p class="mb-1">
+                                <strong>Company:</strong>
+                                ${escapeHtml(company)}
+                            </p>
+
+                            <p class="mb-1">
+                                <strong>Location:</strong>
+                                ${escapeHtml(location)}
+                            </p>
+
+                            <p class="mb-1">
+                                <strong>Maximum Profiles:</strong>
+                                ${maxProfiles}
+                            </p>
+
+                            <p class="mb-0">
+                                LinkedIn verification completed.
+                                GitHub Actions is now running the
+                                LinkedIn V2 search remotely.
+                            </p>
+
+                        `;
+
+
+                        workflowId =
+                            githubData.run_id ||
+                            githubData.workflow_id ||
+                            null;
+
+
+                        runButton.textContent =
+                            "Search Running";
+
+
+                        if (workflowId) {
+
+                            startStatusPolling(
+                                workflowId
+                            );
+
+                        }
+
+
+                    } catch (error) {
+
+                        verificationMessage.innerHTML =
+                            `
+                            <div class="alert alert-danger">
+                                ${escapeHtml(error.message)}
+                            </div>
+                            `;
+
+
+                        verifyButton.disabled =
+                            false;
+
+
+                        verifyButton.textContent =
+                            "Verify";
+
+                    }
+
+                }
+            );
+
+        }
+
+
+        /* ========================================================
+           POLL GITHUB WORKFLOW
+           ======================================================== */
+
+        function startStatusPolling(
+            runId
+        ) {
+
+            clearPolling();
+
+
+            statusText.textContent =
+                "GitHub Actions is running the LinkedIn search...";
+
+
+            pollWorkflowStatus(
+                runId
+            );
+
+
+            statusPollTimer =
+                setInterval(
+                    function () {
+
+                        pollWorkflowStatus(
+                            runId
+                        );
+
+                    },
+                    10000
+                );
+
+        }
+
+
+        /* ========================================================
+           CHECK WORKFLOW STATUS
+           ======================================================== */
+
+        async function pollWorkflowStatus(
+            runId
+        ) {
+
+            try {
+
+                const response =
+                    await fetch(
+                        "/linkedin/v2/github-status/" +
+                        encodeURIComponent(runId)
+                    );
+
+
+                const data =
+                    await response.json();
+
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        data.message ||
+                        "Unable to check GitHub Actions status."
+                    );
+
+                }
+
+
+                /*
+                 * Expected backend response:
+                 *
+                 * {
+                 *     success: true,
+                 *     status: "queued|in_progress|completed",
+                 *     conclusion: "success|failure|cancelled",
+                 *     download_url: "..."
+                 * }
+                 */
+
+
+                const workflowStatus =
+                    data.status ||
+                    "";
+
+
+                const conclusion =
+                    data.conclusion ||
+                    "";
+
+
+                if (
+                    workflowStatus === "queued"
+                ) {
+
+                    statusText.textContent =
+                        "GitHub Actions search is queued...";
+
+                    return;
+
+                }
+
+
+                if (
+                    workflowStatus === "in_progress"
+                ) {
+
+                    statusText.textContent =
+                        "LinkedIn V2 search is running on GitHub Actions...";
+
+                    return;
+
+                }
+
+
+                if (
+                    workflowStatus === "completed"
+                ) {
+
+                    clearPolling();
+
+
+                    if (
+                        conclusion === "success"
+                    ) {
+
+                        handleSearchCompleted(
+                            data
+                        );
+
+                        return;
+
+                    }
+
+
+                    throw new Error(
+                        "GitHub Actions search completed with status: " +
+                        conclusion
+                    );
+
+                }
+
+
+            } catch (error) {
+
+                /*
+                 * Do not immediately kill polling for a temporary
+                 * status request failure.
+                 */
+
+                console.error(
+                    "Workflow status error:",
+                    error
+                );
+
+            }
+
+        }
+
+
+        /* ========================================================
+           SEARCH COMPLETED
+           ======================================================== */
+
+        function handleSearchCompleted(
+            data
+        ) {
+
+            statusText.textContent =
+                "LinkedIn V2 search completed successfully.";
+
+
+            resultBox.classList.remove(
+                "d-none"
+            );
+
+
+            resultText.innerHTML = `
+
+                <p class="mb-1">
+                    <strong>Search Completed</strong>
+                </p>
+
+                <p class="mb-0">
+                    The LinkedIn V2 search has finished and
+                    the CSV results are ready.
+                </p>
+
+            `;
+
+
+            /*
+             * Backend should provide the download URL.
+             */
+
+            const downloadUrl =
+                data.download_url ||
+                data.csv_url ||
+                data.artifact_url ||
+                null;
+
+
+            if (downloadUrl) {
+
+                downloadArea.classList.remove(
+                    "d-none"
+                );
+
+
+                downloadButton.href =
+                    downloadUrl;
+
+
+                downloadButton.removeAttribute(
+                    "target"
+                );
+
+
+                downloadButton.textContent =
+                    "Download CSV";
+
+
+                runButton.disabled =
+                    false;
+
+
+                runButton.textContent =
+                    "Run LinkedIn V2 Search";
+
+
+                return;
+
+            }
+
+
+            /*
+             * If no URL was supplied, tell the user rather
+             * than showing a fake download button.
+             */
+
+            resultText.innerHTML += `
+
+                <div class="alert alert-warning mt-3 mb-0">
+
+                    The search completed, but the CSV download
+                    URL was not returned by the server.
+
+                </div>
+
+            `;
+
+
+            runButton.disabled =
+                false;
+
+
+            runButton.textContent =
+                "Run LinkedIn V2 Search";
+
+        }
+
+
+        /* ========================================================
+           CLEAR POLLING
+           ======================================================== */
+
+        function clearPolling() {
+
+            if (
+                statusPollTimer !== null
+            ) {
+
+                clearInterval(
+                    statusPollTimer
+                );
+
+                statusPollTimer = null;
+
+            }
+
+        }
+
+
+        /* ========================================================
+           ERROR
+           ======================================================== */
+
+        function showError(
+            message
+        ) {
+
+            clearPolling();
+
+
+            statusBox.classList.add(
+                "d-none"
+            );
+
+
+            resultBox.classList.add(
+                "d-none"
+            );
+
+
+            errorBox.classList.remove(
+                "d-none"
+            );
+
+
+            errorText.textContent =
+                message ||
+                "An unexpected error occurred.";
+
+
+            runButton.disabled =
+                false;
+
+
+            runButton.textContent =
+                "Run LinkedIn V2 Search";
+
+        }
+
+
+        /* ========================================================
+           HTML ESCAPE
+           ======================================================== */
+
+        function escapeHtml(
+            value
+        ) {
+
+            return String(value)
+                .replace(
+                    /&/g,
+                    "&amp;"
+                )
+                .replace(
+                    /</g,
+                    "&lt;"
+                )
+                .replace(
+                    />/g,
+                    "&gt;"
+                )
+                .replace(
+                    /"/g,
+                    "&quot;"
+                )
+                .replace(
+                    /'/g,
+                    "&#039;"
+                );
+
+        }
+
+    }
+);
+
+</script>
+
+
+<!-- ============================================================
+     WINDOWS APPLICATION / DOCUMENTATION
+     ============================================================ -->
 
 <div class="container py-5">
 
@@ -38,17 +1236,15 @@
 
             </p>
 
-            <a href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
-               class="btn btn-primary btn-lg px-5 mt-3">
-
+            <a
+                href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
+                class="btn btn-primary btn-lg px-5 mt-3"
+            >
                 ⬇️ Download Windows Application V2
-
             </a>
 
             <p class="text-muted mt-3 mb-0">
-
                 RecruiterToolkitV2-Windows.zip
-
             </p>
 
         </div>
@@ -108,9 +1304,11 @@
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/02_Download_Extract_Run.png"
-                     class="img-fluid rounded shadow"
-                     alt="Download Extract and Run Recruiter Toolkit V2">
+                <img
+                    src="/static/screenshots/02_Download_Extract_Run.png"
+                    class="img-fluid rounded shadow"
+                    alt="Download Extract and Run Recruiter Toolkit V2"
+                >
 
             </div>
 
@@ -150,10 +1348,8 @@
         <div class="card-body p-4">
 
             <p class="fs-5">
-
                 Open Recruiter Toolkit V2 and enter the search
                 information you want the automation to use.
-
             </p>
 
             <ul class="fs-5">
@@ -173,17 +1369,17 @@
             </ul>
 
             <p class="fs-5">
-
                 Click <strong>Run Search</strong> to start the
                 LinkedIn automation workflow.
-
             </p>
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/01_UI.png"
-                     class="img-fluid rounded shadow"
-                     alt="Recruiter Toolkit V2 Search Setup">
+                <img
+                    src="/static/screenshots/01_UI.png"
+                    class="img-fluid rounded shadow"
+                    alt="Recruiter Toolkit V2 Search Setup"
+                >
 
             </div>
 
@@ -207,17 +1403,13 @@
         <div class="card-body p-4">
 
             <p class="fs-5">
-
                 On the first run, the automation opens LinkedIn
                 in a browser window.
-
             </p>
 
             <p class="fs-5">
-
                 Sign in to your LinkedIn account and complete any
                 required authentication or verification.
-
             </p>
 
             <div class="alert alert-info">
@@ -231,9 +1423,11 @@
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/02_Login.png"
-                     class="img-fluid rounded shadow"
-                     alt="LinkedIn Login and Verification">
+                <img
+                    src="/static/screenshots/02_Login.png"
+                    class="img-fluid rounded shadow"
+                    alt="LinkedIn Login and Verification"
+                >
 
             </div>
 
@@ -257,36 +1451,32 @@
         <div class="card-body p-4">
 
             <p class="fs-5">
-
                 After LinkedIn authentication is complete, Recruiter
                 Toolkit V2 automatically applies the
                 <strong>Company</strong> and <strong>Location</strong>
                 entered in the application.
-
             </p>
 
             <p class="fs-5">
-
                 The automation opens the available employee profiles
                 and processes them one by one.
-
             </p>
 
             <p class="fs-5">
-
                 Publicly visible profile information and available
                 <strong>email IDs</strong> are extracted from the
                 profile pages. Email addresses that are discovered
                 but do not appear to belong to the profile owner are
                 kept separately as <strong>Linked Email IDs</strong>.
-
             </p>
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/03_auto search.png"
-                     class="img-fluid rounded shadow"
-                     alt="Automated LinkedIn Search and Profile Extraction">
+                <img
+                    src="/static/screenshots/03_auto search.png"
+                    class="img-fluid rounded shadow"
+                    alt="Automated LinkedIn Search and Profile Extraction"
+                >
 
             </div>
 
@@ -310,33 +1500,29 @@
         <div class="card-body p-4">
 
             <p class="fs-5">
-
                 Once the search is completed, Recruiter Toolkit V2
                 displays the number of profiles collected and
                 automatically opens a <strong>Save As</strong> dialog.
-
             </p>
 
             <p class="fs-5">
-
                 Choose your preferred location, such as your
                 <strong>Downloads</strong> or <strong>Desktop</strong>
                 folder, and save the results as a CSV file.
-
             </p>
 
             <p class="fs-5">
-
                 The application suggests a V2 filename based on the
                 company and location used for the search.
-
             </p>
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/Screenshot 2026-08-20 112730.png"
-                     class="img-fluid rounded shadow"
-                     alt="Save LinkedIn Search Results">
+                <img
+                    src="/static/screenshots/Screenshot 2026-08-20 112730.png"
+                    class="img-fluid rounded shadow"
+                    alt="Save LinkedIn Search Results"
+                >
 
             </div>
 
@@ -360,35 +1546,31 @@
         <div class="card-body p-4">
 
             <p class="fs-5">
-
                 Open the saved CSV file in Excel to review the
                 collected LinkedIn profile information.
-
             </p>
 
             <p class="fs-5">
-
                 Recruiter Toolkit V2 keeps publicly visible email
                 information organized into separate fields, including
                 <strong>Email</strong>,
                 <strong>Email Source</strong>, and
                 <strong>Linked Email ID</strong>.
-
             </p>
 
             <p class="fs-5">
-
                 This helps distinguish an email associated with the
                 profile from another email address that may simply
                 appear elsewhere on the publicly visible profile.
-
             </p>
 
             <div class="text-center mt-4">
 
-                <img src="/static/screenshots/04_output csv.png"
-                     class="img-fluid rounded shadow"
-                     alt="Recruiter Toolkit V2 Final CSV Output">
+                <img
+                    src="/static/screenshots/04_output csv.png"
+                    class="img-fluid rounded shadow"
+                    alt="Recruiter Toolkit V2 Final CSV Output"
+                >
 
             </div>
 
@@ -410,11 +1592,11 @@
             Windows application.
         </p>
 
-        <a href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
-           class="btn btn-primary btn-lg px-5">
-
+        <a
+            href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
+            class="btn btn-primary btn-lg px-5"
+        >
             ⬇️ Download LinkedIn Automation V2
-
         </a>
 
     </div>
