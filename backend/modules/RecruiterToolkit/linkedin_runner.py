@@ -452,56 +452,81 @@ def run_linkedin(
             )
 
             # -------------------------------------------------
-            # Credentials check
+            # Authentication-only mode
             # -------------------------------------------------
 
-            if (
-                not linkedin_email
-                or not linkedin_password
-            ):
+            if authentication_only:
+
+                print("=" * 60)
+                print("6 - AUTHENTICATION-ONLY MODE")
+                print("=" * 60)
 
                 print(
-                    "LinkedIn credentials missing"
+                    "Manual LinkedIn authentication is required."
                 )
 
-                return {
+                print(
+                    "Waiting for LinkedIn authentication..."
+                )
 
-                    "success": False,
+                login_result = _wait_for_login_result(
+                    page,
+                    timeout_seconds=300
+                )
 
-                    "login_required": True,
+            else:
 
-                    "message":
-                        "LinkedIn credentials required."
+                # -------------------------------------------------
+                # Credentials check
+                # -------------------------------------------------
 
-                }
+                if (
+                    not linkedin_email
+                    or not linkedin_password
+                ):
 
-            # -------------------------------------------------
-            # Login
-            # -------------------------------------------------
+                    print(
+                        "LinkedIn credentials missing"
+                    )
 
-            print(
-                "Logging into LinkedIn..."
-            )
+                    return {
 
-            login = LoginPage(page)
+                        "success": False,
 
-            login.login(
-                linkedin_email,
-                linkedin_password
-            )
+                        "login_required": True,
 
-            print(
-                "Login form submitted."
-            )
+                        "message":
+                            "LinkedIn credentials required."
 
-            # -------------------------------------------------
-            # Wait for actual login result
-            # -------------------------------------------------
+                    }
 
-            login_result = _wait_for_login_result(
-                page,
-                timeout_seconds=120
-            )
+                # -------------------------------------------------
+                # Login
+                # -------------------------------------------------
+
+                print(
+                    "Logging into LinkedIn..."
+                )
+
+                login = LoginPage(page)
+
+                login.login(
+                    linkedin_email,
+                    linkedin_password
+                )
+
+                print(
+                    "Login form submitted."
+                )
+
+                # -------------------------------------------------
+                # Wait for actual login result
+                # -------------------------------------------------
+
+                login_result = _wait_for_login_result(
+                    page,
+                    timeout_seconds=120
+                )
 
             print("=" * 60)
             print("LOGIN RESULT")
