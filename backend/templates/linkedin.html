@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block content %}
 
@@ -12,7 +12,7 @@
 
         <div class="card-header bg-primary text-white">
             <h2 class="mb-0">
-                LinkedIn Automation V2 — Web Search
+                LinkedIn Automation V2 â€” Web Search
             </h2>
         </div>
 
@@ -803,11 +803,35 @@ document.addEventListener(
                                 `;
 
                             statusText.textContent =
-                                "LinkedIn authenticated. Search can continue.";
+                                "LinkedIn authentication completed.";
+
+                            runButton.textContent =
+                                "Authentication Complete";
+
+                            runButton.disabled = true;
+
+                            loginMessage.innerHTML +=
+                                `
+                                <div class="alert alert-info mt-2">
+                                    Authentication is complete.
+                                    The authenticated LinkedIn session has been
+                                    handed off for the GitHub Actions search.
+                                </div>
+                                `;
+
+                            /*
+                             * IMPORTANT:
+                             *
+                             * Do NOT call /linkedin/v2/search again here.
+                             * Do NOT start SearchWorkflow from the browser.
+                             *
+                             * The Render authentication flow is complete.
+                             * GitHub Actions is responsible for the actual
+                             * LinkedIn V2 search.
+                             */
 
                             return;
                         }
-
 
                         throw new Error(
                             loginData.message ||
@@ -1471,7 +1495,7 @@ document.addEventListener(
     <div class="text-center mb-5">
 
         <h1 class="display-5 fw-bold">
-            🔍 LinkedIn Automation
+            ðŸ” LinkedIn Automation
         </h1>
 
         <p class="lead text-muted">
@@ -1504,7 +1528,7 @@ document.addEventListener(
                 href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
                 class="btn btn-primary btn-lg px-5 mt-3"
             >
-                ⬇️ Download Windows Application V2
+                â¬‡ï¸ Download Windows Application V2
             </a>
 
             <p class="text-muted mt-3 mb-0">
@@ -1586,7 +1610,7 @@ document.addEventListener(
     <div class="text-center mb-5">
 
         <h2 class="fw-bold">
-            📖 How to Use LinkedIn Automation V2
+            ðŸ“– How to Use LinkedIn Automation V2
         </h2>
 
         <p class="text-muted">
@@ -1860,7 +1884,7 @@ document.addEventListener(
             href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
             class="btn btn-primary btn-lg px-5"
         >
-            ⬇️ Download LinkedIn Automation V2
+            â¬‡ï¸ Download LinkedIn Automation V2
         </a>
 
     </div>
