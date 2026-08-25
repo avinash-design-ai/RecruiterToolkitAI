@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block content %}
 
@@ -12,7 +12,7 @@
 
         <div class="card-header bg-primary text-white">
             <h2 class="mb-0">
-                LinkedIn Automation V2 â€” Web Search
+                LinkedIn Automation V2 — Web Search
             </h2>
         </div>
 
@@ -1136,6 +1136,9 @@ document.addEventListener(
             clearPolling();
 
 
+            showV2StopButton();
+
+
             statusText.textContent =
                 "GitHub Actions is running the LinkedIn search...";
 
@@ -1282,6 +1285,262 @@ document.addEventListener(
         }
 
 
+
+        /* ========================================================
+           LINKEDIN V2 STOP SEARCH
+           ======================================================== */
+
+        let v2StopButton = null;
+
+
+        function ensureV2StopButton() {
+
+            if (v2StopButton) {
+                return v2StopButton;
+            }
+
+
+            const existingRunButton =
+                document.getElementById("v2RunButton") ||
+                document.querySelector(
+                    "button[type='submit']"
+                );
+
+
+            if (!existingRunButton) {
+                return null;
+            }
+
+
+            v2StopButton =
+                document.createElement("button");
+
+
+            v2StopButton.type =
+                "button";
+
+
+            v2StopButton.className =
+                "btn btn-danger ms-2";
+
+
+            v2StopButton.textContent =
+                "Stop Search";
+
+
+            v2StopButton.style.display =
+                "none";
+
+
+            v2StopButton.addEventListener(
+                "click",
+                stopLinkedInSearch
+            );
+
+
+            existingRunButton.parentNode.insertBefore(
+                v2StopButton,
+                existingRunButton.nextSibling
+            );
+
+
+            return v2StopButton;
+
+        }
+
+
+        function showV2StopButton() {
+
+            const button =
+                ensureV2StopButton();
+
+
+            if (!button) {
+                return;
+            }
+
+
+            button.style.display =
+                "inline-block";
+
+
+            button.disabled =
+                false;
+
+
+            button.textContent =
+                "Stop Search";
+
+        }
+
+
+        function hideV2StopButton() {
+
+            if (!v2StopButton) {
+                return;
+            }
+
+
+            v2StopButton.style.display =
+                "none";
+
+
+            v2StopButton.disabled =
+                false;
+
+
+            v2StopButton.textContent =
+                "Stop Search";
+
+        }
+
+
+        async function stopLinkedInSearch() {
+
+            const button =
+                ensureV2StopButton();
+
+
+            if (button) {
+
+                button.disabled =
+                    true;
+
+                button.textContent =
+                    "Stopping...";
+
+            }
+
+
+            /*
+             * Stop browser polling immediately.
+             */
+
+            clearPolling();
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        "/linkedin/stop",
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type":
+                                    "application/json"
+                            },
+                            cache: "no-store"
+                        }
+                    );
+
+
+                let data = null;
+
+
+                try {
+
+                    data =
+                        await response.json();
+
+                } catch (e) {
+
+                    data = null;
+
+                }
+
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        (
+                            data &&
+                            data.message
+                        )
+                        ||
+                        "Unable to stop the LinkedIn search."
+                    );
+
+                }
+
+
+                statusText.textContent =
+                    "LinkedIn search stopped.";
+
+
+                resultBox.classList.remove(
+                    "d-none"
+                );
+
+
+                resultText.innerHTML = `
+
+                    <div class="alert alert-warning mb-0">
+
+                        LinkedIn search has been stopped.
+
+                    </div>
+
+                `;
+
+
+                hideV2StopButton();
+
+
+                runButton.disabled =
+                    false;
+
+
+                runButton.textContent =
+                    "Run LinkedIn V2 Search";
+
+
+            } catch (error) {
+
+                console.error(
+                    "Stop search error:",
+                    error
+                );
+
+
+                if (button) {
+
+                    button.disabled =
+                        false;
+
+                    button.textContent =
+                        "Stop Search";
+
+                }
+
+
+                statusText.textContent =
+                    "Unable to stop the search.";
+
+
+                resultBox.classList.remove(
+                    "d-none"
+                );
+
+
+                resultText.innerHTML = `
+
+                    <div class="alert alert-danger mb-0">
+
+                        ${escapeHtml(
+                            error.message ||
+                            "Unable to stop the LinkedIn search."
+                        )}
+
+                    </div>
+
+                `;
+
+            }
+
+        }
+
+
         /* ========================================================
            SEARCH COMPLETED
            ======================================================== */
@@ -1289,6 +1548,9 @@ document.addEventListener(
         function handleSearchCompleted(
             data
         ) {
+
+            hideV2StopButton();
+
 
             statusText.textContent =
                 "LinkedIn V2 search completed successfully.";
@@ -1317,44 +1579,43 @@ document.addEventListener(
              * Backend should provide the download URL.
              */
 
-            const downloadUrl =
-                data.download_url ||
-                data.csv_url ||
-                data.artifact_url ||
-                null;
+            /*
+             * The backend keeps the GitHub artifact private.
+             * The browser downloads the CSV through Render
+             * using the exact workflow run ID.
+             */
+
+            downloadArea.classList.remove(
+                "d-none"
+            );
 
 
-            if (downloadUrl) {
-
-                downloadArea.classList.remove(
-                    "d-none"
-                );
+            downloadButton.removeAttribute(
+                "href"
+            );
 
 
-                downloadButton.href =
-                    downloadUrl;
+            downloadButton.removeAttribute(
+                "target"
+            );
 
 
-                downloadButton.removeAttribute(
-                    "target"
-                );
+            downloadButton.textContent =
+                "Download CSV";
 
 
-                downloadButton.textContent =
-                    "Download CSV";
+            downloadButton.onclick =
+                async function (event) {
+
+                    event.preventDefault();
 
 
-                runButton.disabled =
-                    false;
+                    await fetchGithubCsv(
+                        runId
+                    );
 
+                };
 
-                runButton.textContent =
-                    "Run LinkedIn V2 Search";
-
-
-                return;
-
-            }
 
 
             /*
@@ -1380,6 +1641,199 @@ document.addEventListener(
 
             runButton.textContent =
                 "Run LinkedIn V2 Search";
+
+        }
+
+
+
+        /* ========================================================
+           FETCH CSV FROM RENDER
+           ======================================================== */
+
+        async function fetchGithubCsv(
+            runId
+        ) {
+
+            if (!runId) {
+
+                showError(
+                    "Cannot download CSV because the workflow run ID is missing."
+                );
+
+                return;
+
+            }
+
+
+            downloadButton.disabled =
+                true;
+
+
+            downloadButton.textContent =
+                "Preparing CSV...";
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        "/linkedin/v2/github-csv/" +
+                        encodeURIComponent(runId),
+                        {
+                            method: "GET",
+                            cache: "no-store"
+                        }
+                    );
+
+
+                if (!response.ok) {
+
+                    let message =
+                        "Unable to download the CSV result.";
+
+
+                    try {
+
+                        const errorData =
+                            await response.json();
+
+
+                        message =
+                            errorData.message ||
+                            message;
+
+                    } catch (e) {
+                    }
+
+
+                    throw new Error(
+                        message
+                    );
+
+                }
+
+
+                const blob =
+                    await response.blob();
+
+
+                if (
+                    !blob ||
+                    blob.size <= 0
+                ) {
+
+                    throw new Error(
+                        "The server returned an empty CSV file."
+                    );
+
+                }
+
+
+                const disposition =
+                    response.headers.get(
+                        "Content-Disposition"
+                    );
+
+
+                let filename =
+                    "linkedin-v2-results.csv";
+
+
+                if (disposition) {
+
+                    const match =
+                        disposition.match(
+                            /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/
+                        );
+
+
+                    if (match && match[1]) {
+
+                        filename =
+                            match[1]
+                                .replace(
+                                    /['"]/g,
+                                    ""
+                                );
+
+                    }
+
+                }
+
+
+                const objectUrl =
+                    URL.createObjectURL(
+                        blob
+                    );
+
+
+                const link =
+                    document.createElement(
+                        "a"
+                    );
+
+
+                link.href =
+                    objectUrl;
+
+
+                link.download =
+                    filename;
+
+
+                document.body.appendChild(
+                    link
+                );
+
+
+                link.click();
+
+
+                link.remove();
+
+
+                setTimeout(
+                    function () {
+
+                        URL.revokeObjectURL(
+                            objectUrl
+                        );
+
+                    },
+                    1000
+                );
+
+
+                downloadButton.disabled =
+                    false;
+
+
+                downloadButton.textContent =
+                    "Download CSV";
+
+
+            } catch (error) {
+
+                console.error(
+                    "CSV download error:",
+                    error
+                );
+
+
+                downloadButton.disabled =
+                    false;
+
+
+                downloadButton.textContent =
+                    "Download CSV";
+
+
+                showError(
+                    error.message ||
+                    "Unable to download the CSV result."
+                );
+
+            }
 
         }
 
@@ -1414,6 +1868,9 @@ document.addEventListener(
         ) {
 
             clearPolling();
+
+
+            hideV2StopButton();
 
 
             statusBox.classList.add(
@@ -1495,7 +1952,7 @@ document.addEventListener(
     <div class="text-center mb-5">
 
         <h1 class="display-5 fw-bold">
-            ðŸ” LinkedIn Automation
+            🔍 LinkedIn Automation
         </h1>
 
         <p class="lead text-muted">
@@ -1528,7 +1985,7 @@ document.addEventListener(
                 href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
                 class="btn btn-primary btn-lg px-5 mt-3"
             >
-                â¬‡ï¸ Download Windows Application V2
+                ⬇️ Download Windows Application V2
             </a>
 
             <p class="text-muted mt-3 mb-0">
@@ -1610,7 +2067,7 @@ document.addEventListener(
     <div class="text-center mb-5">
 
         <h2 class="fw-bold">
-            ðŸ“– How to Use LinkedIn Automation V2
+            📖 How to Use LinkedIn Automation V2
         </h2>
 
         <p class="text-muted">
@@ -1884,7 +2341,7 @@ document.addEventListener(
             href="https://github.com/avinash-design-ai/RecruiterToolkitAI/releases/download/v2.0.0/RecruiterToolkitV2-Windows.zip"
             class="btn btn-primary btn-lg px-5"
         >
-            â¬‡ï¸ Download LinkedIn Automation V2
+            ⬇️ Download LinkedIn Automation V2
         </a>
 
     </div>
