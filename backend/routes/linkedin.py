@@ -503,7 +503,6 @@ def linkedin_v2_search(
             profile="temp",
             linkedin_email=data.linkedin_email,
             linkedin_password=data.linkedin_password,
-            authentication_only=True,
         )
 
         print("=" * 70)
