@@ -372,7 +372,7 @@ document.addEventListener(
 
                     const response =
                         await fetch(
-                            "/linkedin/v2/github-search",
+                            "/linkedin/v2/search",
                             {
                                 method: "POST",
 
@@ -712,55 +712,6 @@ document.addEventListener(
 
                         statusText.textContent =
                             "LinkedIn verified. Starting GitHub Actions search...";
-
-
-                        /*
-                         * Start GitHub Actions search after
-                         * successful LinkedIn verification.
-                         */
-
-                        const githubResponse =
-                            await fetch(
-                                "/linkedin/v2/github-search",
-                                {
-                                    method: "POST",
-
-                                    headers: {
-                                        "Content-Type":
-                                            "application/json"
-                                    },
-
-                                    body: JSON.stringify(
-                                        {
-                                            company:
-                                                company,
-
-                                            location:
-                                                location,
-
-                                            max_profiles:
-                                                maxProfiles
-                                        }
-                                    )
-                                }
-                            );
-
-
-                        const githubData =
-                            await githubResponse.json();
-
-
-                        if (
-                            !githubResponse.ok ||
-                            !githubData.success
-                        ) {
-
-                            throw new Error(
-                                githubData.message ||
-                                "Unable to start GitHub Actions search."
-                            );
-
-                        }
 
 
                         statusText.textContent =

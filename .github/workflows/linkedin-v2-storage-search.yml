@@ -104,8 +104,39 @@ jobs:
           if not state.get("cookies"):
               raise SystemExit("No cookies in storage state")
 
+          linkedin_cookies = [
+              c for c in state["cookies"]
+              if "linkedin.com" in c.get("domain", "").lower()
+          ]
+
+          if not linkedin_cookies:
+              raise SystemExit("No LinkedIn cookies in storage state")
+
+          required_cookie_names = {
+              "li_at",
+              "JSESSIONID",
+          }
+
+          cookie_names = {
+              c.get("name")
+              for c in linkedin_cookies
+          }
+
+          missing = required_cookie_names - cookie_names
+
+          if missing:
+              raise SystemExit(
+                  "Missing required LinkedIn cookies: "
+                  + ", ".join(sorted(missing))
+              )
+
           print("Storage state validated.")
-          print("Cookies:", len(state["cookies"]))
+          print("Total cookies:", len(state["cookies"]))
+          print("LinkedIn cookies:", len(linkedin_cookies))
+          print(
+              "Required authentication cookies present:",
+              ", ".join(sorted(required_cookie_names))
+          )
           PY
 
       - name: Run LinkedIn V2

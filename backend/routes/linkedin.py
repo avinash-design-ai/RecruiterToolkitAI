@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import time
 import traceback
@@ -503,6 +503,7 @@ def linkedin_v2_search(
             profile="temp",
             linkedin_email=data.linkedin_email,
             linkedin_password=data.linkedin_password,
+            authentication_only=True,
         )
 
         print("=" * 70)
@@ -958,50 +959,71 @@ def linkedin_verify(
         )
 
         # ----------------------------------------------------
+        # ----------------------------------------------------
         # Save authenticated storage state
         # ----------------------------------------------------
 
         storage_path = (
             Path.cwd()
-            / "linkedin_storage_state_render.json"
+            / 'linkedin_storage_state_render.json'
         )
 
-        print(
-            "Saving authenticated storage state..."
-        )
+        print('Saving authenticated storage state...')
 
         page.context.storage_state(
             path=str(storage_path)
         )
 
-        print(
-            "Storage state saved:",
-            storage_path,
-        )
+        print('Storage state saved:', storage_path)
 
-        with open(
-            storage_path,
-            "r",
-            encoding="utf-8",
-        ) as f:
+        if not storage_path.exists():
+            raise RuntimeError('LinkedIn storage state file was not created.')
 
+        storage_size = storage_path.stat().st_size
+
+        if storage_size <= 0:
+            raise RuntimeError('LinkedIn storage state file is empty.')
+
+        with open(storage_path, 'r', encoding='utf-8') as f:
             storage_state = f.read()
 
-        storage_hash = hashlib.sha256(
-            storage_state.encode("utf-8")
-        ).hexdigest()
+        if not storage_state.strip():
+            raise RuntimeError('LinkedIn storage state JSON is empty.')
 
-        print(
-            "LinkedIn storage state SHA256:",
-            storage_hash,
-        )
+        print('='*70)
+        print('LINKEDIN STORAGE STATE VALIDATED')
+        print('='*70)
+        print('Storage state file:', storage_path)
+        print('Storage state size:', storage_size)
 
-        print(
-            "LinkedIn storage state bytes:",
-            len(storage_state.encode("utf-8")),
-        )
+        try:
+            import json
+            import hashlib
 
-        # ----------------------------------------------------
+            storage_json = json.loads(storage_state)
+            cookies = storage_json.get('cookies', [])
+            linkedin_cookies = [
+                cookie for cookie in cookies
+                if 'linkedin.com' in cookie.get('domain', '').lower()
+            ]
+
+            storage_sha256 = hashlib.sha256(
+                storage_state.encode('utf-8')
+            ).hexdigest()
+
+            print('Total cookies:', len(cookies))
+            print('LinkedIn cookies:', len(linkedin_cookies))
+            print('Storage state SHA256:', storage_sha256)
+            print('Storage state bytes:', len(storage_state.encode('utf-8')))
+
+        except Exception as ex:
+            print('Storage state diagnostics warning:', ex)
+
+        print('='*70)
+        print('UPDATING GITHUB LINKEDIN STORAGE SECRET')
+        print('='*70)
+
+        update_github_storage_secret(storage_state)        # ----------------------------------------------------
         # Validate storage state before sending it
         # ----------------------------------------------------
 

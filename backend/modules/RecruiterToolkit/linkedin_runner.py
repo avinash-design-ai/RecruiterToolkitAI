@@ -23,35 +23,150 @@ from automation.active_sessions import (
 
 def _is_linkedin_authenticated(page):
     """
-    Determine whether LinkedIn has reached an authenticated page.
+    Confirm that LinkedIn has reached a real authenticated page.
+    URL-only detection is intentionally supplemented with page checks.
     """
 
     try:
         url = page.url.lower()
 
+        authenticated_urls = (
+            "linkedin.com/feed",
+            "linkedin.com/search",
+            "linkedin.com/in/",
+            "linkedin.com/company/",
+            "linkedin.com/jobs/",
+            "linkedin.com/mynetwork",
+            "linkedin.com/messaging",
+            "linkedin.com/notifications",
+        )
+
+        if not any(
+            authenticated_url in url
+            for authenticated_url in authenticated_urls
+        ):
+            return False
+
+        # Never consider login/checkpoint/challenge pages authenticated.
+        if _is_login_or_verification_page(page):
+            return False
+
+        # Give LinkedIn's client-side page a moment to settle.
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        # Look for authenticated LinkedIn UI.
+        authenticated_selectors = [
+            "nav.global-nav",
+            "header.global-nav",
+            "[data-test-global-nav-primary-link='feed']",
+            "a[href*='/feed/']",
+            "a[href*='/mynetwork/']",
+            "a[href*='/messaging/']",
+            "button[aria-label*='Me']",
+            "button[aria-label*='Account']",
+        ]
+
+        for selector in authenticated_selectors:
+            try:
+                locator = page.locator(selector).first
+
+                if locator.is_visible(timeout=1000):
+                    return True
+
+            except Exception:
+                continue
+
+        return False
+
     except Exception:
         return False
 
-    # Authenticated LinkedIn pages
-    authenticated_urls = (
-        "linkedin.com/feed",
-        "linkedin.com/search",
-        "linkedin.com/in/",
-        "linkedin.com/company/",
-        "linkedin.com/jobs/",
-        "linkedin.com/mynetwork",
-        "linkedin.com/messaging",
-        "linkedin.com/notifications",
-    )
+def _validate_exported_storage_state(page, storage_path):
+    """
+    Validate that the exported Playwright storage state can
+    authenticate a completely fresh browser context.
 
-    for authenticated_url in authenticated_urls:
+    This is the critical test before sending the state to
+    GitHub Actions.
+    """
 
-        if authenticated_url in url:
+    print("=" * 60)
+    print("VALIDATING EXPORTED LINKEDIN STORAGE STATE")
+    print("=" * 60)
+
+    test_context = None
+    test_page = None
+
+    try:
+
+        browser = page.context.browser
+
+        test_context = browser.new_context(
+            storage_state=str(storage_path),
+            viewport={
+                "width": 1440,
+                "height": 900,
+            },
+            accept_downloads=True,
+        )
+
+        test_page = test_context.new_page()
+
+        print("Fresh validation context created.")
+
+        test_page.goto(
+            "https://www.linkedin.com/feed/",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+
+        test_page.wait_for_timeout(5000)
+
+        print(
+            "Storage validation URL:",
+            test_page.url,
+        )
+
+        print(
+            "Storage validation title:",
+            test_page.title(),
+        )
+
+        if _is_linkedin_authenticated(test_page):
+
+            print("=" * 60)
+            print("EXPORTED STORAGE STATE VALIDATED")
+            print("=" * 60)
 
             return True
 
-    return False
+        print("=" * 60)
+        print("EXPORTED STORAGE STATE FAILED VALIDATION")
+        print("=" * 60)
 
+        return False
+
+    except Exception as ex:
+
+        print(
+            "Storage state validation error:",
+            ex,
+        )
+
+        return False
+
+    finally:
+
+        try:
+
+            if test_context:
+                test_context.close()
+
+        except Exception:
+            pass
 
 def _is_login_or_verification_page(page):
     """
@@ -256,7 +371,8 @@ def run_linkedin(
     max_profiles=250,
     profile="temp",
     linkedin_email=None,
-    linkedin_password=None
+    linkedin_password=None,
+    authentication_only=False
 ):
 
     print("=" * 60)
@@ -507,6 +623,42 @@ def run_linkedin(
         _print_browser_state(
             browser
         )
+
+        # =================================================
+        # V2 AUTHENTICATION-ONLY MODE
+        #
+        # Render must NOT run the LinkedIn search.
+        # The authenticated storage state is consumed
+        # by GitHub Actions.
+        # =================================================
+
+        if authentication_only:
+
+            print("=" * 60)
+            print("V2 AUTHENTICATION COMPLETE")
+            print("=" * 60)
+
+            print(
+                "Authenticated URL:",
+                page.url
+            )
+
+            print(
+                "Authenticated Title:",
+                page.title()
+            )
+
+            print(
+                "V2 authentication-only mode enabled."
+            )
+
+            return {
+                "success": True,
+                "authenticated": True,
+                "authentication_only": True,
+                "message":
+                    "LinkedIn authentication completed."
+            }
 
         # =================================================
         # SEARCH WORKFLOW
