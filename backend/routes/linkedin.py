@@ -16,7 +16,10 @@ from models.linkedin_verify import LinkedInVerifyRequest
 
 from services.github_actions import GitHubActionsService
 
-from modules.RecruiterToolkit.linkedin_runner import run_linkedin
+from modules.RecruiterToolkit.linkedin_runner import (
+    run_linkedin,
+    _is_login_or_verification_page,
+)
 
 from automation.search_controller import request_stop
 
@@ -842,14 +845,116 @@ def linkedin_verify(
         # ====================================================
 
         print("=" * 70)
-        print(
-            "LINKEDIN VERIFICATION SUCCESSFUL"
-        )
+        print("LINKEDIN VERIFICATION SUCCESSFUL")
         print("=" * 70)
 
         print(
-            "Authenticated URL:",
+            "Authenticated URL before Feed navigation:",
             page.url,
+        )
+
+        # ----------------------------------------------------
+        # Move the SAME authenticated Playwright page to Feed
+        # ----------------------------------------------------
+
+        print("=" * 70)
+        print("MOVING AUTHENTICATED PLAYWRIGHT PAGE TO LINKEDIN FEED")
+        print("=" * 70)
+
+        try:
+
+            page.goto(
+                "https://www.linkedin.com/feed/",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+
+        except Exception as ex:
+
+            print(
+                "Feed navigation warning:",
+                ex,
+            )
+
+        # Give LinkedIn time to finish client-side navigation.
+        page.wait_for_timeout(5000)
+
+        print(
+            "Post-verification URL:",
+            page.url,
+        )
+
+        print(
+            "Post-verification title:",
+            page.title(),
+        )
+
+        # ----------------------------------------------------
+        # Confirm the SAME Playwright page reached Feed
+        # ----------------------------------------------------
+
+        feed_loaded = False
+
+        for attempt in range(30):
+
+            try:
+
+                current_url = page.url.lower()
+
+                print(
+                    f"Feed check {attempt + 1}/30:",
+                    current_url,
+                )
+
+                if "linkedin.com/feed" in current_url:
+
+                    feed_loaded = True
+                    break
+
+                if _is_login_or_verification_page(page):
+
+                    print(
+                        "LinkedIn returned to login/verification "
+                        "during Feed navigation."
+                    )
+
+                    break
+
+            except Exception as ex:
+
+                print(
+                    "Feed verification polling error:",
+                    ex,
+                )
+
+            page.wait_for_timeout(1000)
+
+
+        if not feed_loaded:
+
+            return {
+                "success": False,
+                "verification_required": True,
+                "session_id": data.session_id,
+                "message": (
+                    "LinkedIn verification succeeded, but the "
+                    "authenticated Playwright page did not reach "
+                    "the LinkedIn Feed."
+                ),
+            }
+
+        print("=" * 70)
+        print("LINKEDIN FEED CONFIRMED")
+        print("=" * 70)
+
+        print(
+            "Authenticated Feed URL:",
+            page.url,
+        )
+
+        print(
+            "Authenticated Feed Title:",
+            page.title(),
         )
 
         # ----------------------------------------------------
