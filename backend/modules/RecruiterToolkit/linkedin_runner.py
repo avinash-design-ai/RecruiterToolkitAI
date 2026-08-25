@@ -452,81 +452,56 @@ def run_linkedin(
             )
 
             # -------------------------------------------------
-            # Authentication-only mode
+            # Credentials are supplied by the webpage.
+            #
+            # IMPORTANT:
+            # Do NOT wait for manual authentication here.
+            # The browser must first receive the credentials.
             # -------------------------------------------------
 
-            if authentication_only:
-
-                print("=" * 60)
-                print("6 - AUTHENTICATION-ONLY MODE")
-                print("=" * 60)
-
-                print(
-                    "Manual LinkedIn authentication is required."
-                )
+            if (
+                not linkedin_email
+                or not linkedin_password
+            ):
 
                 print(
-                    "Waiting for LinkedIn authentication..."
+                    "LinkedIn credentials missing"
                 )
 
-                login_result = _wait_for_login_result(
-                    page,
-                    timeout_seconds=300
-                )
+                return {
+                    "success": False,
+                    "login_required": True,
+                    "message":
+                        "LinkedIn credentials required."
+                }
 
-            else:
+            # -------------------------------------------------
+            # Submit credentials through Playwright
+            # -------------------------------------------------
 
-                # -------------------------------------------------
-                # Credentials check
-                # -------------------------------------------------
+            print(
+                "Logging into LinkedIn with supplied credentials..."
+            )
 
-                if (
-                    not linkedin_email
-                    or not linkedin_password
-                ):
+            login = LoginPage(page)
 
-                    print(
-                        "LinkedIn credentials missing"
-                    )
+            login.login(
+                linkedin_email,
+                linkedin_password
+            )
 
-                    return {
+            print(
+                "LinkedIn login form submitted."
+            )
 
-                        "success": False,
+            # -------------------------------------------------
+            # Wait for LinkedIn authentication result
+            # -------------------------------------------------
 
-                        "login_required": True,
-
-                        "message":
-                            "LinkedIn credentials required."
-
-                    }
-
-                # -------------------------------------------------
-                # Login
-                # -------------------------------------------------
-
-                print(
-                    "Logging into LinkedIn..."
-                )
-
-                login = LoginPage(page)
-
-                login.login(
-                    linkedin_email,
-                    linkedin_password
-                )
-
-                print(
-                    "Login form submitted."
-                )
-
-                # -------------------------------------------------
-                # Wait for actual login result
-                # -------------------------------------------------
-
-                login_result = _wait_for_login_result(
-                    page,
-                    timeout_seconds=120
-                )
+            login_result = _wait_for_login_result(
+                page,
+                timeout_seconds=120
+            )
 
             print("=" * 60)
             print("LOGIN RESULT")
@@ -537,7 +512,11 @@ def run_linkedin(
             )
 
             # -------------------------------------------------
-            # Verification required
+            # Verification / challenge required
+            #
+            # Keep the SAME browser and SAME page alive.
+            # The webpage will submit the verification code
+            # through /linkedin/verify.
             # -------------------------------------------------
 
             if not login_result.get(
@@ -559,17 +538,20 @@ def run_linkedin(
 
                 keep_browser_alive = True
 
+                print("=" * 60)
+                print("LINKEDIN VERIFICATION SESSION ACTIVE")
+                print("=" * 60)
+                print(
+                    "Session ID:",
+                    session_id
+                )
+
                 return {
-
                     "success": False,
-
                     "verification_required": True,
-
                     "session_id": session_id,
-
                     "message":
                         "LinkedIn verification code required."
-
                 }
 
             print(
@@ -581,14 +563,6 @@ def run_linkedin(
             print(
                 "Existing LinkedIn session detected."
             )
-
-        # =================================================
-        # AUTHENTICATED SESSION CONFIRMATION
-        # =================================================
-
-        current = page.url.lower()
-
-        print("=" * 60)
         print("AUTHENTICATED LINKEDIN SESSION")
         print("=" * 60)
 

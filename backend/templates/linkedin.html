@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block content %}
 
@@ -412,6 +412,24 @@ document.addEventListener(
 
 
                     /* =================================================
+                       LINKEDIN LOGIN REQUIRED
+                       ================================================= */
+
+                    if (
+                        data.login_required
+                    ) {
+
+                        showLinkedInLoginUI(
+                            company,
+                            location,
+                            maxProfiles
+                        );
+
+                        return;
+                    }
+
+
+                    /* =================================================
                        LINKEDIN VERIFICATION REQUIRED
                        ================================================= */
 
@@ -532,6 +550,301 @@ document.addEventListener(
 
             }
         );
+
+
+        /* ========================================================
+           LINKEDIN LOGIN UI
+           ======================================================== */
+
+        function showLinkedInLoginUI(
+            company,
+            location,
+            maxProfiles
+        ) {
+
+            statusText.textContent =
+                "LinkedIn login required.";
+
+
+            resultBox.classList.remove(
+                "d-none"
+            );
+
+
+            resultText.innerHTML = `
+
+                <div class="alert alert-info mb-0">
+
+                    <h5 class="fw-bold">
+                        LinkedIn Login Required
+                    </h5>
+
+                    <p class="mb-3">
+                        Enter your LinkedIn email and password.
+                        The credentials will be submitted to the
+                        active LinkedIn Playwright login flow.
+                    </p>
+
+                    <div class="mb-3">
+
+                        <label
+                            for="linkedinLoginEmail"
+                            class="form-label"
+                        >
+                            LinkedIn Email
+                        </label>
+
+                        <input
+                            type="email"
+                            id="linkedinLoginEmail"
+                            class="form-control"
+                            autocomplete="username"
+                            placeholder="Enter LinkedIn email"
+                        >
+
+                    </div>
+
+                    <div class="mb-3">
+
+                        <label
+                            for="linkedinLoginPassword"
+                            class="form-label"
+                        >
+                            LinkedIn Password
+                        </label>
+
+                        <input
+                            type="password"
+                            id="linkedinLoginPassword"
+                            class="form-control"
+                            autocomplete="current-password"
+                            placeholder="Enter LinkedIn password"
+                        >
+
+                    </div>
+
+                    <button
+                        type="button"
+                        id="linkedinLoginButton"
+                        class="btn btn-primary"
+                    >
+                        Sign in to LinkedIn
+                    </button>
+
+                    <div
+                        id="linkedinLoginMessage"
+                        class="mt-3"
+                    ></div>
+
+                </div>
+
+            `;
+
+
+            runButton.textContent =
+                "Waiting for LinkedIn Login";
+
+            runButton.disabled = true;
+
+
+            const loginButton =
+                document.getElementById(
+                    "linkedinLoginButton"
+                );
+
+
+            const emailInput =
+                document.getElementById(
+                    "linkedinLoginEmail"
+                );
+
+
+            const passwordInput =
+                document.getElementById(
+                    "linkedinLoginPassword"
+                );
+
+
+            const loginMessage =
+                document.getElementById(
+                    "linkedinLoginMessage"
+                );
+
+
+            loginButton.addEventListener(
+                "click",
+                async function () {
+
+                    const email =
+                        emailInput.value.trim();
+
+                    const password =
+                        passwordInput.value;
+
+
+                    if (!email || !password) {
+
+                        loginMessage.innerHTML =
+                            `
+                            <div class="alert alert-danger">
+                                Please enter both LinkedIn email
+                                and password.
+                            </div>
+                            `;
+
+                        return;
+                    }
+
+
+                    loginButton.disabled = true;
+
+                    loginButton.textContent =
+                        "Signing in...";
+
+
+                    loginMessage.innerHTML =
+                        `
+                        <div class="alert alert-info">
+                            Submitting LinkedIn credentials...
+                        </div>
+                        `;
+
+
+                    try {
+
+                        const loginResponse =
+                            await fetch(
+                                "/linkedin/v2/search",
+                                {
+                                    method: "POST",
+
+                                    headers: {
+                                        "Content-Type":
+                                            "application/json"
+                                    },
+
+                                    body:
+                                        JSON.stringify(
+                                            {
+                                                company:
+                                                    company,
+
+                                                location:
+                                                    location,
+
+                                                max_profiles:
+                                                    maxProfiles,
+
+                                                linkedin_email:
+                                                    email,
+
+                                                linkedin_password:
+                                                    password
+                                            }
+                                        )
+                                }
+                            );
+
+
+                        const loginData =
+                            await loginResponse.json();
+
+
+                        console.log(
+                            "LinkedIn credential result:",
+                            loginData
+                        );
+
+
+                        if (
+                            !loginResponse.ok
+                        ) {
+
+                            throw new Error(
+                                loginData.message ||
+                                "LinkedIn login request failed."
+                            );
+
+                        }
+
+
+                        /* ==========================================
+                           VERIFICATION REQUIRED
+                           ========================================== */
+
+                        if (
+                            loginData.verification_required
+                        ) {
+
+                            showVerificationUI(
+                                loginData,
+                                company,
+                                location,
+                                maxProfiles
+                            );
+
+                            return;
+                        }
+
+
+                        /* ==========================================
+                           LOGIN SUCCESSFUL
+                           ========================================== */
+
+                        if (
+                            loginData.success
+                        ) {
+
+                            loginMessage.innerHTML =
+                                `
+                                <div class="alert alert-success">
+                                    LinkedIn authentication successful.
+                                </div>
+                                `;
+
+                            statusText.textContent =
+                                "LinkedIn authenticated. Search can continue.";
+
+                            return;
+                        }
+
+
+                        throw new Error(
+                            loginData.message ||
+                            "LinkedIn authentication failed."
+                        );
+
+
+                    } catch (error) {
+
+                        console.error(
+                            "LinkedIn login error:",
+                            error
+                        );
+
+
+                        loginMessage.innerHTML =
+                            `
+                            <div class="alert alert-danger">
+                                ${escapeHtml(
+                                    error.message
+                                )}
+                            </div>
+                            `;
+
+
+                        loginButton.disabled =
+                            false;
+
+                        loginButton.textContent =
+                            "Sign in to LinkedIn";
+
+                    }
+
+                }
+            );
+
+        }
 
 
         /* ========================================================
