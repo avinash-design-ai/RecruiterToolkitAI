@@ -444,6 +444,7 @@ def linkedin_search(
             profile="temp",
             linkedin_email=data.linkedin_email,
             linkedin_password=data.linkedin_password,
+            authentication_only=True,
         )
 
         return result
