@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block content %}
 
@@ -1129,10 +1129,6 @@ document.addEventListener(
            POLL GITHUB WORKFLOW
            ======================================================== */
 
-        /* ========================================================
-           POLL GITHUB WORKFLOW
-           ======================================================== */
-
         function startStatusPolling(
             runId
         ) {
@@ -1140,24 +1136,9 @@ document.addEventListener(
             clearPolling();
 
 
-            if (!runId) {
-
-                showError(
-                    "GitHub Actions started, but no workflow run ID was returned."
-                );
-
-                return;
-
-            }
-
-
             statusText.textContent =
                 "GitHub Actions is running the LinkedIn search...";
 
-
-            /*
-             * Poll immediately, then every 10 seconds.
-             */
 
             pollWorkflowStatus(
                 runId
@@ -1192,28 +1173,12 @@ document.addEventListener(
                 const response =
                     await fetch(
                         "/linkedin/v2/github-status/" +
-                        encodeURIComponent(runId),
-                        {
-                            method: "GET",
-                            cache: "no-store"
-                        }
+                        encodeURIComponent(runId)
                     );
 
 
-                let data = null;
-
-                try {
-
-                    data =
-                        await response.json();
-
-                } catch (jsonError) {
-
-                    throw new Error(
-                        "GitHub status endpoint returned invalid JSON."
-                    );
-
-                }
+                const data =
+                    await response.json();
 
 
                 if (!response.ok) {
@@ -1226,37 +1191,27 @@ document.addEventListener(
                 }
 
 
-                if (!data.success) {
-
-                    throw new Error(
-                        data.message ||
-                        "GitHub Actions status check failed."
-                    );
-
-                }
+                /*
+                 * Expected backend response:
+                 *
+                 * {
+                 *     success: true,
+                 *     status: "queued|in_progress|completed",
+                 *     conclusion: "success|failure|cancelled",
+                 *     download_url: "..."
+                 * }
+                 */
 
 
                 const workflowStatus =
-                    String(
-                        data.status ||
-                        ""
-                    ).toLowerCase();
+                    data.status ||
+                    "";
 
 
                 const conclusion =
-                    String(
-                        data.conclusion ||
-                        ""
-                    ).toLowerCase();
+                    data.conclusion ||
+                    "";
 
-
-                const csvAvailable =
-                    data.csv_available === true;
-
-
-                /*
-                 * QUEUED
-                 */
 
                 if (
                     workflowStatus === "queued"
@@ -1270,16 +1225,8 @@ document.addEventListener(
                 }
 
 
-                /*
-                 * IN PROGRESS
-                 */
-
                 if (
                     workflowStatus === "in_progress"
-                    ||
-                    workflowStatus === "waiting"
-                    ||
-                    workflowStatus === "requested"
                 ) {
 
                     statusText.textContent =
@@ -1290,32 +1237,19 @@ document.addEventListener(
                 }
 
 
-                /*
-                 * COMPLETED
-                 */
-
                 if (
                     workflowStatus === "completed"
                 ) {
 
-                    /*
-                     * GitHub itself finished.
-                     */
+                    clearPolling();
+
 
                     if (
-                        conclusion !== "success"
+                        conclusion === "success"
                     ) {
 
-                        clearPolling();
-
-
-                        showError(
-                            "GitHub Actions search completed with status: " +
-                            (
-                                conclusion ||
-                                "unknown"
-                            ) +
-                            ". Check the GitHub Actions workflow for details."
+                        handleSearchCompleted(
+                            data
                         );
 
                         return;
@@ -1323,63 +1257,25 @@ document.addEventListener(
                     }
 
 
-                    /*
-                     * The workflow can complete a moment before the
-                     * artifact becomes visible through the GitHub API.
-                     *
-                     * Keep polling until the backend confirms that
-                     * the CSV artifact exists.
-                     */
-
-                    if (!csvAvailable) {
-
-                        statusText.textContent =
-                            "Search completed. Waiting for the CSV result to become available...";
-
-                        return;
-
-                    }
-
-
-                    clearPolling();
-
-
-                    handleSearchCompleted(
-                        data,
-                        runId
+                    throw new Error(
+                        "GitHub Actions search completed with status: " +
+                        conclusion
                     );
-
-                    return;
 
                 }
 
 
-                /*
-                 * Unknown/new GitHub status.
-                 */
-
-                statusText.textContent =
-                    "GitHub Actions status: " +
-                    (
-                        workflowStatus ||
-                        "waiting"
-                    ) +
-                    "...";
-
             } catch (error) {
 
                 /*
-                 * Temporary status failures should not immediately
-                 * destroy the running search state.
+                 * Do not immediately kill polling for a temporary
+                 * status request failure.
                  */
 
                 console.error(
                     "Workflow status error:",
                     error
                 );
-
-                statusText.textContent =
-                    "Checking GitHub Actions status...";
 
             }
 
@@ -1391,8 +1287,7 @@ document.addEventListener(
            ======================================================== */
 
         function handleSearchCompleted(
-            data,
-            runId
+            data
         ) {
 
             statusText.textContent =
@@ -1419,58 +1314,64 @@ document.addEventListener(
 
 
             /*
-             * The backend intentionally does not expose a GitHub
-             * artifact URL to the browser.
-             *
-             * The browser downloads the CSV through the Render
-             * endpoint using the exact GitHub workflow run ID.
+             * Backend should provide the download URL.
              */
 
-            if (!runId) {
+            const downloadUrl =
+                data.download_url ||
+                data.csv_url ||
+                data.artifact_url ||
+                null;
 
-                showError(
-                    "Search completed, but the GitHub workflow run ID is missing."
+
+            if (downloadUrl) {
+
+                downloadArea.classList.remove(
+                    "d-none"
                 );
+
+
+                downloadButton.href =
+                    downloadUrl;
+
+
+                downloadButton.removeAttribute(
+                    "target"
+                );
+
+
+                downloadButton.textContent =
+                    "Download CSV";
+
+
+                runButton.disabled =
+                    false;
+
+
+                runButton.textContent =
+                    "Run LinkedIn V2 Search";
+
 
                 return;
 
             }
 
 
-            downloadArea.classList.remove(
-                "d-none"
-            );
-
-
-            downloadButton.removeAttribute(
-                "href"
-            );
-
-
-            downloadButton.removeAttribute(
-                "target"
-            );
-
-
-            downloadButton.textContent =
-                "Download CSV";
-
-
             /*
-             * Prevent duplicate click handlers if the UI is reused.
+             * If no URL was supplied, tell the user rather
+             * than showing a fake download button.
              */
 
-            downloadButton.onclick =
-                async function (event) {
+            resultText.innerHTML += `
 
-                    event.preventDefault();
+                <div class="alert alert-warning mt-3 mb-0">
 
+                    The search completed, but the CSV download
+                    URL was not returned by the server.
 
-                    await fetchGithubCsv(
-                        runId
-                    );
+                </div>
 
-                };
+            `;
 
 
             runButton.disabled =
@@ -1484,221 +1385,29 @@ document.addEventListener(
 
 
         /* ========================================================
-           FETCH CSV FROM RENDER
+           CLEAR POLLING
            ======================================================== */
 
-        async function fetchGithubCsv(
-            runId
-        ) {
+        function clearPolling() {
 
-            if (!runId) {
+            if (
+                statusPollTimer !== null
+            ) {
 
-                showError(
-                    "Cannot download CSV because the workflow run ID is missing."
+                clearInterval(
+                    statusPollTimer
                 );
 
-                return;
-
-            }
-
-
-            const originalText =
-                downloadButton.textContent;
-
-
-            downloadButton.disabled =
-                true;
-
-
-            downloadButton.textContent =
-                "Preparing CSV...";
-
-
-            try {
-
-                const response =
-                    await fetch(
-                        "/linkedin/v2/github-csv/" +
-                        encodeURIComponent(runId),
-                        {
-                            method: "GET",
-                            cache: "no-store"
-                        }
-                    );
-
-
-                if (!response.ok) {
-
-                    let message =
-                        "Unable to download the CSV result.";
-
-
-                    try {
-
-                        const errorData =
-                            await response.json();
-
-
-                        message =
-                            errorData.message ||
-                            message;
-
-                    } catch (jsonError) {
-
-                        /*
-                         * The endpoint may return a non-JSON
-                         * response for an infrastructure failure.
-                         */
-
-                    }
-
-
-                    throw new Error(
-                        message
-                    );
-
-                }
-
-
-                const blob =
-                    await response.blob();
-
-
-                if (
-                    !blob
-                    ||
-                    blob.size <= 0
-                ) {
-
-                    throw new Error(
-                        "The server returned an empty CSV file."
-                    );
-
-                }
-
-
-                /*
-                 * Try to preserve the filename returned by
-                 * Content-Disposition.
-                 */
-
-                let filename =
-                    "linkedin-v2-results.csv";
-
-
-                const disposition =
-                    response.headers.get(
-                        "Content-Disposition"
-                    );
-
-
-                if (disposition) {
-
-                    const filenameMatch =
-                        disposition.match(
-                            /filename\*=UTF-8''([^;]+)|filename="?([^"]+)"?/i
-                        );
-
-
-                    if (filenameMatch) {
-
-                        filename =
-                            decodeURIComponent(
-                                filenameMatch[1] ||
-                                filenameMatch[2]
-                            );
-
-                    }
-
-                }
-
-
-                const objectUrl =
-                    window.URL.createObjectURL(
-                        blob
-                    );
-
-
-                const anchor =
-                    document.createElement(
-                        "a"
-                    );
-
-
-                anchor.href =
-                    objectUrl;
-
-
-                anchor.download =
-                    filename;
-
-
-                document.body.appendChild(
-                    anchor
-                );
-
-
-                anchor.click();
-
-
-                anchor.remove();
-
-
-                /*
-                 * Give the browser time to start the download before
-                 * releasing the object URL.
-                 */
-
-                window.setTimeout(
-                    function () {
-
-                        window.URL.revokeObjectURL(
-                            objectUrl
-                        );
-
-                    },
-                    1000
-                );
-
-
-                downloadButton.textContent =
-                    "CSV Downloaded";
-
-
-            } catch (error) {
-
-                console.error(
-                    "CSV download error:",
-                    error
-                );
-
-
-                resultText.innerHTML += `
-
-                    <div class="alert alert-danger mt-3 mb-0">
-
-                        ${escapeHtml(
-                            error.message ||
-                            "Unable to download the CSV."
-                        )}
-
-                    </div>
-
-                `;
-
-
-                downloadButton.textContent =
-                    originalText;
-
-            } finally {
-
-                downloadButton.disabled =
-                    false;
+                statusPollTimer = null;
 
             }
 
         }
 
+
+        /* ========================================================
+           ERROR
+           ======================================================== */
 
         function showError(
             message
