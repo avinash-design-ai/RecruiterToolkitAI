@@ -2,6 +2,7 @@
 import os
 import time
 import traceback
+import hashlib
 from pathlib import Path
 
 import requests
@@ -880,6 +881,20 @@ def linkedin_verify(
         ) as f:
 
             storage_state = f.read()
+
+        storage_hash = hashlib.sha256(
+            storage_state.encode("utf-8")
+        ).hexdigest()
+
+        print(
+            "LinkedIn storage state SHA256:",
+            storage_hash,
+        )
+
+        print(
+            "LinkedIn storage state bytes:",
+            len(storage_state.encode("utf-8")),
+        )
 
         # ----------------------------------------------------
         # Validate storage state before sending it
