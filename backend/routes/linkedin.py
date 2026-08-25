@@ -513,6 +513,308 @@ def linkedin_v2_search(
 
         print(result)
 
+        # ====================================================
+        # V2 GITHUB HANDOFF
+        #
+        # Authentication has completed inside Render.
+        #
+        # The runner returns storage_state internally.
+        #
+        # Render now:
+        #
+        #   1. validates the storage state
+        #   2. updates LINKEDIN_STORAGE_STATE
+        #   3. dispatches GitHub Actions
+        #   4. waits for the exact workflow run
+        #
+        # SearchWorkflowV2 does NOT run on Render.
+        # ====================================================
+
+        if (
+            result.get("success")
+            and result.get("authentication_only")
+        ):
+
+            storage_state = result.pop(
+                "storage_state",
+                None
+            )
+
+            if not storage_state:
+
+                raise RuntimeError(
+                    "LinkedIn authentication succeeded, "
+                    "but no storage state was returned."
+                )
+
+            print("=" * 70)
+            print("VALIDATING LINKEDIN STORAGE STATE")
+            print("=" * 70)
+
+            if not isinstance(
+                storage_state,
+                dict
+            ):
+
+                raise RuntimeError(
+                    "LinkedIn storage state is not a JSON object."
+                )
+
+            cookies = storage_state.get(
+                "cookies",
+                []
+            )
+
+            if not isinstance(
+                cookies,
+                list
+            ):
+
+                raise RuntimeError(
+                    "LinkedIn storage state cookies are invalid."
+                )
+
+            if not cookies:
+
+                raise RuntimeError(
+                    "LinkedIn storage state contains no cookies."
+                )
+
+            linkedin_cookies = [
+                cookie
+                for cookie in cookies
+                if "linkedin.com"
+                in cookie.get(
+                    "domain",
+                    ""
+                ).lower()
+            ]
+
+            if not linkedin_cookies:
+
+                raise RuntimeError(
+                    "LinkedIn storage state contains "
+                    "no LinkedIn cookies."
+                )
+
+            print(
+                "Total storage cookies:",
+                len(cookies)
+            )
+
+            print(
+                "LinkedIn cookies:",
+                len(linkedin_cookies)
+            )
+
+            # ------------------------------------------------
+            # Serialize only after validation.
+            # ------------------------------------------------
+
+            storage_json = json.dumps(
+                storage_state,
+                separators=(
+                    ",",
+                    ":"
+                )
+            )
+
+            if not storage_json.strip():
+
+                raise RuntimeError(
+                    "Serialized LinkedIn storage state is empty."
+                )
+
+            print("=" * 70)
+            print(
+                "UPDATING GITHUB LINKEDIN STORAGE SECRET"
+            )
+            print("=" * 70)
+
+            update_github_storage_secret(
+                storage_json
+            )
+
+            print(
+                "GitHub storage secret updated."
+            )
+
+            # ------------------------------------------------
+            # Dispatch GitHub Actions.
+            # ------------------------------------------------
+
+            print("=" * 70)
+            print(
+                "DISPATCHING GITHUB SEARCH WORKFLOW"
+            )
+            print("=" * 70)
+
+            dispatch_started_at = time.time()
+
+            dispatch_result = (
+                dispatch_github_search(
+                    company=data.company,
+                    location=data.location,
+                    max_profiles=data.max_profiles,
+                )
+            )
+
+            if not isinstance(
+                dispatch_result,
+                dict
+            ):
+
+                raise RuntimeError(
+                    "GitHub workflow dispatch returned "
+                    "an invalid response."
+                )
+
+            print(
+                "GitHub dispatch response:",
+                dispatch_result
+            )
+
+            # ------------------------------------------------
+            # Find the exact workflow run.
+            # ------------------------------------------------
+
+            run = wait_for_dispatched_run(
+                dispatch_started_at
+            )
+
+            if run:
+
+                run_id = run.get(
+                    "id"
+                )
+
+                run_url = run.get(
+                    "html_url"
+                )
+
+                print("=" * 70)
+                print(
+                    "GITHUB ACTIONS WORKFLOW STARTED"
+                )
+                print("=" * 70)
+
+                print(
+                    "Run ID:",
+                    run_id
+                )
+
+                print(
+                    "Run URL:",
+                    run_url
+                )
+
+                result.update({
+
+                    "github_started": True,
+
+                    "run_id":
+                        run_id,
+
+                    "workflow":
+                        dispatch_result.get(
+                            "workflow"
+                        ),
+
+                    "branch":
+                        dispatch_result.get(
+                            "branch"
+                        ),
+
+                    "html_url":
+                        run_url,
+
+                    "message":
+                        (
+                            "LinkedIn authentication completed "
+                            "and the GitHub Actions search "
+                            "has started."
+                        ),
+                })
+
+            else:
+
+                print("=" * 70)
+                print(
+                    "GITHUB WORKFLOW DISPATCHED"
+                )
+                print("=" * 70)
+
+                print(
+                    "WARNING: GitHub workflow was dispatched "
+                    "but its run ID was not found yet."
+                )
+
+                result.update({
+
+                    "github_started": True,
+
+                    "run_id":
+                        None,
+
+                    "workflow":
+                        dispatch_result.get(
+                            "workflow"
+                        ),
+
+                    "branch":
+                        dispatch_result.get(
+                            "branch"
+                        ),
+
+                    "html_url":
+                        None,
+
+                    "message":
+                        (
+                            "LinkedIn authentication completed "
+                            "and GitHub Actions was dispatched. "
+                            "The workflow run ID is not available yet."
+                        ),
+                })
+
+            # ------------------------------------------------
+            # SECURITY CHECK
+            #
+            # storage_state must NEVER be returned to the UI.
+            # ------------------------------------------------
+
+            result.pop(
+                "storage_state",
+                None
+            )
+
+        # ====================================================
+        # FINAL UI SAFETY BOUNDARY
+        #
+        # Playwright storage_state must NEVER be returned
+        # to the browser/UI.
+        #
+        # It is used only internally to update the GitHub
+        # Actions repository secret.
+        # ====================================================
+
+        if isinstance(result, dict):
+
+            result.pop(
+                "storage_state",
+                None,
+            )
+
+            result.pop(
+                "storage_json",
+                None,
+            )
+
+            result.pop(
+                "linkedin_storage_state",
+                None,
+            )
+
         return result
 
     except Exception as ex:

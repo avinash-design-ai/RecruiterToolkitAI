@@ -626,9 +626,18 @@ def run_linkedin(
         # =================================================
         # V2 AUTHENTICATION-ONLY MODE
         #
-        # Render must NOT run the LinkedIn search.
-        # The authenticated storage state is consumed
-        # by GitHub Actions.
+        # Render must NOT run SearchWorkflow.
+        #
+        # For V2, export the authenticated Playwright storage
+        # state and return it to the FastAPI route.
+        #
+        # The FastAPI route is responsible for:
+        #
+        #   1. validating storage state
+        #   2. updating GitHub secret
+        #   3. dispatching GitHub Actions
+        #
+        # The storage state is NEVER returned to the browser UI.
         # =================================================
 
         if authentication_only:
@@ -648,13 +657,59 @@ def run_linkedin(
             )
 
             print(
-                "V2 authentication-only mode enabled."
+                "Exporting authenticated LinkedIn storage state..."
+            )
+
+            storage_state = (
+                page.context.storage_state()
+            )
+
+            if not isinstance(
+                storage_state,
+                dict
+            ):
+
+                raise RuntimeError(
+                    "Playwright returned an invalid "
+                    "LinkedIn storage state."
+                )
+
+            cookies = storage_state.get(
+                "cookies",
+                []
+            )
+
+            if not isinstance(
+                cookies,
+                list
+            ):
+
+                raise RuntimeError(
+                    "LinkedIn storage state cookies "
+                    "are invalid."
+                )
+
+            if not cookies:
+
+                raise RuntimeError(
+                    "LinkedIn storage state contains "
+                    "no cookies."
+                )
+
+            print(
+                "V2 storage state exported successfully."
+            )
+
+            print(
+                "V2 storage cookies:",
+                len(cookies)
             )
 
             return {
                 "success": True,
                 "authenticated": True,
                 "authentication_only": True,
+                "storage_state": storage_state,
                 "message":
                     "LinkedIn authentication completed."
             }
