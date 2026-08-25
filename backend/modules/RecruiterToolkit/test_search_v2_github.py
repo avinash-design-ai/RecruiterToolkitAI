@@ -71,6 +71,45 @@ try:
     print("URL:", page.url)
     print("Title:", page.title())
 
+    print("=" * 70)
+    print("POST-NAVIGATION LINKEDIN COOKIE DIAGNOSTICS")
+    print("=" * 70)
+
+    post_cookies = page.context.cookies(
+        "https://www.linkedin.com"
+    )
+
+    print(
+        "Post-navigation LinkedIn cookies:",
+        len(post_cookies)
+    )
+
+    for c in post_cookies:
+        if c["name"] in [
+            "li_at",
+            "JSESSIONID",
+            "bcookie",
+            "bscookie",
+        ]:
+            print(
+                "name=", c["name"],
+                "domain=", c.get("domain"),
+                "path=", c.get("path"),
+                "secure=", c.get("secure"),
+                "expires=", c.get("expires"),
+            )
+
+    print(
+        "Final URL:",
+        page.url
+    )
+
+    print(
+        "Final title:",
+        page.title()
+    )
+
+
     url = page.url.lower()
 
     if "/login" in url:
