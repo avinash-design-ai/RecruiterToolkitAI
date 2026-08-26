@@ -1642,7 +1642,8 @@ document.addEventListener(
            ======================================================== */
 
         function handleSearchCompleted(
-            data
+            data,
+            runId
         ) {
 
             hideV2StopButton();
@@ -1712,23 +1713,6 @@ document.addEventListener(
 
                 };
 
-
-
-            /*
-             * If no URL was supplied, tell the user rather
-             * than showing a fake download button.
-             */
-
-            resultText.innerHTML += `
-
-                <div class="alert alert-warning mt-3 mb-0">
-
-                    The search completed, but the CSV download
-                    URL was not returned by the server.
-
-                </div>
-
-            `;
 
 
             runButton.disabled =
