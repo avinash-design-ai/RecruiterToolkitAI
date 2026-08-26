@@ -148,6 +148,16 @@ jobs:
           MAX_PROFILES: ${{ inputs.max_profiles }}
           LINKEDIN_STORAGE_STATE: ${{ github.workspace }}/linkedin_storage_state.json
         run: |
+          # Remove any CSV left in the checkout before starting.
+          # This guarantees the artifact belongs to THIS search.
+          find exports \
+            -maxdepth 1 \
+            -type f \
+            -name "*.csv" \
+            -delete
+
+          echo "Exports directory cleaned before search."
+
           python test_search_v2_github.py
 
       - name: Prepare CSV result
@@ -156,32 +166,45 @@ jobs:
         run: |
           set -e
 
-          echo "Looking for generated CSV..."
+          echo "Looking for final LinkedIn V2 CSV..."
 
-          CSV_FILE=$(find backend/modules/RecruiterToolkit/exports \
+          CSV_FILES=$(find backend/modules/RecruiterToolkit/exports \
             -maxdepth 1 \
             -type f \
-            -name "*.csv" \
-            | head -n 1)
+            -name "*_v2.csv" \
+            ! -name "*_v2_autosave.csv")
 
-          if [ -z "$CSV_FILE" ]; then
-            echo "ERROR: No CSV file was generated."
+          if [ -z "$CSV_FILES" ]; then
+            echo "ERROR: No final V2 CSV was generated."
             exit 1
           fi
 
-          echo "CSV generated:"
+          CSV_COUNT=$(printf '%s\n' "$CSV_FILES" | grep -c .)
+
+          echo "Final V2 CSV files found: $CSV_COUNT"
+          printf '%s\n' "$CSV_FILES"
+
+          if [ "$CSV_COUNT" -ne 1 ]; then
+            echo "ERROR: Expected exactly one final V2 CSV."
+            exit 1
+          fi
+
+          CSV_FILE=$(printf '%s\n' "$CSV_FILES")
+
+          echo "Using final CSV:"
           echo "$CSV_FILE"
 
           CSV_NAME=$(basename "$CSV_FILE")
-
-          echo "CSV_NAME=$CSV_NAME" >> "$GITHUB_OUTPUT"
 
           mkdir -p github-result
 
           cp "$CSV_FILE" "github-result/$CSV_NAME"
 
-          echo "Prepared:"
+          echo "Prepared artifact:"
           ls -lh github-result/
+
+          echo "CSV contents preview:"
+          head -n 5 "github-result/$CSV_NAME"
 
       - name: Upload CSV
         if: success()
