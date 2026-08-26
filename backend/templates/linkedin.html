@@ -397,15 +397,46 @@ document.addEventListener(
                         );
 
 
-                    const data =
-                        await response.json();
+                    const responseText =
+                        await response.text();
+
+
+                    let data = {};
+
+
+                    if (responseText.trim()) {
+
+                        try {
+
+                            data =
+                                JSON.parse(
+                                    responseText
+                                );
+
+                        } catch (parseError) {
+
+                            throw new Error(
+                                "LinkedIn V2 server returned an invalid " +
+                                "response (HTTP " +
+                                response.status +
+                                ")."
+                            );
+
+                        }
+
+                    }
 
 
                     if (!response.ok) {
 
                         throw new Error(
                             data.message ||
-                            "Unable to start LinkedIn V2 search."
+                            (
+                                "Unable to start LinkedIn V2 search " +
+                                "(HTTP " +
+                                response.status +
+                                ")."
+                            )
                         );
 
                     }
