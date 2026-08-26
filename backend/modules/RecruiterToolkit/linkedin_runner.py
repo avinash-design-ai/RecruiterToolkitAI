@@ -660,9 +660,30 @@ def run_linkedin(
                 "Exporting authenticated LinkedIn storage state..."
             )
 
-            storage_state = (
-                page.context.storage_state()
+            print(
+                "BEFORE storage_state()..."
             )
+
+            try:
+
+                storage_state = (
+                    page.context.storage_state()
+                )
+
+                print(
+                    "AFTER storage_state()..."
+                )
+
+            except Exception as ex:
+
+                print(
+                    "STORAGE_STATE ERROR:",
+                    repr(ex)
+                )
+
+                traceback.print_exc()
+
+                raise
 
             if not isinstance(
                 storage_state,
