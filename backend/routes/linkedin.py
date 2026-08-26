@@ -3,6 +3,7 @@ import os
 import time
 import traceback
 import hashlib
+import zipfile
 from pathlib import Path
 
 import requests
@@ -70,6 +71,9 @@ GITHUB_STORAGE_SECRET = "LINKEDIN_STORAGE_STATE"
 # ============================================================
 
 def github_headers():
+    """
+    Build authenticated GitHub API headers.
+    """
 
     token = os.getenv("GITHUB_TOKEN")
 
@@ -86,11 +90,116 @@ def github_headers():
 
 
 # ============================================================
+# Validate Playwright LinkedIn storage state
+# ============================================================
+
+def validate_linkedin_storage_state(
+    storage_state,
+):
+    """
+    Validate the Playwright storage state before it is
+    uploaded to GitHub Actions.
+
+    Required authentication cookies:
+
+        li_at
+        JSESSIONID
+
+    Returns a compact diagnostic dictionary.
+
+    The actual storage state is NOT returned by this helper.
+    """
+
+    if not isinstance(
+        storage_state,
+        dict,
+    ):
+
+        raise RuntimeError(
+            "LinkedIn storage state is not a JSON object."
+        )
+
+    cookies = storage_state.get(
+        "cookies",
+        []
+    )
+
+    if not isinstance(
+        cookies,
+        list,
+    ):
+
+        raise RuntimeError(
+            "LinkedIn storage state cookies are invalid."
+        )
+
+    if not cookies:
+
+        raise RuntimeError(
+            "LinkedIn storage state contains no cookies."
+        )
+
+    linkedin_cookies = [
+        cookie
+        for cookie in cookies
+        if "linkedin.com"
+        in cookie.get(
+            "domain",
+            ""
+        ).lower()
+    ]
+
+    if not linkedin_cookies:
+
+        raise RuntimeError(
+            "LinkedIn storage state contains "
+            "no LinkedIn cookies."
+        )
+
+    linkedin_cookie_names = {
+        cookie.get("name")
+        for cookie in linkedin_cookies
+        if cookie.get("name")
+    }
+
+    required_cookie_names = {
+        "li_at",
+        "JSESSIONID",
+    }
+
+    missing_cookie_names = (
+        required_cookie_names
+        - linkedin_cookie_names
+    )
+
+    if missing_cookie_names:
+
+        raise RuntimeError(
+            "LinkedIn storage state is missing "
+            "required authentication cookies: "
+            + ", ".join(
+                sorted(
+                    missing_cookie_names
+                )
+            )
+        )
+
+    return {
+        "total_cookies": len(cookies),
+        "linkedin_cookies": len(linkedin_cookies),
+        "linkedin_cookie_names": sorted(
+            linkedin_cookie_names
+        ),
+    }
+
+
+# ============================================================
 # Update GitHub LinkedIn storage secret
 # ============================================================
 
-def update_github_storage_secret(storage_state):
-
+def update_github_storage_secret(
+    storage_state,
+):
     """
     Encrypt the Playwright storage state and update the
     GitHub repository Actions secret.
@@ -106,10 +215,50 @@ def update_github_storage_secret(storage_state):
     except ImportError:
 
         raise RuntimeError(
-            "PyNaCl is required. Add 'PyNaCl' to requirements.txt."
+            "PyNaCl is required. Add 'PyNaCl' "
+            "to requirements.txt."
         )
 
+    # --------------------------------------------------------
+    # Validate the state before encryption.
+    # --------------------------------------------------------
+
+    validation = validate_linkedin_storage_state(
+        storage_state
+    )
+
+    print(
+        "GitHub secret storage validation:",
+        validation
+    )
+
+    # --------------------------------------------------------
+    # Serialize state.
+    # --------------------------------------------------------
+
+    storage_json = json.dumps(
+        storage_state,
+        separators=(
+            ",",
+            ":",
+        ),
+    )
+
+    if not storage_json.strip():
+
+        raise RuntimeError(
+            "Serialized LinkedIn storage state is empty."
+        )
+
+    # --------------------------------------------------------
+    # GitHub headers.
+    # --------------------------------------------------------
+
     headers = github_headers()
+
+    # --------------------------------------------------------
+    # Get GitHub Actions repository public key.
+    # --------------------------------------------------------
 
     key_url = (
         f"{GITHUB_API}/repos/"
@@ -137,6 +286,10 @@ def update_github_storage_secret(storage_state):
     key_id = key_data["key_id"]
     public_key = key_data["key"]
 
+    # --------------------------------------------------------
+    # Encrypt using GitHub's public key.
+    # --------------------------------------------------------
+
     public_key_obj = PublicKey(
         public_key.encode("utf-8"),
         encoding.Base64Encoder(),
@@ -147,7 +300,7 @@ def update_github_storage_secret(storage_state):
     )
 
     encrypted = sealed_box.encrypt(
-        storage_state.encode("utf-8")
+        storage_json.encode("utf-8")
     )
 
     encrypted_value = (
@@ -155,6 +308,10 @@ def update_github_storage_secret(storage_state):
         .encode(encrypted)
         .decode("utf-8")
     )
+
+    # --------------------------------------------------------
+    # Update repository Actions secret.
+    # --------------------------------------------------------
 
     secret_url = (
         f"{GITHUB_API}/repos/"
@@ -174,7 +331,10 @@ def update_github_storage_secret(storage_state):
         timeout=30,
     )
 
-    if response.status_code not in (201, 204):
+    if response.status_code not in (
+        201,
+        204,
+    ):
 
         raise RuntimeError(
             "Unable to update GitHub storage secret: "
@@ -183,7 +343,8 @@ def update_github_storage_secret(storage_state):
         )
 
     print(
-        "GitHub LINKEDIN_STORAGE_STATE secret updated successfully."
+        "GitHub LINKEDIN_STORAGE_STATE secret "
+        "updated successfully."
     )
 
 
@@ -196,7 +357,6 @@ def dispatch_github_search(
     location,
     max_profiles,
 ):
-
     """
     Dispatch the GitHub Actions LinkedIn V2 workflow.
 
@@ -214,7 +374,7 @@ def dispatch_github_search(
 
 
 # ============================================================
-# Find the GitHub run created by our dispatch
+# Find GitHub workflow runs
 # ============================================================
 
 def get_github_runs():
@@ -254,17 +414,20 @@ def get_github_runs():
     )
 
 
+# ============================================================
+# Wait for dispatched workflow run
+# ============================================================
+
 def wait_for_dispatched_run(
     dispatch_started_at,
     timeout_seconds=30,
 ):
-
     """
-    GitHub's workflow dispatch endpoint returns HTTP 204 and
-    does not return the run_id.
+    GitHub workflow dispatch returns HTTP 204 and does not
+    return the run_id.
 
-    Therefore we poll the workflow runs API and locate the
-    newly-created workflow run.
+    Poll the workflow runs API and locate the newly-created
+    workflow run.
     """
 
     deadline = (
@@ -325,7 +488,9 @@ def wait_for_dispatched_run(
 # Get specific GitHub run
 # ============================================================
 
-def get_github_run(run_id):
+def get_github_run(
+    run_id,
+):
 
     headers = github_headers()
 
@@ -358,7 +523,9 @@ def get_github_run(run_id):
 # Get GitHub artifacts for a run
 # ============================================================
 
-def get_github_artifacts(run_id):
+def get_github_artifacts(
+    run_id,
+):
 
     headers = github_headers()
 
@@ -391,7 +558,7 @@ def get_github_artifacts(run_id):
 
 
 # ============================================================
-# LinkedIn page
+# LinkedIn pages
 # ============================================================
 
 @router.get("/tools/linkedin")
@@ -419,11 +586,10 @@ def linkedin_page(
 # ============================================================
 # Existing LOCAL LinkedIn search
 #
-# This endpoint is retained for the existing local
-# automation functionality.
+# This endpoint is retained for existing local automation.
 #
-# The V2 GitHub workflow does NOT use this endpoint
-# after authentication.
+# V2 GitHub workflow does NOT use this endpoint after
+# authentication.
 # ============================================================
 
 @router.post("/linkedin")
@@ -462,13 +628,18 @@ def linkedin_search(
 # ============================================================
 # V2 START
 #
-# This endpoint starts the Render-side LinkedIn authentication.
+# Render-side LinkedIn authentication.
 #
 # IMPORTANT:
-# It does NOT run SearchWorkflowV2.
+# SearchWorkflowV2 does NOT run on Render.
 #
-# SearchWorkflowV2 runs only after verification, inside
-# GitHub Actions.
+# After successful authentication, this endpoint:
+#
+#   1. receives storage state
+#   2. validates storage state
+#   3. updates GitHub secret
+#   4. dispatches GitHub Actions
+#
 # ============================================================
 
 @router.post("/linkedin/v2/search")
@@ -514,20 +685,8 @@ def linkedin_v2_search(
         print(result)
 
         # ====================================================
-        # V2 GITHUB HANDOFF
-        #
-        # Authentication has completed inside Render.
-        #
-        # The runner returns storage_state internally.
-        #
-        # Render now:
-        #
-        #   1. validates the storage state
-        #   2. updates LINKEDIN_STORAGE_STATE
-        #   3. dispatches GitHub Actions
-        #   4. waits for the exact workflow run
-        #
-        # SearchWorkflowV2 does NOT run on Render.
+        # Authentication completed directly without
+        # verification.
         # ====================================================
 
         if (
@@ -537,7 +696,7 @@ def linkedin_v2_search(
 
             storage_state = result.pop(
                 "storage_state",
-                None
+                None,
             )
 
             if not storage_state:
@@ -551,72 +710,23 @@ def linkedin_v2_search(
             print("VALIDATING LINKEDIN STORAGE STATE")
             print("=" * 70)
 
-            if not isinstance(
-                storage_state,
-                dict
-            ):
-
-                raise RuntimeError(
-                    "LinkedIn storage state is not a JSON object."
+            validation = (
+                validate_linkedin_storage_state(
+                    storage_state
                 )
-
-            cookies = storage_state.get(
-                "cookies",
-                []
-            )
-
-            if not isinstance(
-                cookies,
-                list
-            ):
-
-                raise RuntimeError(
-                    "LinkedIn storage state cookies are invalid."
-                )
-
-            if not cookies:
-
-                raise RuntimeError(
-                    "LinkedIn storage state contains no cookies."
-                )
-
-            linkedin_cookies = [
-                cookie
-                for cookie in cookies
-                if "linkedin.com"
-                in cookie.get(
-                    "domain",
-                    ""
-                ).lower()
-            ]
-
-            if not linkedin_cookies:
-
-                raise RuntimeError(
-                    "LinkedIn storage state contains "
-                    "no LinkedIn cookies."
-                )
-
-            print(
-                "Total storage cookies:",
-                len(cookies)
             )
 
             print(
-                "LinkedIn cookies:",
-                len(linkedin_cookies)
+                "Storage validation:",
+                validation,
             )
-
-            # ------------------------------------------------
-            # Serialize only after validation.
-            # ------------------------------------------------
 
             storage_json = json.dumps(
                 storage_state,
                 separators=(
                     ",",
-                    ":"
-                )
+                    ":",
+                ),
             )
 
             if not storage_json.strip():
@@ -632,7 +742,7 @@ def linkedin_v2_search(
             print("=" * 70)
 
             update_github_storage_secret(
-                storage_json
+                storage_state
             )
 
             print(
@@ -661,7 +771,7 @@ def linkedin_v2_search(
 
             if not isinstance(
                 dispatch_result,
-                dict
+                dict,
             ):
 
                 raise RuntimeError(
@@ -671,12 +781,8 @@ def linkedin_v2_search(
 
             print(
                 "GitHub dispatch response:",
-                dispatch_result
+                dispatch_result,
             )
-
-            # ------------------------------------------------
-            # Find the exact workflow run.
-            # ------------------------------------------------
 
             run = wait_for_dispatched_run(
                 dispatch_started_at
@@ -700,17 +806,18 @@ def linkedin_v2_search(
 
                 print(
                     "Run ID:",
-                    run_id
+                    run_id,
                 )
 
                 print(
                     "Run URL:",
-                    run_url
+                    run_url,
                 )
 
                 result.update({
 
-                    "github_started": True,
+                    "github_started":
+                        True,
 
                     "run_id":
                         run_id,
@@ -751,7 +858,8 @@ def linkedin_v2_search(
 
                 result.update({
 
-                    "github_started": True,
+                    "github_started":
+                        True,
 
                     "run_id":
                         None,
@@ -778,27 +886,32 @@ def linkedin_v2_search(
                 })
 
             # ------------------------------------------------
-            # SECURITY CHECK
-            #
-            # storage_state must NEVER be returned to the UI.
+            # SECURITY BOUNDARY
             # ------------------------------------------------
 
             result.pop(
                 "storage_state",
-                None
+                None,
+            )
+
+            result.pop(
+                "storage_json",
+                None,
+            )
+
+            result.pop(
+                "linkedin_storage_state",
+                None,
             )
 
         # ====================================================
         # FINAL UI SAFETY BOUNDARY
-        #
-        # Playwright storage_state must NEVER be returned
-        # to the browser/UI.
-        #
-        # It is used only internally to update the GitHub
-        # Actions repository secret.
         # ====================================================
 
-        if isinstance(result, dict):
+        if isinstance(
+            result,
+            dict,
+        ):
 
             result.pop(
                 "storage_state",
@@ -830,13 +943,10 @@ def linkedin_v2_search(
 # ============================================================
 # Direct GitHub search endpoint
 #
-# This endpoint is intentionally retained.
+# Legacy endpoint.
 #
-# It should ONLY be called after authentication has already
-# been completed.
-#
-# The verification flow below dispatches the workflow itself,
-# so the webpage should NOT call this endpoint after /verify.
+# It only dispatches GitHub Actions.
+# It does NOT authenticate LinkedIn.
 # ============================================================
 
 @router.post("/linkedin/v2/github-search")
@@ -909,18 +1019,22 @@ def linkedin_v2_github_search(
 # LinkedIn verification
 #
 # Render:
+#
 #   1. receives verification code
 #   2. verifies LinkedIn
-#   3. saves storage state
-#   4. updates GitHub secret
-#   5. dispatches GitHub Actions
+#   3. confirms Feed
+#   4. saves storage state
+#   5. validates storage state
+#   6. updates GitHub secret ONCE
+#   7. dispatches GitHub Actions
+#   8. closes Render browser
 #
 # GitHub:
+#
 #   SearchWorkflowV2
 #   CSV creation
 #   artifact upload
 #
-# Render DOES NOT run SearchWorkflowV2.
 # ============================================================
 
 @router.post("/linkedin/verify")
@@ -971,9 +1085,9 @@ def linkedin_verify(
             page.title(),
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Locate verification input
-        # ----------------------------------------------------
+        # ====================================================
 
         verification_selectors = [
 
@@ -1029,9 +1143,9 @@ def linkedin_verify(
                 "LinkedIn verification input was not found."
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Enter verification code
-        # ----------------------------------------------------
+        # ====================================================
 
         verification_box.fill(
             data.verification_code
@@ -1055,9 +1169,9 @@ def linkedin_verify(
             3000
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Wait for authenticated LinkedIn page
-        # ----------------------------------------------------
+        # ====================================================
 
         authenticated = False
 
@@ -1122,9 +1236,9 @@ def linkedin_verify(
                     1000
                 )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Verification failed
-        # ----------------------------------------------------
+        # ====================================================
 
         if not authenticated:
 
@@ -1157,12 +1271,15 @@ def linkedin_verify(
             page.url,
         )
 
-        # ----------------------------------------------------
-        # Move the SAME authenticated Playwright page to Feed
-        # ----------------------------------------------------
+        # ====================================================
+        # Move SAME authenticated Playwright page to Feed
+        # ====================================================
 
         print("=" * 70)
-        print("MOVING AUTHENTICATED PLAYWRIGHT PAGE TO LINKEDIN FEED")
+        print(
+            "MOVING AUTHENTICATED PLAYWRIGHT PAGE "
+            "TO LINKEDIN FEED"
+        )
         print("=" * 70)
 
         try:
@@ -1180,8 +1297,9 @@ def linkedin_verify(
                 ex,
             )
 
-        # Give LinkedIn time to finish client-side navigation.
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(
+            5000
+        )
 
         print(
             "Post-verification URL:",
@@ -1193,9 +1311,9 @@ def linkedin_verify(
             page.title(),
         )
 
-        # ----------------------------------------------------
-        # Confirm the SAME Playwright page reached Feed
-        # ----------------------------------------------------
+        # ====================================================
+        # Confirm SAME Playwright page reached Feed
+        # ====================================================
 
         feed_loaded = False
 
@@ -1203,23 +1321,32 @@ def linkedin_verify(
 
             try:
 
-                current_url = page.url.lower()
+                current_url = (
+                    page.url.lower()
+                )
 
                 print(
                     f"Feed check {attempt + 1}/30:",
                     current_url,
                 )
 
-                if "linkedin.com/feed" in current_url:
+                if (
+                    "linkedin.com/feed"
+                    in current_url
+                ):
 
                     feed_loaded = True
+
                     break
 
-                if _is_login_or_verification_page(page):
+                if _is_login_or_verification_page(
+                    page
+                ):
 
                     print(
-                        "LinkedIn returned to login/verification "
-                        "during Feed navigation."
+                        "LinkedIn returned to "
+                        "login/verification during "
+                        "Feed navigation."
                     )
 
                     break
@@ -1231,20 +1358,26 @@ def linkedin_verify(
                     ex,
                 )
 
-            page.wait_for_timeout(1000)
-
+            page.wait_for_timeout(
+                1000
+            )
 
         if not feed_loaded:
 
             return {
                 "success": False,
+
                 "verification_required": True,
-                "session_id": data.session_id,
-                "message": (
-                    "LinkedIn verification succeeded, but the "
-                    "authenticated Playwright page did not reach "
-                    "the LinkedIn Feed."
-                ),
+
+                "session_id":
+                    data.session_id,
+
+                "message":
+                    (
+                        "LinkedIn verification succeeded, "
+                        "but the authenticated Playwright "
+                        "page did not reach the LinkedIn Feed."
+                    ),
             }
 
         print("=" * 70)
@@ -1261,74 +1394,64 @@ def linkedin_verify(
             page.title(),
         )
 
-        # ----------------------------------------------------
-        # ----------------------------------------------------
+        # ====================================================
         # Save authenticated storage state
-        # ----------------------------------------------------
+        # ====================================================
 
         storage_path = (
             Path.cwd()
-            / 'linkedin_storage_state_render.json'
+            / "linkedin_storage_state_render.json"
         )
 
-        print('Saving authenticated storage state...')
+        print("=" * 70)
+        print(
+            "SAVING AUTHENTICATED LINKEDIN STORAGE STATE"
+        )
+        print("=" * 70)
 
         page.context.storage_state(
             path=str(storage_path)
         )
 
-        print('Storage state saved:', storage_path)
+        print(
+            "Storage state saved:",
+            storage_path,
+        )
 
         if not storage_path.exists():
-            raise RuntimeError('LinkedIn storage state file was not created.')
 
-        storage_size = storage_path.stat().st_size
+            raise RuntimeError(
+                "LinkedIn storage state file "
+                "was not created."
+            )
+
+        storage_size = (
+            storage_path.stat().st_size
+        )
 
         if storage_size <= 0:
-            raise RuntimeError('LinkedIn storage state file is empty.')
 
-        with open(storage_path, 'r', encoding='utf-8') as f:
+            raise RuntimeError(
+                "LinkedIn storage state file is empty."
+            )
+
+        with open(
+            storage_path,
+            "r",
+            encoding="utf-8",
+        ) as f:
+
             storage_state = f.read()
 
         if not storage_state.strip():
-            raise RuntimeError('LinkedIn storage state JSON is empty.')
 
-        print('='*70)
-        print('LINKEDIN STORAGE STATE VALIDATED')
-        print('='*70)
-        print('Storage state file:', storage_path)
-        print('Storage state size:', storage_size)
+            raise RuntimeError(
+                "LinkedIn storage state JSON is empty."
+            )
 
-        try:
-            import json
-            import hashlib
-
-            storage_json = json.loads(storage_state)
-            cookies = storage_json.get('cookies', [])
-            linkedin_cookies = [
-                cookie for cookie in cookies
-                if 'linkedin.com' in cookie.get('domain', '').lower()
-            ]
-
-            storage_sha256 = hashlib.sha256(
-                storage_state.encode('utf-8')
-            ).hexdigest()
-
-            print('Total cookies:', len(cookies))
-            print('LinkedIn cookies:', len(linkedin_cookies))
-            print('Storage state SHA256:', storage_sha256)
-            print('Storage state bytes:', len(storage_state.encode('utf-8')))
-
-        except Exception as ex:
-            print('Storage state diagnostics warning:', ex)
-
-        print('='*70)
-        print('UPDATING GITHUB LINKEDIN STORAGE SECRET')
-        print('='*70)
-
-        update_github_storage_secret(storage_state)        # ----------------------------------------------------
-        # Validate storage state before sending it
-        # ----------------------------------------------------
+        # ====================================================
+        # Parse storage state
+        # ====================================================
 
         try:
 
@@ -1336,61 +1459,99 @@ def linkedin_verify(
                 storage_state
             )
 
-            if not isinstance(
-                parsed_state,
-                dict,
-            ):
-
-                raise RuntimeError(
-                    "Generated LinkedIn storage state is invalid."
-                )
-
-            cookies = parsed_state.get(
-                "cookies",
-                [],
-            )
-
-            print(
-                "Storage state cookies:",
-                len(cookies),
-            )
-
-            if not cookies:
-
-                raise RuntimeError(
-                    "Generated LinkedIn storage state contains no cookies."
-                )
-
         except json.JSONDecodeError as ex:
 
             raise RuntimeError(
-                "Generated LinkedIn storage state is not valid JSON."
+                "Generated LinkedIn storage state "
+                "is not valid JSON."
             ) from ex
 
-        # ----------------------------------------------------
-        # Update GitHub secret
-        # ----------------------------------------------------
+        # ====================================================
+        # Validate storage state BEFORE GitHub update
+        # ====================================================
+
+        print("=" * 70)
+        print(
+            "VALIDATING GENERATED LINKEDIN STORAGE STATE"
+        )
+        print("=" * 70)
+
+        validation = (
+            validate_linkedin_storage_state(
+                parsed_state
+            )
+        )
+
+        storage_sha256 = hashlib.sha256(
+            storage_state.encode("utf-8")
+        ).hexdigest()
 
         print(
-            "Updating GitHub "
-            "LINKEDIN_STORAGE_STATE secret..."
+            "Storage state file:",
+            storage_path,
         )
+
+        print(
+            "Storage state size:",
+            storage_size,
+            "bytes",
+        )
+
+        print(
+            "Total cookies:",
+            validation["total_cookies"],
+        )
+
+        print(
+            "LinkedIn cookies:",
+            validation["linkedin_cookies"],
+        )
+
+        print(
+            "LinkedIn cookie names:",
+            ", ".join(
+                validation[
+                    "linkedin_cookie_names"
+                ]
+            ),
+        )
+
+        print(
+            "Storage state SHA256:",
+            storage_sha256,
+        )
+
+        print(
+            "Generated LinkedIn storage state "
+            "validated successfully."
+        )
+
+        # ====================================================
+        # Update GitHub secret ONCE
+        # ====================================================
+
+        print("=" * 70)
+        print(
+            "UPDATING GITHUB LINKEDIN STORAGE SECRET"
+        )
+        print("=" * 70)
 
         update_github_storage_secret(
-            storage_state
+            parsed_state
         )
 
         print(
-            "GitHub storage secret updated."
+            "GitHub LINKEDIN_STORAGE_STATE secret "
+            "updated successfully."
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Dispatch GitHub Actions
         #
         # THIS is where the actual search begins.
         #
         # SearchWorkflowV2 does NOT run on Render.
-        # ----------------------------------------------------
+        # ====================================================
 
         print("=" * 70)
         print(
@@ -1408,9 +1569,24 @@ def linkedin_verify(
             )
         )
 
-        # ----------------------------------------------------
+        if not isinstance(
+            dispatch_result,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "GitHub workflow dispatch returned "
+                "an invalid response."
+            )
+
+        print(
+            "GitHub dispatch response:",
+            dispatch_result,
+        )
+
+        # ====================================================
         # Find exact workflow run
-        # ----------------------------------------------------
+        # ====================================================
 
         run = wait_for_dispatched_run(
             dispatch_started_at
@@ -1421,29 +1597,46 @@ def linkedin_verify(
 
         if run:
 
-            run_id = run.get("id")
-            run_url = run.get("html_url")
+            run_id = run.get(
+                "id"
+            )
+
+            run_url = run.get(
+                "html_url"
+            )
+
+            print("=" * 70)
+            print(
+                "GITHUB ACTIONS WORKFLOW STARTED"
+            )
+            print("=" * 70)
 
             print(
-                "GitHub Actions run ID:",
+                "Run ID:",
                 run_id,
             )
 
             print(
-                "GitHub Actions URL:",
+                "Run URL:",
                 run_url,
             )
 
         else:
+
+            print("=" * 70)
+            print(
+                "GITHUB WORKFLOW DISPATCHED"
+            )
+            print("=" * 70)
 
             print(
                 "WARNING: GitHub workflow was dispatched "
                 "but run ID was not found yet."
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # Delete temporary Render storage file
-        # ----------------------------------------------------
+        # ====================================================
 
         try:
 
@@ -1451,18 +1644,29 @@ def linkedin_verify(
                 missing_ok=True
             )
 
-        except Exception:
+            print(
+                "Temporary Render storage state deleted."
+            )
 
-            pass
+        except Exception as ex:
 
-        # ----------------------------------------------------
-        # Browser can now close.
-        # GitHub already has the storage state.
-        # ----------------------------------------------------
+            print(
+                "Storage state cleanup warning:",
+                ex,
+            )
+
+        # ====================================================
+        # GitHub now owns the authenticated state.
+        # Render browser can close.
+        # ====================================================
 
         try:
 
             browser.close()
+
+            print(
+                "Render LinkedIn browser closed."
+            )
 
         except Exception as ex:
 
@@ -1479,13 +1683,16 @@ def linkedin_verify(
             "Render LinkedIn session removed."
         )
 
-        # ----------------------------------------------------
-        # Return GitHub run information to webpage
-        # ----------------------------------------------------
+        # ====================================================
+        # Return ONLY safe workflow information to UI.
+        #
+        # storage_state is NEVER returned.
+        # ====================================================
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "verification_required":
                 False,
@@ -1500,10 +1707,14 @@ def linkedin_verify(
                 run_url,
 
             "workflow":
-                dispatch_result["workflow"],
+                dispatch_result.get(
+                    "workflow"
+                ),
 
             "branch":
-                dispatch_result["branch"],
+                dispatch_result.get(
+                    "branch"
+                ),
 
             "company":
                 company,
@@ -1527,7 +1738,8 @@ def linkedin_verify(
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
             "message":
                 str(ex),
@@ -1541,9 +1753,6 @@ def linkedin_verify(
 # GitHub workflow status
 #
 # Legacy endpoint.
-#
-# The webpage should preferably use:
-# /linkedin/v2/github-status/{run_id}
 # ============================================================
 
 @router.get(
@@ -1567,9 +1776,11 @@ def linkedin_github_status():
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
-            "found": True,
+            "found":
+                True,
 
             "run_id":
                 run.get("id"),
@@ -1590,7 +1801,8 @@ def linkedin_github_status():
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
             "message":
                 str(ex),
@@ -1648,7 +1860,8 @@ def linkedin_github_status_by_id(
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "run_id":
                 run.get("id"),
@@ -1690,7 +1903,8 @@ def linkedin_github_status_by_id(
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
             "message":
                 str(ex),
@@ -1727,7 +1941,8 @@ def download_github_csv(
 
             return {
 
-                "success": False,
+                "success":
+                    False,
 
                 "message":
                     "GitHub search is not completed yet.",
@@ -1737,7 +1952,8 @@ def download_github_csv(
 
             return {
 
-                "success": False,
+                "success":
+                    False,
 
                 "message":
                     (
@@ -1774,7 +1990,8 @@ def download_github_csv(
 
             return {
 
-                "success": False,
+                "success":
+                    False,
 
                 "message":
                     "CSV artifact is not available yet.",
@@ -1840,8 +2057,6 @@ def download_github_csv(
         # Extract CSV
         # ----------------------------------------------------
 
-        import zipfile
-
         with zipfile.ZipFile(
             zip_path,
             "r",
@@ -1897,7 +2112,8 @@ def download_github_csv(
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
             "message":
                 str(ex),
@@ -1923,7 +2139,8 @@ def linkedin_stop():
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "message":
                 "LinkedIn search stop requested.",
@@ -1935,7 +2152,8 @@ def linkedin_stop():
 
         return {
 
-            "success": False,
+            "success":
+                False,
 
             "message":
                 str(ex),

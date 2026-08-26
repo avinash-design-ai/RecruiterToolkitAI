@@ -23,14 +23,32 @@ from automation.active_sessions import (
 
 def _is_linkedin_authenticated(page):
     """
-    Confirm that LinkedIn has reached a real authenticated page.
-    URL-only detection is intentionally supplemented with page checks.
+    Determine whether LinkedIn has reached an authenticated page.
+
+    URL and title are treated as the primary authentication signals.
+    DOM selectors are used only as additional confirmation.
+
+    IMPORTANT:
+    Do not reject an authenticated /feed/ page merely because
+    LinkedIn changed its DOM selectors.
     """
 
     try:
         url = page.url.lower()
 
-        authenticated_urls = (
+        # -------------------------------------------------
+        # Never treat authentication / challenge pages as
+        # authenticated.
+        # -------------------------------------------------
+
+        if _is_login_or_verification_page(page):
+            return False
+
+        # -------------------------------------------------
+        # Strong authenticated URL signals
+        # -------------------------------------------------
+
+        authenticated_url_patterns = (
             "linkedin.com/feed",
             "linkedin.com/search",
             "linkedin.com/in/",
@@ -41,23 +59,22 @@ def _is_linkedin_authenticated(page):
             "linkedin.com/notifications",
         )
 
-        if not any(
-            authenticated_url in url
-            for authenticated_url in authenticated_urls
+        if any(
+            pattern in url
+            for pattern in authenticated_url_patterns
         ):
-            return False
+            print(
+                "Authenticated LinkedIn URL detected:",
+                page.url,
+            )
 
-        # Never consider login/checkpoint/challenge pages authenticated.
-        if _is_login_or_verification_page(page):
-            return False
+            return True
 
-        # Give LinkedIn's client-side page a moment to settle.
-        try:
-            page.wait_for_timeout(1500)
-        except Exception:
-            pass
+        # -------------------------------------------------
+        # Additional DOM confirmation for pages where the
+        # URL alone is not enough.
+        # -------------------------------------------------
 
-        # Look for authenticated LinkedIn UI.
         authenticated_selectors = [
             "nav.global-nav",
             "header.global-nav",
@@ -70,14 +87,31 @@ def _is_linkedin_authenticated(page):
         ]
 
         for selector in authenticated_selectors:
+
             try:
+
                 locator = page.locator(selector).first
 
                 if locator.is_visible(timeout=1000):
+
+                    print(
+                        "Authenticated LinkedIn UI detected:",
+                        selector,
+                    )
+
                     return True
 
             except Exception:
                 continue
+
+        return False
+
+    except Exception as ex:
+
+        print(
+            "LinkedIn authentication detection error:",
+            repr(ex),
+        )
 
         return False
 
@@ -202,11 +236,10 @@ def _wait_for_login_result(
     timeout_seconds=120
 ):
     """
-    Wait for LinkedIn to either:
+    Wait for LinkedIn authentication to complete.
 
-    1. Reach an authenticated page
-    2. Remain on a verification/checkpoint page
-    3. Remain on the login page
+    Returns immediately once an authenticated LinkedIn URL
+    is detected.
     """
 
     print("=" * 60)
@@ -254,16 +287,39 @@ def _wait_for_login_result(
                 current_url
             )
 
+            print(
+                "LinkedIn title:",
+                page.title()
+            )
+
             last_url = current_url
 
         # -------------------------------------------------
-        # Successful authentication
+        # SUCCESS
         # -------------------------------------------------
 
         if _is_linkedin_authenticated(page):
 
             print(
-                "LinkedIn authenticated page detected."
+                "=" * 60
+            )
+
+            print(
+                "LINKEDIN AUTHENTICATION CONFIRMED"
+            )
+
+            print(
+                "Authenticated URL:",
+                page.url
+            )
+
+            print(
+                "Authenticated title:",
+                page.title()
+            )
+
+            print(
+                "=" * 60
             )
 
             return {
@@ -273,18 +329,38 @@ def _wait_for_login_result(
             }
 
         # -------------------------------------------------
-        # Login / checkpoint / challenge
+        # CHECKPOINT / CHALLENGE
         # -------------------------------------------------
 
-        if _is_login_or_verification_page(page):
+        if (
+            "checkpoint" in current_url_lower
+            or "challenge" in current_url_lower
+        ):
 
-            if (
-                "checkpoint" in current_url_lower
-                or "challenge" in current_url_lower
-            ):
+            print(
+                "LinkedIn verification/challenge detected."
+            )
+
+            return {
+                "authenticated": False,
+                "verification_required": True,
+                "timeout": False,
+            }
+
+        # -------------------------------------------------
+        # Still on login page
+        # -------------------------------------------------
+
+        if (
+            "linkedin.com/login" in current_url_lower
+            or "linkedin.com/uas/login" in current_url_lower
+            or "linkedin.com/uas/signin" in current_url_lower
+        ):
+
+            if elapsed >= 15:
 
                 print(
-                    "LinkedIn verification/challenge detected."
+                    "LinkedIn is still requesting authentication."
                 )
 
                 return {
@@ -293,28 +369,7 @@ def _wait_for_login_result(
                     "timeout": False,
                 }
 
-            if (
-                "login" in current_url_lower
-                or "signin" in current_url_lower
-            ):
-
-                # Give LinkedIn time to finish navigation
-                # before declaring verification required.
-
-                if elapsed >= 15:
-
-                    print(
-                        "LinkedIn is still requesting authentication."
-                    )
-
-                    return {
-                        "authenticated": False,
-                        "verification_required": True,
-                        "timeout": False,
-                    }
-
         page.wait_for_timeout(1000)
-
 
 def _print_browser_state(browser):
     """
