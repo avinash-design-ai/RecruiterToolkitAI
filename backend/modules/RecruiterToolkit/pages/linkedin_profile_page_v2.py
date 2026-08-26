@@ -26,6 +26,16 @@ class LinkedInProfilePageV2(BasePage):
 
             self.profile_url = profile_url
 
+            print("=" * 70)
+            print("PROFILE NAVIGATION DIAGNOSTICS")
+            print("=" * 70)
+            print("Profile target:", profile_url)
+            print("Current page URL:", self.page.url)
+            print("Page count in context:", len(self.page.context.pages))
+            for index, context_page in enumerate(self.page.context.pages):
+                print(f"Page {index}: {context_page.url}")
+            print("=" * 70)
+
             self.page.goto(
                 profile_url,
                 wait_until="domcontentloaded"

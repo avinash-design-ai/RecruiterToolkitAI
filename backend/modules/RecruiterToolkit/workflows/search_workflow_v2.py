@@ -20,6 +20,21 @@ class SearchWorkflowV2:
         # Separate page for individual profiles.
         self.profile_page = self.page.context.new_page()
 
+        print("=" * 70)
+        print("PROFILE PAGE AUTHENTICATION DIAGNOSTICS")
+        print("=" * 70)
+
+        try:
+            profile_cookies = self.profile_page.context.cookies("https://www.linkedin.com")
+            print("Profile page context cookies:", len(profile_cookies))
+            for cookie in profile_cookies:
+                if cookie["name"] in ["li_at", "JSESSIONID", "bcookie", "bscookie"]:
+                    print("name=", cookie["name"], "domain=", cookie.get("domain"), "path=", cookie.get("path"), "secure=", cookie.get("secure"), "expires=", cookie.get("expires"))
+        except Exception as ex:
+            print("Profile cookie diagnostics failed:", repr(ex))
+
+        print("=" * 70)
+
     # =====================================================
     # V2 PROFILE EXTRACTION
     # =====================================================
