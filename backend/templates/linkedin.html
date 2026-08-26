@@ -850,16 +850,80 @@ document.addEventListener(
                                 </div>
                                 `;
 
+
                             /*
-                             * IMPORTANT:
+                             * =================================================
+                             * GITHUB ACTIONS HANDOFF
+                             * =================================================
                              *
-                             * Do NOT call /linkedin/v2/search again here.
-                             * Do NOT start SearchWorkflow from the browser.
+                             * The authentication request already performed
+                             * the Render-side LinkedIn authentication and
+                             * GitHub Actions dispatch.
                              *
-                             * The Render authentication flow is complete.
-                             * GitHub Actions is responsible for the actual
-                             * LinkedIn V2 search.
+                             * The response therefore contains the exact
+                             * GitHub Actions run_id when the workflow run
+                             * was successfully discovered.
+                             *
+                             * Do NOT call /linkedin/v2/search again.
+                             * Do NOT start another GitHub workflow.
+                             *
+                             * We only begin polling the existing run.
                              */
+
+                            workflowId =
+                                loginData.run_id ||
+                                loginData.workflow_id ||
+                                null;
+
+
+                            if (
+                                workflowId
+                            ) {
+
+                                statusText.textContent =
+                                    "GitHub Actions search started. Waiting for results...";
+
+
+                                runButton.textContent =
+                                    "Search Running";
+
+
+                                runButton.disabled =
+                                    true;
+
+
+                                startStatusPolling(
+                                    workflowId
+                                );
+
+
+                            } else {
+
+                                /*
+                                 * The authentication succeeded, but the
+                                 * backend did not provide the exact workflow
+                                 * run ID. Do not silently leave the UI stuck.
+                                 */
+
+                                statusText.textContent =
+                                    "LinkedIn authentication completed, but the GitHub workflow run ID was not returned.";
+
+
+                                runButton.textContent =
+                                    "Run LinkedIn V2 Search";
+
+
+                                runButton.disabled =
+                                    false;
+
+
+                                showError(
+                                    loginData.message ||
+                                    "GitHub Actions started, but no workflow run ID was returned."
+                                );
+
+                            }
+
 
                             return;
                         }
@@ -1283,7 +1347,8 @@ document.addEventListener(
                     ) {
 
                         handleSearchCompleted(
-                            data
+                            data,
+                            runId
                         );
 
                         return;
