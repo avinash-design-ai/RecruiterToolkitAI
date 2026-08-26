@@ -150,25 +150,47 @@ try:
     print("LOADED STORAGE STATE DIAGNOSTICS")
     print("=" * 70)
 
-    cookies = page.context.cookies("https://www.linkedin.com")
+    cookies = page.context.cookies(
+        "https://www.linkedin.com"
+    )
 
-    print("Total context cookies:", len(cookies))
+    print(
+        "Total context cookies:",
+        len(cookies)
+    )
 
     linkedin_cookies = [
-        c for c in cookies
-        if "linkedin.com" in c.get("domain", "")
+        c
+        for c in cookies
+        if "linkedin.com"
+        in c.get("domain", "")
     ]
 
-    print("LinkedIn context cookies:", len(linkedin_cookies))
+    print(
+        "LinkedIn context cookies:",
+        len(linkedin_cookies)
+    )
 
     for c in linkedin_cookies:
-        if c["name"] in ["li_at", "JSESSIONID", "bcookie", "bscookie"]:
+
+        if c["name"] in [
+            "li_at",
+            "JSESSIONID",
+            "bcookie",
+            "bscookie",
+        ]:
+
             print(
-                "name=", c["name"],
-                "domain=", c.get("domain"),
-                "path=", c.get("path"),
-                "secure=", c.get("secure"),
-                "expires=", c.get("expires"),
+                "name=",
+                c["name"],
+                "domain=",
+                c.get("domain"),
+                "path=",
+                c.get("path"),
+                "secure=",
+                c.get("secure"),
+                "expires=",
+                c.get("expires"),
             )
 
     print("=" * 70)
@@ -186,8 +208,15 @@ try:
 
     page.wait_for_timeout(5000)
 
-    print("URL:", page.url)
-    print("Title:", page.title())
+    print(
+        "URL:",
+        page.url
+    )
+
+    print(
+        "Title:",
+        page.title()
+    )
 
     print("=" * 70)
     print("POST-NAVIGATION LINKEDIN COOKIE DIAGNOSTICS")
@@ -203,18 +232,25 @@ try:
     )
 
     for c in post_cookies:
+
         if c["name"] in [
             "li_at",
             "JSESSIONID",
             "bcookie",
             "bscookie",
         ]:
+
             print(
-                "name=", c["name"],
-                "domain=", c.get("domain"),
-                "path=", c.get("path"),
-                "secure=", c.get("secure"),
-                "expires=", c.get("expires"),
+                "name=",
+                c["name"],
+                "domain=",
+                c.get("domain"),
+                "path=",
+                c.get("path"),
+                "secure=",
+                c.get("secure"),
+                "expires=",
+                c.get("expires"),
             )
 
     print(
@@ -231,30 +267,147 @@ try:
     url = page.url.lower()
 
     if "/login" in url:
-        raise RuntimeError("LinkedIn login page reached.")
+        raise RuntimeError(
+            "LinkedIn login page reached."
+        )
 
     if "checkpoint" in url:
-        raise RuntimeError("LinkedIn checkpoint reached.")
+        raise RuntimeError(
+            "LinkedIn checkpoint reached."
+        )
 
     if "challenge" in url:
-        raise RuntimeError("LinkedIn challenge reached.")
+        raise RuntimeError(
+            "LinkedIn challenge reached."
+        )
 
     if "/feed" not in url:
         raise RuntimeError(
             f"Unexpected LinkedIn URL: {page.url}"
         )
 
+
     print("=" * 70)
     print("AUTHENTICATED LINKEDIN SESSION CONFIRMED")
     print("=" * 70)
 
-    workflow = SearchWorkflowV2(page)
 
-    result = workflow.run(
-        company=COMPANY,
-        location=LOCATION,
-        max_profiles=MAX_PROFILES,
+    # =========================================================
+    # SEARCH WORKFLOW HANDOFF DIAGNOSTICS
+    # =========================================================
+
+    print("=" * 70)
+    print(">>> BEFORE SearchWorkflowV2 CONSTRUCTOR <<<")
+    print("=" * 70)
+
+    print(
+        "Authenticated page URL:",
+        page.url
     )
+
+    print(
+        "Authenticated page title:",
+        page.title()
+    )
+
+    print(
+        "Context page count BEFORE workflow:",
+        len(page.context.pages)
+    )
+
+
+    try:
+
+        workflow = SearchWorkflowV2(page)
+
+    except Exception as ex:
+
+        print("=" * 70)
+        print("!!! SearchWorkflowV2 CONSTRUCTOR FAILED !!!")
+        print("=" * 70)
+
+        print(
+            "Exception type:",
+            type(ex).__name__
+        )
+
+        print(
+            "Exception:",
+            repr(ex)
+        )
+
+        raise
+
+
+    print("=" * 70)
+    print(">>> AFTER SearchWorkflowV2 CONSTRUCTOR <<<")
+    print("=" * 70)
+
+    print(
+        "Context page count AFTER workflow:",
+        len(page.context.pages)
+    )
+
+
+    # =========================================================
+    # WORKFLOW.RUN HANDOFF DIAGNOSTIC
+    # =========================================================
+
+    print("=" * 70)
+    print(">>> BEFORE workflow.run() <<<")
+    print("=" * 70)
+
+    print(
+        "Company:",
+        COMPANY
+    )
+
+    print(
+        "Location:",
+        LOCATION
+    )
+
+    print(
+        "Max profiles:",
+        MAX_PROFILES
+    )
+
+    try:
+
+        result = workflow.run(
+            company=COMPANY,
+            location=LOCATION,
+            max_profiles=MAX_PROFILES,
+        )
+
+    except Exception as ex:
+
+        print("=" * 70)
+        print("!!! SearchWorkflowV2.run() FAILED !!!")
+        print("=" * 70)
+
+        print(
+            "Exception type:",
+            type(ex).__name__
+        )
+
+        print(
+            "Exception:",
+            repr(ex)
+        )
+
+        raise
+
+
+    print("=" * 70)
+    print(">>> AFTER workflow.run() <<<")
+    print("=" * 70)
+
+    print(
+        "Result:",
+        result
+    )
+
 
     print("=" * 70)
     print("V2 WORKFLOW FINISHED")
