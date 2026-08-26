@@ -36,10 +36,18 @@ class LinkedInProfilePageV2(BasePage):
                 print(f"Page {index}: {context_page.url}")
             print("=" * 70)
 
+            print("PROFILE NAVIGATION START")
+            print("Target profile URL:", profile_url)
+            print("Profile page before goto:", self.page.url)
+            print("Context page count:", len(self.page.context.pages))
+
             self.page.goto(
                 profile_url,
                 wait_until="domcontentloaded"
             )
+
+            print("Profile page after goto:", self.page.url)
+            print("Profile page title:", self.page.title())
 
             self.page.wait_for_timeout(4000)
 

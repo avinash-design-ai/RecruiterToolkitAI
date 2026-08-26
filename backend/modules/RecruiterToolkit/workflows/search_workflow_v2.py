@@ -17,9 +17,8 @@ class SearchWorkflowV2:
             self.page
         )
 
-        # Use the existing authenticated LinkedIn page for profile navigation.
-        # This matches the original desktop workflow and avoids a separate-page authwall.
-        self.profile_page = self.page
+        # Separate page for individual profiles.
+        self.profile_page = self.page.context.new_page()
 
         print("=" * 70)
         print("PROFILE PAGE AUTHENTICATION DIAGNOSTICS")
@@ -78,6 +77,11 @@ class SearchWorkflowV2:
                     .split("?")[0]
                     .strip()
                 )
+
+                print("V2 CANDIDATE:", i)
+                print("  text:", repr(link.inner_text().strip()))
+                print("  href:", repr(href))
+                print("  clean_url:", repr(clean_url))
 
                 if "/in/" not in clean_url:
                     continue
