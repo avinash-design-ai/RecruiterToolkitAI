@@ -1750,63 +1750,53 @@ def linkedin_verify(
 
 
 # ============================================================
-# GitHub workflow status
-#
-# Legacy endpoint.
+# Get GitHub artifacts for a run
 # ============================================================
 
-@router.get(
-    "/linkedin/v2/github-status"
-)
-def linkedin_github_status():
+def get_github_artifacts(
+    run_id,
+):
+    """
+    Return all GitHub Actions artifacts belonging to
+    the specified workflow run.
 
-    try:
+    This function does NOT assume that the CSV artifact
+    exists. The caller decides what artifact is required.
+    """
 
-        runs = get_github_runs()
+    headers = github_headers()
 
-        if not runs:
+    url = (
+        f"{GITHUB_API}/repos/"
+        f"{GITHUB_OWNER}/"
+        f"{GITHUB_REPO}/"
+        f"actions/runs/"
+        f"{run_id}/artifacts"
+    )
 
-            return {
-                "success": True,
-                "found": False,
-                "status": "not_found",
-            }
+    response = requests.get(
+        url,
+        headers=headers,
+        params={
+            "per_page": 100,
+        },
+        timeout=30,
+    )
 
-        run = runs[0]
+    if response.status_code != 200:
 
-        return {
+        raise RuntimeError(
+            "Unable to get GitHub artifacts: "
+            f"{response.status_code} "
+            f"{response.text}"
+        )
 
-            "success":
-                True,
+    data = response.json()
 
-            "found":
-                True,
-
-            "run_id":
-                run.get("id"),
-
-            "status":
-                run.get("status"),
-
-            "conclusion":
-                run.get("conclusion"),
-
-            "html_url":
-                run.get("html_url"),
-        }
-
-    except Exception as ex:
-
-        traceback.print_exc()
-
-        return {
-
-            "success":
-                False,
-
-            "message":
-                str(ex),
-        }
+    return data.get(
+        "artifacts",
+        []
+    )
 
 
 # ============================================================
@@ -1822,41 +1812,67 @@ def linkedin_github_status_by_id(
 
     try:
 
+        # ----------------------------------------------------
+        # Get exact workflow run
+        # ----------------------------------------------------
+
         run = get_github_run(
             run_id
         )
 
+        status = run.get(
+            "status"
+        )
+
+        conclusion = run.get(
+            "conclusion"
+        )
+
+        # ----------------------------------------------------
+        # Only inspect artifacts once the workflow has
+        # completed.
+        # ----------------------------------------------------
+
         artifacts = []
 
-        if (
-            run.get("status")
-            == "completed"
-            and
-            run.get("conclusion")
-            == "success"
-        ):
+        if status == "completed":
 
-            artifacts = (
-                get_github_artifacts(
-                    run_id
-                )
+            artifacts = get_github_artifacts(
+                run_id
             )
 
+        # ----------------------------------------------------
+        # Locate final LinkedIn V2 artifact
+        # ----------------------------------------------------
+
         csv_available = False
+        csv_artifact = None
 
         for artifact in artifacts:
 
+            artifact_name = artifact.get(
+                "name"
+            )
+
+            expired = artifact.get(
+                "expired",
+                False
+            )
+
             if (
-                artifact.get("name")
-                ==
-                "linkedin-v2-results"
-                and
-                not artifact.get("expired")
+                artifact_name
+                == "linkedin-v2-results"
+                and not expired
             ):
 
                 csv_available = True
+                csv_artifact = artifact
 
                 break
+
+        # ----------------------------------------------------
+        # Return diagnostic information
+        # ----------------------------------------------------
 
         return {
 
@@ -1867,16 +1883,30 @@ def linkedin_github_status_by_id(
                 run.get("id"),
 
             "status":
-                run.get("status"),
+                status,
 
             "conclusion":
-                run.get("conclusion"),
+                conclusion,
 
             "html_url":
                 run.get("html_url"),
 
             "csv_available":
                 csv_available,
+
+            "artifact_id":
+                (
+                    csv_artifact.get("id")
+                    if csv_artifact
+                    else None
+                ),
+
+            "artifact_name":
+                (
+                    csv_artifact.get("name")
+                    if csv_artifact
+                    else None
+                ),
 
             "artifacts": [
 
@@ -1890,6 +1920,21 @@ def linkedin_github_status_by_id(
 
                     "expired":
                         artifact.get("expired"),
+
+                    "size_in_bytes":
+                        artifact.get(
+                            "size_in_bytes"
+                        ),
+
+                    "created_at":
+                        artifact.get(
+                            "created_at"
+                        ),
+
+                    "updated_at":
+                        artifact.get(
+                            "updated_at"
+                        ),
 
                 }
 
@@ -1914,10 +1959,18 @@ def linkedin_github_status_by_id(
 # ============================================================
 # Download CSV artifact
 #
-# Render downloads the GitHub artifact and returns the actual
-# CSV file to the user's browser.
+# IMPORTANT:
 #
-# Search itself still happens entirely on GitHub Actions.
+# Search happens entirely inside GitHub Actions.
+#
+# Render only:
+#
+#   1. checks the exact workflow run
+#   2. finds the uploaded artifact
+#   3. downloads the artifact ZIP
+#   4. extracts the CSV
+#   5. returns the CSV to the browser
+#
 # ============================================================
 
 @router.get(
@@ -1927,48 +1980,133 @@ def download_github_csv(
     run_id: int,
 ):
 
+    temp_dir = None
+    zip_path = None
+    csv_path = None
+
     try:
 
+        print("=" * 70)
+        print("DOWNLOADING LINKEDIN V2 CSV")
+        print("=" * 70)
+
+        print(
+            "Run ID:",
+            run_id,
+        )
+
         # ----------------------------------------------------
-        # Confirm workflow completed successfully
+        # 1. Get exact GitHub workflow run
         # ----------------------------------------------------
 
         run = get_github_run(
             run_id
         )
 
-        if run.get("status") != "completed":
+        status = run.get(
+            "status"
+        )
+
+        conclusion = run.get(
+            "conclusion"
+        )
+
+        print(
+            "Workflow status:",
+            status,
+        )
+
+        print(
+            "Workflow conclusion:",
+            conclusion,
+        )
+
+        print(
+            "Workflow URL:",
+            run.get("html_url"),
+        )
+
+        # ----------------------------------------------------
+        # 2. Workflow must be completed
+        # ----------------------------------------------------
+
+        if status != "completed":
 
             return {
 
                 "success":
                     False,
 
-                "message":
-                    "GitHub search is not completed yet.",
-            }
+                "status":
+                    status,
 
-        if run.get("conclusion") != "success":
-
-            return {
-
-                "success":
-                    False,
+                "conclusion":
+                    conclusion,
 
                 "message":
                     (
-                        "GitHub search did not complete "
-                        "successfully."
+                        "GitHub search is not completed yet."
                     ),
             }
 
         # ----------------------------------------------------
-        # Find CSV artifact
+        # 3. Workflow must have succeeded
         # ----------------------------------------------------
+
+        if conclusion != "success":
+
+            return {
+
+                "success":
+                    False,
+
+                "status":
+                    status,
+
+                "conclusion":
+                    conclusion,
+
+                "message":
+                    (
+                        "GitHub search did not complete "
+                        "successfully. No CSV can be "
+                        "downloaded from this run."
+                    ),
+            }
+
+        # ----------------------------------------------------
+        # 4. Get artifacts belonging to THIS run
+        # ----------------------------------------------------
+
+        print(
+            "Looking for GitHub artifacts..."
+        )
 
         artifacts = get_github_artifacts(
             run_id
         )
+
+        print(
+            "Artifacts returned:",
+            len(artifacts),
+        )
+
+        for item in artifacts:
+
+            print(
+                "Artifact:",
+                item.get("name"),
+                "| ID:",
+                item.get("id"),
+                "| expired:",
+                item.get("expired"),
+                "| size:",
+                item.get("size_in_bytes"),
+            )
+
+        # ----------------------------------------------------
+        # 5. Find exact LinkedIn V2 artifact
+        # ----------------------------------------------------
 
         artifact = None
 
@@ -1979,59 +2117,126 @@ def download_github_csv(
                 ==
                 "linkedin-v2-results"
                 and
-                not item.get("expired")
+                not item.get("expired", False)
             ):
 
                 artifact = item
 
                 break
 
-        if not artifact:
+        # ----------------------------------------------------
+        # Artifact does not exist
+        # ----------------------------------------------------
+
+        if artifact is None:
 
             return {
 
                 "success":
                     False,
 
+                "status":
+                    status,
+
+                "conclusion":
+                    conclusion,
+
+                "artifacts":
+                    [
+                        item.get("name")
+                        for item in artifacts
+                    ],
+
                 "message":
-                    "CSV artifact is not available yet.",
+                    (
+                        "GitHub search completed successfully, "
+                        "but the 'linkedin-v2-results' artifact "
+                        "was not found. This means the workflow "
+                        "did not upload the final CSV artifact."
+                    ),
             }
 
-        artifact_id = artifact["id"]
+        artifact_id = artifact.get(
+            "id"
+        )
+
+        if not artifact_id:
+
+            raise RuntimeError(
+                "GitHub CSV artifact does not contain an ID."
+            )
+
+        print(
+            "LinkedIn V2 artifact found."
+        )
+
+        print(
+            "Artifact ID:",
+            artifact_id,
+        )
+
+        print(
+            "Artifact name:",
+            artifact.get("name"),
+        )
+
+        print(
+            "Artifact size:",
+            artifact.get("size_in_bytes"),
+        )
 
         # ----------------------------------------------------
-        # Download GitHub artifact ZIP
+        # 6. Download GitHub artifact ZIP
         # ----------------------------------------------------
 
         headers = github_headers()
 
-        url = (
+        artifact_url = (
             f"{GITHUB_API}/repos/"
             f"{GITHUB_OWNER}/"
             f"{GITHUB_REPO}/"
-            f"/actions/artifacts/"
+            f"actions/artifacts/"
             f"{artifact_id}/zip"
         )
 
+        print(
+            "Downloading artifact ZIP..."
+        )
+
         response = requests.get(
-            url,
+            artifact_url,
             headers=headers,
-            timeout=60,
+            timeout=120,
+            allow_redirects=True,
+        )
+
+        print(
+            "Artifact download HTTP status:",
+            response.status_code,
         )
 
         if response.status_code != 200:
 
             raise RuntimeError(
-                "Unable to download GitHub artifact: "
-                f"{response.status_code}"
+                "Unable to download GitHub artifact ZIP: "
+                f"{response.status_code} "
+                f"{response.text[:1000]}"
+            )
+
+        if not response.content:
+
+            raise RuntimeError(
+                "GitHub artifact download returned "
+                "an empty response."
             )
 
         # ----------------------------------------------------
-        # Temporary directory
+        # 7. Create isolated temporary directory
         # ----------------------------------------------------
 
-        temp_dir = Path(
-            "/tmp/linkedin-v2-results"
+        temp_dir = (
+            Path("/tmp")
+            / f"linkedin-v2-{run_id}-{artifact_id}"
         )
 
         temp_dir.mkdir(
@@ -2041,7 +2246,7 @@ def download_github_csv(
 
         zip_path = (
             temp_dir
-            / f"{artifact_id}.zip"
+            / "linkedin-v2-results.zip"
         )
 
         with open(
@@ -2053,8 +2258,18 @@ def download_github_csv(
                 response.content
             )
 
+        print(
+            "Artifact ZIP saved:",
+            zip_path,
+        )
+
+        print(
+            "Artifact ZIP size:",
+            zip_path.stat().st_size,
+        )
+
         # ----------------------------------------------------
-        # Extract CSV
+        # 8. Inspect ZIP contents BEFORE extraction
         # ----------------------------------------------------
 
         with zipfile.ZipFile(
@@ -2062,37 +2277,177 @@ def download_github_csv(
             "r",
         ) as archive:
 
-            csv_files = [
+            members = archive.namelist()
 
-                name
+            print(
+                "Files inside GitHub artifact:"
+            )
 
-                for name in archive.namelist()
+            for member in members:
 
-                if name.lower().endswith(
-                    ".csv"
+                print(
+                    " -",
+                    member,
+                )
+
+            # ------------------------------------------------
+            # Find CSV files
+            # ------------------------------------------------
+
+            csv_members = [
+
+                member
+
+                for member in members
+
+                if (
+                    not member.endswith("/")
+                    and
+                    member.lower().endswith(".csv")
                 )
             ]
 
-            if not csv_files:
+            if not csv_members:
 
                 raise RuntimeError(
-                    "No CSV file found inside GitHub artifact."
+                    "The 'linkedin-v2-results' GitHub "
+                    "artifact exists, but it contains "
+                    "no CSV file."
                 )
 
-            csv_name = csv_files[0]
+            # ------------------------------------------------
+            # Prefer final V2 CSV if multiple CSV files exist.
+            # ------------------------------------------------
 
-            archive.extract(
-                csv_name,
-                temp_dir,
+            preferred_csv = None
+
+            for member in csv_members:
+
+                filename = (
+                    Path(member)
+                    .name
+                    .lower()
+                )
+
+                if (
+                    "final" in filename
+                    and
+                    "v2" in filename
+                ):
+
+                    preferred_csv = member
+
+                    break
+
+            if preferred_csv is None:
+
+                for member in csv_members:
+
+                    filename = (
+                        Path(member)
+                        .name
+                        .lower()
+                    )
+
+                    if (
+                        "linkedin" in filename
+                        and
+                        "v2" in filename
+                    ):
+
+                        preferred_csv = member
+
+                        break
+
+            if preferred_csv is None:
+
+                preferred_csv = csv_members[0]
+
+            csv_member = preferred_csv
+
+            print(
+                "Selected CSV inside artifact:",
+                csv_member,
             )
 
-        csv_path = (
-            temp_dir
-            / csv_name
+            # ------------------------------------------------
+            # 9. Extract only the selected CSV
+            # ------------------------------------------------
+
+            csv_filename = (
+                Path(csv_member)
+                .name
+            )
+
+            csv_path = (
+                temp_dir
+                / csv_filename
+            )
+
+            with archive.open(
+                csv_member,
+                "r",
+            ) as source:
+
+                with open(
+                    csv_path,
+                    "wb",
+                ) as destination:
+
+                    while True:
+
+                        chunk = source.read(
+                            1024 * 1024
+                        )
+
+                        if not chunk:
+                            break
+
+                        destination.write(
+                            chunk
+                        )
+
+        # ----------------------------------------------------
+        # 10. Verify extracted CSV
+        # ----------------------------------------------------
+
+        if not csv_path.exists():
+
+            raise RuntimeError(
+                "CSV extraction completed but "
+                "the CSV file was not created."
+            )
+
+        csv_size = (
+            csv_path.stat().st_size
+        )
+
+        if csv_size <= 0:
+
+            raise RuntimeError(
+                "Extracted CSV file is empty."
+            )
+
+        print(
+            "CSV extracted successfully."
+        )
+
+        print(
+            "CSV path:",
+            csv_path,
+        )
+
+        print(
+            "CSV size:",
+            csv_size,
+            "bytes",
         )
 
         # ----------------------------------------------------
-        # Return CSV to browser
+        # 11. Return CSV to browser
+        #
+        # FileResponse streams the file after this function
+        # returns. Therefore DO NOT delete csv_path here.
         # ----------------------------------------------------
 
         return FileResponse(
@@ -2101,9 +2456,18 @@ def download_github_csv(
 
             media_type="text/csv",
 
-            filename=os.path.basename(
-                csv_name
-            ),
+            filename=csv_filename,
+
+            headers={
+                "Content-Disposition":
+                    (
+                        f'attachment; '
+                        f'filename="{csv_filename}"'
+                    ),
+
+                "Cache-Control":
+                    "no-store",
+            },
         )
 
     except Exception as ex:
@@ -2119,6 +2483,37 @@ def download_github_csv(
                 str(ex),
         }
 
+    finally:
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Do NOT delete csv_path here.
+        #
+        # FileResponse may not have streamed the file yet.
+        #
+        # We only remove the ZIP. The extracted CSV is left
+        # in /tmp and can be cleaned by the OS/container.
+        # ----------------------------------------------------
+
+        try:
+
+            if (
+                zip_path
+                and
+                zip_path.exists()
+            ):
+
+                zip_path.unlink(
+                    missing_ok=True
+                )
+
+        except Exception as cleanup_error:
+
+            print(
+                "ZIP cleanup warning:",
+                cleanup_error,
+            )
 
 # ============================================================
 # Stop search
