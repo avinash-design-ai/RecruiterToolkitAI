@@ -4,6 +4,8 @@ import time
 import traceback
 import hashlib
 import zipfile
+import tempfile
+import shutil
 from pathlib import Path
 
 import requests
@@ -11,6 +13,7 @@ import requests
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
 from models.linkedin import LinkedInRequest
 from models.linkedin_verify import LinkedInVerifyRequest
@@ -114,7 +117,6 @@ def validate_linkedin_storage_state(
         storage_state,
         dict,
     ):
-
         raise RuntimeError(
             "LinkedIn storage state is not a JSON object."
         )
@@ -128,13 +130,11 @@ def validate_linkedin_storage_state(
         cookies,
         list,
     ):
-
         raise RuntimeError(
             "LinkedIn storage state cookies are invalid."
         )
 
     if not cookies:
-
         raise RuntimeError(
             "LinkedIn storage state contains no cookies."
         )
@@ -150,7 +150,6 @@ def validate_linkedin_storage_state(
     ]
 
     if not linkedin_cookies:
-
         raise RuntimeError(
             "LinkedIn storage state contains "
             "no LinkedIn cookies."
@@ -173,7 +172,6 @@ def validate_linkedin_storage_state(
     )
 
     if missing_cookie_names:
-
         raise RuntimeError(
             "LinkedIn storage state is missing "
             "required authentication cookies: "
@@ -220,7 +218,7 @@ def update_github_storage_secret(
         )
 
     # --------------------------------------------------------
-    # Validate the state before encryption.
+    # Validate state
     # --------------------------------------------------------
 
     validation = validate_linkedin_storage_state(
@@ -233,7 +231,7 @@ def update_github_storage_secret(
     )
 
     # --------------------------------------------------------
-    # Serialize state.
+    # Serialize state
     # --------------------------------------------------------
 
     storage_json = json.dumps(
@@ -245,19 +243,18 @@ def update_github_storage_secret(
     )
 
     if not storage_json.strip():
-
         raise RuntimeError(
             "Serialized LinkedIn storage state is empty."
         )
 
     # --------------------------------------------------------
-    # GitHub headers.
+    # GitHub headers
     # --------------------------------------------------------
 
     headers = github_headers()
 
     # --------------------------------------------------------
-    # Get GitHub Actions repository public key.
+    # Get GitHub Actions repository public key
     # --------------------------------------------------------
 
     key_url = (
@@ -287,7 +284,7 @@ def update_github_storage_secret(
     public_key = key_data["key"]
 
     # --------------------------------------------------------
-    # Encrypt using GitHub's public key.
+    # Encrypt using GitHub's public key
     # --------------------------------------------------------
 
     public_key_obj = PublicKey(
@@ -310,7 +307,7 @@ def update_github_storage_secret(
     )
 
     # --------------------------------------------------------
-    # Update repository Actions secret.
+    # Update repository Actions secret
     # --------------------------------------------------------
 
     secret_url = (
@@ -335,7 +332,6 @@ def update_github_storage_secret(
         201,
         204,
     ):
-
         raise RuntimeError(
             "Unable to update GitHub storage secret: "
             f"{response.status_code} "
@@ -476,7 +472,6 @@ def wait_for_dispatched_run(
                 created_timestamp
                 >= dispatch_started_at - 5
             ):
-
                 return run
 
         time.sleep(1)
@@ -558,6 +553,241 @@ def get_github_artifacts(
 
 
 # ============================================================
+# Find CSV inside extracted artifact
+# ============================================================
+
+def find_csv_file(
+    extraction_dir: Path,
+):
+    """
+    Recursively locate CSV files inside the extracted
+    GitHub artifact.
+
+    Returns:
+        Path
+
+    Raises:
+        RuntimeError
+    """
+
+    csv_files = sorted(
+        [
+            path
+            for path in extraction_dir.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() == ".csv"
+        ]
+    )
+
+    if not csv_files:
+
+        raise RuntimeError(
+            "No CSV file was found inside the GitHub artifact."
+        )
+
+    print(
+        "CSV files found inside artifact:"
+    )
+
+    for csv_file in csv_files:
+
+        print(
+            " -",
+            csv_file,
+        )
+
+    # --------------------------------------------------------
+    # Prefer the most likely LinkedIn result file if there
+    # are multiple CSVs.
+    # --------------------------------------------------------
+
+    preferred_names = [
+        "linkedin-v2-results.csv",
+        "linkedin_results.csv",
+        "linkedin-results.csv",
+        "results.csv",
+    ]
+
+    for preferred_name in preferred_names:
+
+        for csv_file in csv_files:
+
+            if (
+                csv_file.name.lower()
+                == preferred_name.lower()
+            ):
+
+                print(
+                    "Selected preferred CSV:",
+                    csv_file,
+                )
+
+                return csv_file
+
+    # --------------------------------------------------------
+    # If only one CSV exists, use it.
+    # --------------------------------------------------------
+
+    if len(csv_files) == 1:
+
+        print(
+            "Selected only CSV:",
+            csv_files[0],
+        )
+
+        return csv_files[0]
+
+    # --------------------------------------------------------
+    # Multiple CSVs and no preferred filename.
+    # Select the largest CSV because result CSVs are normally
+    # the largest artifact file.
+    # --------------------------------------------------------
+
+    csv_files.sort(
+        key=lambda path: path.stat().st_size,
+        reverse=True,
+    )
+
+    selected = csv_files[0]
+
+    print(
+        "Multiple CSV files found."
+    )
+
+    print(
+        "Selected largest CSV:",
+        selected,
+    )
+
+    return selected
+
+
+# ============================================================
+# Safe ZIP extraction
+# ============================================================
+
+def extract_artifact_zip(
+    zip_path: Path,
+    extraction_dir: Path,
+):
+    """
+    Safely extract a GitHub artifact ZIP.
+
+    Protects against ZIP path traversal.
+    """
+
+    if not zip_path.exists():
+
+        raise RuntimeError(
+            "GitHub artifact ZIP file does not exist."
+        )
+
+    if zip_path.stat().st_size <= 0:
+
+        raise RuntimeError(
+            "GitHub artifact ZIP file is empty."
+        )
+
+    if not zipfile.is_zipfile(
+        zip_path
+    ):
+
+        raise RuntimeError(
+            "Downloaded GitHub artifact is not a valid ZIP file."
+        )
+
+    extraction_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    extraction_root = (
+        extraction_dir.resolve()
+    )
+
+    with zipfile.ZipFile(
+        zip_path,
+        "r",
+    ) as archive:
+
+        members = archive.infolist()
+
+        if not members:
+
+            raise RuntimeError(
+                "GitHub artifact ZIP contains no files."
+            )
+
+        for member in members:
+
+            member_path = (
+                extraction_dir
+                / member.filename
+            ).resolve()
+
+            try:
+
+                member_path.relative_to(
+                    extraction_root
+                )
+
+            except ValueError:
+
+                raise RuntimeError(
+                    "Unsafe path detected inside GitHub artifact ZIP: "
+                    f"{member.filename}"
+                )
+
+        archive.extractall(
+            extraction_dir
+        )
+
+    print(
+        "GitHub artifact extracted successfully:",
+        extraction_dir,
+    )
+
+
+# ============================================================
+# Cleanup downloaded artifact files
+# ============================================================
+
+def cleanup_download_directory(
+    directory: str,
+):
+    """
+    Delete temporary artifact directory after the CSV
+    response has completed.
+    """
+
+    try:
+
+        directory_path = Path(
+            directory
+        )
+
+        if directory_path.exists():
+
+            shutil.rmtree(
+                directory_path,
+                ignore_errors=True,
+            )
+
+            print(
+                "Temporary GitHub artifact directory "
+                "cleaned up:",
+                directory_path,
+            )
+
+    except Exception as ex:
+
+        print(
+            "Artifact cleanup warning:",
+            ex,
+        )
+
+
+# ============================================================
 # LinkedIn pages
 # ============================================================
 
@@ -585,11 +815,6 @@ def linkedin_page(
 
 # ============================================================
 # Existing LOCAL LinkedIn search
-#
-# This endpoint is retained for existing local automation.
-#
-# V2 GitHub workflow does NOT use this endpoint after
-# authentication.
 # ============================================================
 
 @router.post("/linkedin")
@@ -629,17 +854,6 @@ def linkedin_search(
 # V2 START
 #
 # Render-side LinkedIn authentication.
-#
-# IMPORTANT:
-# SearchWorkflowV2 does NOT run on Render.
-#
-# After successful authentication, this endpoint:
-#
-#   1. receives storage state
-#   2. validates storage state
-#   3. updates GitHub secret
-#   4. dispatches GitHub Actions
-#
 # ============================================================
 
 @router.post("/linkedin/v2/search")
@@ -683,11 +897,6 @@ def linkedin_v2_search(
         print("=" * 70)
 
         print(result)
-
-        # ====================================================
-        # Authentication completed directly without
-        # verification.
-        # ====================================================
 
         if (
             result.get("success")
@@ -748,10 +957,6 @@ def linkedin_v2_search(
             print(
                 "GitHub storage secret updated."
             )
-
-            # ------------------------------------------------
-            # Dispatch GitHub Actions.
-            # ------------------------------------------------
 
             print("=" * 70)
             print(
@@ -851,11 +1056,6 @@ def linkedin_v2_search(
                 )
                 print("=" * 70)
 
-                print(
-                    "WARNING: GitHub workflow was dispatched "
-                    "but its run ID was not found yet."
-                )
-
                 result.update({
 
                     "github_started":
@@ -885,10 +1085,6 @@ def linkedin_v2_search(
                         ),
                 })
 
-            # ------------------------------------------------
-            # SECURITY BOUNDARY
-            # ------------------------------------------------
-
             result.pop(
                 "storage_state",
                 None,
@@ -903,10 +1099,6 @@ def linkedin_v2_search(
                 "linkedin_storage_state",
                 None,
             )
-
-        # ====================================================
-        # FINAL UI SAFETY BOUNDARY
-        # ====================================================
 
         if isinstance(
             result,
@@ -942,11 +1134,6 @@ def linkedin_v2_search(
 
 # ============================================================
 # Direct GitHub search endpoint
-#
-# Legacy endpoint.
-#
-# It only dispatches GitHub Actions.
-# It does NOT authenticate LinkedIn.
 # ============================================================
 
 @router.post("/linkedin/v2/github-search")
@@ -1017,24 +1204,6 @@ def linkedin_v2_github_search(
 
 # ============================================================
 # LinkedIn verification
-#
-# Render:
-#
-#   1. receives verification code
-#   2. verifies LinkedIn
-#   3. confirms Feed
-#   4. saves storage state
-#   5. validates storage state
-#   6. updates GitHub secret ONCE
-#   7. dispatches GitHub Actions
-#   8. closes Render browser
-#
-# GitHub:
-#
-#   SearchWorkflowV2
-#   CSV creation
-#   artifact upload
-#
 # ============================================================
 
 @router.post("/linkedin/verify")
@@ -1236,20 +1405,13 @@ def linkedin_verify(
                     1000
                 )
 
-        # ====================================================
-        # Verification failed
-        # ====================================================
-
         if not authenticated:
 
             return {
                 "success": False,
-
                 "verification_required": True,
-
                 "session_id":
                     data.session_id,
-
                 "message":
                     (
                         "LinkedIn verification was not "
@@ -1272,7 +1434,7 @@ def linkedin_verify(
         )
 
         # ====================================================
-        # Move SAME authenticated Playwright page to Feed
+        # Move same authenticated page to Feed
         # ====================================================
 
         print("=" * 70)
@@ -1312,7 +1474,7 @@ def linkedin_verify(
         )
 
         # ====================================================
-        # Confirm SAME Playwright page reached Feed
+        # Confirm Feed
         # ====================================================
 
         feed_loaded = False
@@ -1366,12 +1528,9 @@ def linkedin_verify(
 
             return {
                 "success": False,
-
                 "verification_required": True,
-
                 "session_id":
                     data.session_id,
-
                 "message":
                     (
                         "LinkedIn verification succeeded, "
@@ -1467,7 +1626,7 @@ def linkedin_verify(
             ) from ex
 
         # ====================================================
-        # Validate storage state BEFORE GitHub update
+        # Validate storage state
         # ====================================================
 
         print("=" * 70)
@@ -1527,7 +1686,7 @@ def linkedin_verify(
         )
 
         # ====================================================
-        # Update GitHub secret ONCE
+        # Update GitHub secret
         # ====================================================
 
         print("=" * 70)
@@ -1547,10 +1706,6 @@ def linkedin_verify(
 
         # ====================================================
         # Dispatch GitHub Actions
-        #
-        # THIS is where the actual search begins.
-        #
-        # SearchWorkflowV2 does NOT run on Render.
         # ====================================================
 
         print("=" * 70)
@@ -1656,8 +1811,7 @@ def linkedin_verify(
             )
 
         # ====================================================
-        # GitHub now owns the authenticated state.
-        # Render browser can close.
+        # Close Render browser
         # ====================================================
 
         try:
@@ -1684,9 +1838,7 @@ def linkedin_verify(
         )
 
         # ====================================================
-        # Return ONLY safe workflow information to UI.
-        #
-        # storage_state is NEVER returned.
+        # Return ONLY safe workflow information
         # ====================================================
 
         return {
@@ -1751,8 +1903,6 @@ def linkedin_verify(
 
 # ============================================================
 # GitHub workflow status
-#
-# Legacy endpoint.
 # ============================================================
 
 @router.get(
@@ -1914,8 +2064,11 @@ def linkedin_github_status_by_id(
 # ============================================================
 # Download CSV artifact
 #
-# Render downloads the GitHub artifact and returns the actual
-# CSV file to the user's browser.
+# FIXED VERSION
+#
+# Render downloads the GitHub artifact ZIP, safely extracts
+# it into a unique temporary directory, recursively locates
+# the CSV, and returns the CSV to the browser.
 #
 # Search itself still happens entirely on GitHub Actions.
 # ============================================================
@@ -1927,7 +2080,20 @@ def download_github_csv(
     run_id: int,
 ):
 
+    temp_dir = None
+
     try:
+
+        print("=" * 70)
+        print(
+            "GITHUB CSV DOWNLOAD REQUEST"
+        )
+        print("=" * 70)
+
+        print(
+            "Run ID:",
+            run_id,
+        )
 
         # ----------------------------------------------------
         # Confirm workflow completed successfully
@@ -1937,24 +2103,40 @@ def download_github_csv(
             run_id
         )
 
-        if run.get("status") != "completed":
+        status = run.get(
+            "status"
+        )
+
+        conclusion = run.get(
+            "conclusion"
+        )
+
+        print(
+            "GitHub workflow status:",
+            status,
+        )
+
+        print(
+            "GitHub workflow conclusion:",
+            conclusion,
+        )
+
+        if status != "completed":
 
             return {
-
-                "success":
-                    False,
-
+                "success": False,
+                "csv_available": False,
                 "message":
-                    "GitHub search is not completed yet.",
+                    (
+                        "GitHub search is not completed yet."
+                    ),
             }
 
-        if run.get("conclusion") != "success":
+        if conclusion != "success":
 
             return {
-
-                "success":
-                    False,
-
+                "success": False,
+                "csv_available": False,
                 "message":
                     (
                         "GitHub search did not complete "
@@ -1963,16 +2145,30 @@ def download_github_csv(
             }
 
         # ----------------------------------------------------
-        # Find CSV artifact
+        # Find artifacts
         # ----------------------------------------------------
 
         artifacts = get_github_artifacts(
             run_id
         )
 
+        print(
+            "Number of GitHub artifacts:",
+            len(artifacts),
+        )
+
         artifact = None
 
         for item in artifacts:
+
+            print(
+                "Artifact:",
+                item.get("name"),
+                "ID:",
+                item.get("id"),
+                "Expired:",
+                item.get("expired"),
+            )
 
             if (
                 item.get("name")
@@ -1989,15 +2185,54 @@ def download_github_csv(
         if not artifact:
 
             return {
-
-                "success":
-                    False,
-
+                "success": False,
+                "csv_available": False,
                 "message":
-                    "CSV artifact is not available yet.",
+                    (
+                        "The linkedin-v2-results GitHub "
+                        "artifact was not found or has expired."
+                    ),
             }
 
-        artifact_id = artifact["id"]
+        artifact_id = artifact.get(
+            "id"
+        )
+
+        if not artifact_id:
+
+            raise RuntimeError(
+                "GitHub artifact does not contain an artifact ID."
+            )
+
+        print(
+            "Selected artifact ID:",
+            artifact_id,
+        )
+
+        # ----------------------------------------------------
+        # Create unique temporary directory
+        # ----------------------------------------------------
+
+        temp_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f"linkedin-v2-{run_id}-"
+            )
+        )
+
+        print(
+            "Temporary artifact directory:",
+            temp_dir,
+        )
+
+        zip_path = (
+            temp_dir
+            / "github-artifact.zip"
+        )
+
+        extraction_dir = (
+            temp_dir
+            / "extracted"
+        )
 
         # ----------------------------------------------------
         # Download GitHub artifact ZIP
@@ -2005,44 +2240,53 @@ def download_github_csv(
 
         headers = github_headers()
 
-        url = (
+        artifact_url = (
             f"{GITHUB_API}/repos/"
             f"{GITHUB_OWNER}/"
             f"{GITHUB_REPO}/"
-            f"/actions/artifacts/"
+            f"actions/artifacts/"
             f"{artifact_id}/zip"
         )
 
+        print(
+            "Downloading GitHub artifact..."
+        )
+
         response = requests.get(
-            url,
+            artifact_url,
             headers=headers,
-            timeout=60,
+            timeout=120,
+            allow_redirects=True,
+        )
+
+        print(
+            "GitHub artifact download status:",
+            response.status_code,
+        )
+
+        print(
+            "GitHub artifact response size:",
+            len(response.content),
+            "bytes",
         )
 
         if response.status_code != 200:
 
             raise RuntimeError(
                 "Unable to download GitHub artifact: "
-                f"{response.status_code}"
+                f"{response.status_code} "
+                f"{response.text[:1000]}"
+            )
+
+        if not response.content:
+
+            raise RuntimeError(
+                "GitHub returned an empty artifact response."
             )
 
         # ----------------------------------------------------
-        # Temporary directory
+        # Save ZIP
         # ----------------------------------------------------
-
-        temp_dir = Path(
-            "/tmp/linkedin-v2-results"
-        )
-
-        temp_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        zip_path = (
-            temp_dir
-            / f"{artifact_id}.zip"
-        )
 
         with open(
             zip_path,
@@ -2053,47 +2297,99 @@ def download_github_csv(
                 response.content
             )
 
-        # ----------------------------------------------------
-        # Extract CSV
-        # ----------------------------------------------------
-
-        with zipfile.ZipFile(
+        print(
+            "Artifact ZIP saved:",
             zip_path,
-            "r",
-        ) as archive:
+        )
 
-            csv_files = [
-
-                name
-
-                for name in archive.namelist()
-
-                if name.lower().endswith(
-                    ".csv"
-                )
-            ]
-
-            if not csv_files:
-
-                raise RuntimeError(
-                    "No CSV file found inside GitHub artifact."
-                )
-
-            csv_name = csv_files[0]
-
-            archive.extract(
-                csv_name,
-                temp_dir,
-            )
-
-        csv_path = (
-            temp_dir
-            / csv_name
+        print(
+            "Artifact ZIP size:",
+            zip_path.stat().st_size,
+            "bytes",
         )
 
         # ----------------------------------------------------
-        # Return CSV to browser
+        # Validate and extract ZIP
         # ----------------------------------------------------
+
+        extract_artifact_zip(
+            zip_path=zip_path,
+            extraction_dir=extraction_dir,
+        )
+
+        # ----------------------------------------------------
+        # Find CSV recursively
+        # ----------------------------------------------------
+
+        csv_path = find_csv_file(
+            extraction_dir
+        )
+
+        if not csv_path.exists():
+
+            raise RuntimeError(
+                "CSV file was located but does not exist."
+            )
+
+        csv_size = (
+            csv_path.stat().st_size
+        )
+
+        if csv_size <= 0:
+
+            raise RuntimeError(
+                "CSV file exists but is empty."
+            )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            "CSV READY FOR DOWNLOAD"
+        )
+
+        print(
+            "CSV path:",
+            csv_path,
+        )
+
+        print(
+            "CSV size:",
+            csv_size,
+            "bytes",
+        )
+
+        print(
+            "CSV filename:",
+            csv_path.name,
+        )
+
+        print(
+            "=" * 70
+        )
+
+        # ----------------------------------------------------
+        # Create a deterministic download filename
+        # ----------------------------------------------------
+
+        download_filename = (
+            f"linkedin-results-{run_id}.csv"
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # FileResponse sends the actual CSV file.
+        #
+        # BackgroundTask cleans the complete temporary
+        # directory AFTER the response has finished.
+        # ----------------------------------------------------
+
+        cleanup_task = BackgroundTask(
+            cleanup_download_directory,
+            str(temp_dir),
+        )
 
         return FileResponse(
 
@@ -2101,22 +2397,45 @@ def download_github_csv(
 
             media_type="text/csv",
 
-            filename=os.path.basename(
-                csv_name
-            ),
+            filename=download_filename,
+
+            background=cleanup_task,
         )
 
-    except Exception as ex:
+    except zipfile.BadZipFile:
+
+        if temp_dir:
+
+            cleanup_download_directory(
+                str(temp_dir)
+            )
 
         traceback.print_exc()
 
         return {
-
-            "success":
-                False,
-
+            "success": False,
+            "csv_available": False,
             "message":
-                str(ex),
+                (
+                    "GitHub artifact download was not "
+                    "a valid ZIP file."
+                ),
+        }
+
+    except Exception as ex:
+
+        if temp_dir:
+
+            cleanup_download_directory(
+                str(temp_dir)
+            )
+
+        traceback.print_exc()
+
+        return {
+            "success": False,
+            "csv_available": False,
+            "message": str(ex),
         }
 
 
