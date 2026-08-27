@@ -20,21 +20,6 @@ class SearchWorkflowV2:
         # Separate page for individual profiles.
         self.profile_page = self.page.context.new_page()
 
-        print("=" * 70)
-        print("PROFILE PAGE AUTHENTICATION DIAGNOSTICS")
-        print("=" * 70)
-
-        try:
-            profile_cookies = self.profile_page.context.cookies("https://www.linkedin.com")
-            print("Profile page context cookies:", len(profile_cookies))
-            for cookie in profile_cookies:
-                if cookie["name"] in ["li_at", "JSESSIONID", "bcookie", "bscookie"]:
-                    print("name=", cookie["name"], "domain=", cookie.get("domain"), "path=", cookie.get("path"), "secure=", cookie.get("secure"), "expires=", cookie.get("expires"))
-        except Exception as ex:
-            print("Profile cookie diagnostics failed:", repr(ex))
-
-        print("=" * 70)
-
     # =====================================================
     # V2 PROFILE EXTRACTION
     # =====================================================
@@ -47,6 +32,17 @@ class SearchWorkflowV2:
 
         profiles = []
         seen_urls = set()
+
+        # -------------------------------------------------
+        # Keep the original broad visible /in/ extraction.
+        #
+        # Do NOT require:
+        #   - 1st / 2nd / 3rd
+        #   - multiline text
+        #
+        # LinkedIn can render valid profile links in
+        # different formats.
+        # -------------------------------------------------
 
         links = self.page.locator(
             "a[href*='/in/']:visible"
@@ -72,16 +68,14 @@ class SearchWorkflowV2:
                 if not href:
                     continue
 
+                href = href.strip()
+
                 clean_url = (
                     href
                     .split("?")[0]
+                    .split("#")[0]
                     .strip()
                 )
-
-                print("V2 CANDIDATE:", i)
-                print("  text:", repr(link.inner_text().strip()))
-                print("  href:", repr(href))
-                print("  clean_url:", repr(clean_url))
 
                 if "/in/" not in clean_url:
                     continue
@@ -92,6 +86,10 @@ class SearchWorkflowV2:
                         "https://www.linkedin.com"
                         + clean_url
                     )
+
+                # -------------------------------------------------
+                # Deduplicate profile URLs.
+                # -------------------------------------------------
 
                 if clean_url in seen_urls:
                     continue
@@ -105,30 +103,14 @@ class SearchWorkflowV2:
                     continue
 
                 # -------------------------------------------------
-                # Actual result-card links are multiline and contain
-                # LinkedIn connection-degree information.
+                # Original behavior:
                 #
-                # Mutual connection links are normally just a name.
-                # -------------------------------------------------
-
-                has_degree_marker = (
-                    "• 1st" in text
-                    or "• 2nd" in text
-                    or "• 3rd" in text
-                )
-
-                has_multiple_lines = (
-                    "\n" in text
-                )
-
-                if not (
-                    has_degree_marker
-                    and has_multiple_lines
-                ):
-                    continue
-
-                # -------------------------------------------------
-                # First non-empty line = employee name
+                # Use the visible link text as the profile name,
+                # while rejecting obvious non-name / oversized
+                # link text.
+                #
+                # We intentionally do NOT require a connection
+                # degree marker or multiline result card.
                 # -------------------------------------------------
 
                 lines = [
@@ -140,7 +122,14 @@ class SearchWorkflowV2:
                 if not lines:
                     continue
 
+                # First non-empty line is normally the person's
+                # name when LinkedIn renders a multiline card.
                 name = lines[0]
+
+                # -------------------------------------------------
+                # Clean connection-degree markers if LinkedIn
+                # places them on the same line.
+                # -------------------------------------------------
 
                 name = (
                     name
@@ -153,10 +142,25 @@ class SearchWorkflowV2:
                 if not name:
                     continue
 
-                if len(name) > 100:
+                # -------------------------------------------------
+                # Preserve the original safeguards.
+                # -------------------------------------------------
+
+                if len(name) > 40:
                     continue
 
-                if len(name.split()) > 12:
+                if name.count(" ") > 4:
+                    continue
+
+                # -------------------------------------------------
+                # Reject obvious non-profile link text.
+                # -------------------------------------------------
+
+                if name.lower() in (
+                    "view profile",
+                    "see profile",
+                    "linkedin member",
+                ):
                     continue
 
                 seen_urls.add(
@@ -344,14 +348,6 @@ class SearchWorkflowV2:
             )
 
             print("=" * 60)
-
-            # -------------------------------------------------
-            # IMPORTANT:
-            #
-            # V2 uses its own extraction method.
-            # We DO NOT call company_page.get_profiles()
-            # because that method collects every /in/ link.
-            # -------------------------------------------------
 
             page_results = (
                 self.get_search_result_profiles()
