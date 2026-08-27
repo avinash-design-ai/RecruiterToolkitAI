@@ -1,3 +1,4 @@
+import re
 from pages.company_page import CompanyPage
 from pages.linkedin_profile_page_v2 import LinkedInProfilePageV2
 
@@ -17,8 +18,86 @@ class SearchWorkflowV2:
             self.page
         )
 
-        # Separate page for opening individual profiles.
+        # Separate page for individual profiles.
         self.profile_page = self.page.context.new_page()
+
+    # =====================================================
+    # V2 PROFILE EXTRACTION
+    # =====================================================
+
+    def get_search_result_profiles(self):
+        """Extract actual employee profiles from the current people-search DOM."""
+        print("=" * 60)
+        print("V2 - Extracting actual employee search results")
+        print("=" * 60)
+
+        profiles = []
+        seen_urls = set()
+
+        # IMPORTANT: do NOT use :visible here. LinkedIn can keep the
+        # result anchors in the DOM while Playwright reports them as
+        # not visible. The old working workflow found these anchors.
+        links = self.page.locator("a[href*=\'/in/\']")
+        count = links.count()
+        print("Employee /in/ anchors in DOM:", count)
+
+        if count == 0:
+            try:
+                self.page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            links = self.page.locator("a[href*=\'/in/\']")
+            count = links.count()
+            print("Employee /in/ anchors after stabilization:", count)
+
+        for i in range(count):
+            try:
+                link = links.nth(i)
+                href = link.get_attribute("href")
+                if not href:
+                    continue
+
+                clean_url = href.split("?")[0].strip()
+                if "/in/" not in clean_url:
+                    continue
+                if not clean_url.startswith("http"):
+                    clean_url = "https://www.linkedin.com" + clean_url
+                if clean_url in seen_urls:
+                    continue
+
+                try:
+                    text = link.inner_text().strip()
+                except Exception:
+                    text = ""
+                if not text:
+                    continue
+
+                lines = [x.strip() for x in text.splitlines() if x.strip()]
+                if not lines:
+                    continue
+
+                name = lines[0]
+                # Support both correctly decoded and mojibake bullets.
+                name = re.sub(r"^[•â€¢\s]*(?:1st|2nd|3rd)\s*", "", name, flags=re.I)
+                name = re.sub(r"\s*[•â€¢]\s*(?:1st|2nd|3rd).*$", "", name, flags=re.I)
+                name = (name.replace("• 1st", "").replace("• 2nd", "").replace("• 3rd", "").replace("â€¢ 1st", "").replace("â€¢ 2nd", "").replace("â€¢ 3rd", "").strip())
+
+                if not name or len(name) > 100 or len(name.split()) > 12:
+                    continue
+                if not re.search(r"[A-Za-z]", name):
+                    continue
+
+                seen_urls.add(clean_url)
+                profiles.append({"full_name": name, "profile_url": clean_url})
+                print(f"{len(profiles)}. {name}")
+
+            except Exception as ex:
+                print("Profile extraction failed:", repr(ex))
+
+        print("=" * 60)
+        print("Actual employee profiles extracted:", len(profiles))
+        print("=" * 60)
+        return profiles
 
     # =====================================================
     # MAIN WORKFLOW
@@ -165,28 +244,27 @@ class SearchWorkflowV2:
                 break
 
             print("=" * 60)
+
             print(
                 f"E - Reading employee page {page_no}"
             )
+
             print("=" * 60)
 
+            # -------------------------------------------------
             # IMPORTANT:
             #
-            # Keep the original working CompanyPage
-            # profile extraction.
-            #
-            # DO NOT replace this with a custom
-            # a[href*='/in/'] extractor.
-            #
-            # The original get_profiles() method was
-            # successfully extracting the employee cards.
+            # V2 uses its own extraction method.
+            # We DO NOT call company_page.get_profiles()
+            # because that method collects every /in/ link.
+            # -------------------------------------------------
+
             page_results = (
-                self.company_page
-                .get_profiles()
+                self.get_search_result_profiles()
             )
 
             print(
-                "Profiles extracted:",
+                "V2 profiles extracted:",
                 len(page_results)
             )
 
@@ -224,7 +302,9 @@ class SearchWorkflowV2:
                 )
 
                 print("=" * 60)
-                print("PROCESSING PROFILE")
+                print(
+                    "PROCESSING PROFILE"
+                )
                 print("=" * 60)
 
                 print(
@@ -279,7 +359,9 @@ class SearchWorkflowV2:
                     )
 
                     print("=" * 60)
-                    print("PROFILE COLLECTED")
+                    print(
+                        "PROFILE COLLECTED"
+                    )
                     print("=" * 60)
 
                     for key, value in data.items():
@@ -388,7 +470,9 @@ class SearchWorkflowV2:
     ):
 
         print("=" * 70)
-        print("V2 WORKFLOW FINISHED")
+        print(
+            "V2 WORKFLOW FINISHED"
+        )
         print("=" * 70)
 
         print(
@@ -422,7 +506,11 @@ class SearchWorkflowV2:
                 )
 
         return {
+
             "results": results,
+
             "count": len(results),
+
             "csv": output_file
+
         }
