@@ -11,18 +11,167 @@ class SearchWorkflowV2:
 
         self.page = page
 
-        # IMPORTANT:
-        # Use the existing authenticated page.
-        # CompanyPage owns the actual LinkedIn navigation/search DOM.
-        #
-        # Do NOT create another search page here.
+        # Existing logged-in LinkedIn page.
+        # DO NOT create another search page.
         self.company_page = CompanyPage(
             self.page
         )
 
-        # Separate page for opening individual profiles.
-        # This preserves the existing profile/email extraction workflow.
+        # Separate page for individual profiles.
         self.profile_page = self.page.context.new_page()
+
+    # =====================================================
+    # V2 PROFILE EXTRACTION
+    # =====================================================
+
+    def get_search_result_profiles(self):
+
+        print("=" * 60)
+        print("V2 - Extracting actual employee search results")
+        print("=" * 60)
+
+        profiles = []
+        seen_urls = set()
+
+        links = self.page.locator(
+            "a[href*='/in/']:visible"
+        )
+
+        count = links.count()
+
+        print(
+            "Visible /in/ links:",
+            count
+        )
+
+        for i in range(count):
+
+            try:
+
+                link = links.nth(i)
+
+                href = link.get_attribute(
+                    "href"
+                )
+
+                if not href:
+                    continue
+
+                clean_url = (
+                    href
+                    .split("?")[0]
+                    .strip()
+                )
+
+                if "/in/" not in clean_url:
+                    continue
+
+                if not clean_url.startswith("http"):
+
+                    clean_url = (
+                        "https://www.linkedin.com"
+                        + clean_url
+                    )
+
+                if clean_url in seen_urls:
+                    continue
+
+                text = (
+                    link.inner_text()
+                    .strip()
+                )
+
+                if not text:
+                    continue
+
+                # -------------------------------------------------
+                # Actual result-card links are multiline and contain
+                # LinkedIn connection-degree information.
+                #
+                # Mutual connection links are normally just a name.
+                # -------------------------------------------------
+
+                has_degree_marker = (
+                    "• 1st" in text
+                    or "• 2nd" in text
+                    or "• 3rd" in text
+                )
+
+                has_multiple_lines = (
+                    "\n" in text
+                )
+
+                if not (
+                    has_degree_marker
+                    and has_multiple_lines
+                ):
+                    continue
+
+                # -------------------------------------------------
+                # First non-empty line = employee name
+                # -------------------------------------------------
+
+                lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip()
+                ]
+
+                if not lines:
+                    continue
+
+                name = lines[0]
+
+                name = (
+                    name
+                    .replace("• 1st", "")
+                    .replace("• 2nd", "")
+                    .replace("• 3rd", "")
+                    .strip()
+                )
+
+                if not name:
+                    continue
+
+                if len(name) > 100:
+                    continue
+
+                if len(name.split()) > 12:
+                    continue
+
+                seen_urls.add(
+                    clean_url
+                )
+
+                profiles.append(
+                    {
+                        "full_name": name,
+                        "profile_url": clean_url
+                    }
+                )
+
+                print(
+                    f"{len(profiles)}. "
+                    f"{name}"
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Profile extraction failed:",
+                    repr(ex)
+                )
+
+        print("=" * 60)
+
+        print(
+            "Actual employee profiles extracted:",
+            len(profiles)
+        )
+
+        print("=" * 60)
+
+        return profiles
 
     # =====================================================
     # MAIN WORKFLOW
@@ -156,25 +305,6 @@ class SearchWorkflowV2:
 
         # -------------------------------------------------
         # E - Collect Profiles
-        #
-        # IMPORTANT:
-        #
-        # Use CompanyPage.get_profiles().
-        #
-        # This is the existing working employee-result
-        # extraction logic. It reads the actual people-search
-        # page and filters out multiline mutual-connection
-        # links instead of treating every /in/ anchor as an
-        # employee result.
-        #
-        # DO NOT replace this with a raw:
-        #
-        #     page.locator("a[href*='/in/']")
-        #
-        # scan.
-        #
-        # The latter can collect unrelated mutual connections
-        # that are present elsewhere in the DOM.
         # -------------------------------------------------
 
         while len(results) < max_profiles:
@@ -195,13 +325,20 @@ class SearchWorkflowV2:
 
             print("=" * 60)
 
+            # -------------------------------------------------
+            # IMPORTANT:
+            #
+            # V2 uses its own extraction method.
+            # We DO NOT call company_page.get_profiles()
+            # because that method collects every /in/ link.
+            # -------------------------------------------------
+
             page_results = (
-                self.company_page
-                .get_profiles()
+                self.get_search_result_profiles()
             )
 
             print(
-                "Profiles extracted:",
+                "V2 profiles extracted:",
                 len(page_results)
             )
 
@@ -227,10 +364,13 @@ class SearchWorkflowV2:
                 )
 
                 if not profile_url:
+
                     continue
 
                 if profile_url in seen_urls:
+
                     continue
+
 
                 seen_urls.add(
                     profile_url
@@ -248,19 +388,6 @@ class SearchWorkflowV2:
                 )
 
                 try:
-
-                    # -------------------------------------------------
-                    # Existing V2 profile page.
-                    #
-                    # This is where the existing public-profile email
-                    # extraction remains intact, including:
-                    #
-                    #   email
-                    #   email_source
-                    #   linked_email_id
-                    #
-                    # DO NOT replace this with CompanyPage extraction.
-                    # -------------------------------------------------
 
                     profile = (
                         LinkedInProfilePageV2(
@@ -405,8 +532,7 @@ class SearchWorkflowV2:
             company,
             location
         )
-
-    # =====================================================
+  # =====================================================
     # FINAL EXPORT
     # =====================================================
 
@@ -454,7 +580,11 @@ class SearchWorkflowV2:
                 )
 
         return {
+
             "results": results,
+
             "count": len(results),
+
             "csv": output_file
+
         }
