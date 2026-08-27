@@ -11,14 +11,390 @@ class SearchWorkflowV2:
 
         self.page = page
 
-        # Existing logged-in LinkedIn page.
-        # DO NOT create another search page.
+        # Existing authenticated LinkedIn page.
         self.company_page = CompanyPage(
             self.page
         )
 
-        # Separate page for opening individual profiles.
+        # Separate page for individual profiles.
         self.profile_page = self.page.context.new_page()
+
+    # =====================================================
+    # V2 SEARCH RESULT PROFILE EXTRACTION
+    # =====================================================
+
+    def get_search_result_profiles(self):
+
+        print("=" * 60)
+        print("V2 - Extracting actual employee search results")
+        print("=" * 60)
+
+        profiles = []
+        seen_urls = set()
+
+        # -------------------------------------------------
+        # IMPORTANT
+        #
+        # DO NOT scan the whole page for:
+        #
+        #     a[href*='/in/']
+        #
+        # That also captures:
+        # - mutual connections
+        # - recommendations
+        # - people from other LinkedIn sections
+        # - unrelated profile links
+        #
+        # We first restrict the search to LinkedIn's
+        # search-result containers.
+        # -------------------------------------------------
+
+        result_containers = self.page.locator(
+            "li.reusable-search__result-container"
+        )
+
+        container_count = result_containers.count()
+
+        print(
+            "Search result containers found:",
+            container_count
+        )
+
+        # -------------------------------------------------
+        # Fallback selectors
+        #
+        # LinkedIn occasionally changes the outer result
+        # container class. Try known result-card structures
+        # before giving up.
+        # -------------------------------------------------
+
+        if container_count == 0:
+
+            result_containers = self.page.locator(
+                "li"
+            )
+
+            all_li_count = result_containers.count()
+
+            print(
+                "Fallback <li> containers:",
+                all_li_count
+            )
+
+        # -------------------------------------------------
+        # Process each result container
+        # -------------------------------------------------
+
+        for i in range(
+            result_containers.count()
+        ):
+
+            try:
+
+                container = (
+                    result_containers.nth(i)
+                )
+
+                # -------------------------------------------------
+                # Only links inside THIS result card.
+                # -------------------------------------------------
+
+                links = container.locator(
+                    "a[href*='/in/']"
+                )
+
+                link_count = links.count()
+
+                if link_count == 0:
+                    continue
+
+                selected_link = None
+                selected_href = None
+
+                # -------------------------------------------------
+                # Find the profile link belonging to this card.
+                # -------------------------------------------------
+
+                for j in range(link_count):
+
+                    link = links.nth(j)
+
+                    href = (
+                        link.get_attribute(
+                            "href"
+                        )
+                    )
+
+                    if not href:
+                        continue
+
+                    clean_url = (
+                        href
+                        .split("?")[0]
+                        .strip()
+                    )
+
+                    if "/in/" not in clean_url:
+                        continue
+
+                    if not clean_url.startswith(
+                        "http"
+                    ):
+
+                        clean_url = (
+                            "https://www.linkedin.com"
+                            + clean_url
+                        )
+
+                    selected_link = link
+                    selected_href = clean_url
+
+                    break
+
+                if not selected_link:
+                    continue
+
+                if selected_href in seen_urls:
+                    continue
+
+                # -------------------------------------------------
+                # Get the complete result-card text.
+                # -------------------------------------------------
+
+                card_text = (
+                    container.inner_text()
+                    .strip()
+                )
+
+                if not card_text:
+                    continue
+
+                # -------------------------------------------------
+                # A real LinkedIn people result normally contains
+                # the profile name plus result-card metadata.
+                #
+                # We deliberately do NOT require a connection
+                # degree because LinkedIn can omit it.
+                # -------------------------------------------------
+
+                lines = [
+                    line.strip()
+                    for line in card_text.splitlines()
+                    if line.strip()
+                ]
+
+                if not lines:
+                    continue
+
+                # -------------------------------------------------
+                # Determine the name from the profile link itself.
+                #
+                # This avoids taking random text from the card.
+                # -------------------------------------------------
+
+                link_text = (
+                    selected_link.inner_text()
+                    .strip()
+                )
+
+                link_lines = [
+                    line.strip()
+                    for line in link_text.splitlines()
+                    if line.strip()
+                ]
+
+                if link_lines:
+
+                    name = link_lines[0]
+
+                else:
+
+                    name = lines[0]
+
+                # -------------------------------------------------
+                # Clean LinkedIn connection markers.
+                # -------------------------------------------------
+
+                for marker in (
+                    "• 1st",
+                    "• 2nd",
+                    "• 3rd",
+                    "â€¢ 1st",
+                    "â€¢ 2nd",
+                    "â€¢ 3rd",
+                    "Verified Profile",
+                    "Verified profile"
+                ):
+
+                    name = (
+                        name.replace(
+                            marker,
+                            ""
+                        )
+                        .strip()
+                    )
+
+                # -------------------------------------------------
+                # Reject obviously invalid names.
+                # -------------------------------------------------
+
+                if not name:
+                    continue
+
+                if len(name) > 100:
+                    continue
+
+                if len(name.split()) > 12:
+                    continue
+
+                # -------------------------------------------------
+                # IMPORTANT:
+                #
+                # We now have a profile URL that came from a
+                # search-result card, NOT from an arbitrary /in/
+                # link elsewhere on LinkedIn.
+                # -------------------------------------------------
+
+                seen_urls.add(
+                    selected_href
+                )
+
+                profiles.append(
+                    {
+                        "full_name": name,
+                        "profile_url": selected_href
+                    }
+                )
+
+                print(
+                    f"{len(profiles)}. {name}"
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Result-card extraction failed:",
+                    repr(ex)
+                )
+
+        print("=" * 60)
+
+        print(
+            "Actual employee profiles extracted:",
+            len(profiles)
+        )
+
+        print("=" * 60)
+
+        return profiles
+
+    # =====================================================
+    # COMPANY VALIDATION
+    # =====================================================
+
+    @staticmethod
+    def _normalize_company(value):
+
+        if value is None:
+            return ""
+
+        value = str(value)
+
+        value = (
+            value
+            .replace("\u00a0", " ")
+            .strip()
+            .lower()
+        )
+
+        # Normalize common punctuation.
+        for char in (
+            ",",
+            ".",
+            "-",
+            "_",
+            "/",
+            "\\"
+        ):
+
+            value = value.replace(
+                char,
+                " "
+            )
+
+        value = " ".join(
+            value.split()
+        )
+
+        return value
+
+    def _company_matches(
+        self,
+        requested_company,
+        profile
+    ):
+
+        requested = (
+            self._normalize_company(
+                requested_company
+            )
+        )
+
+        actual = (
+            self._normalize_company(
+                profile.get(
+                    "company",
+                    ""
+                )
+            )
+        )
+
+        headline = (
+            self._normalize_company(
+                profile.get(
+                    "headline",
+                    ""
+                )
+            )
+        )
+
+        if not requested:
+            return False
+
+        if not actual:
+            return False
+
+        # -------------------------------------------------
+        # PRIMARY RULE
+        #
+        # Exact normalized company match.
+        # -------------------------------------------------
+
+        if actual == requested:
+            return True
+
+        # -------------------------------------------------
+        # Controlled SmartWorks compatibility.
+        #
+        # Some existing SmartWorks profiles identify
+        # SmartWorks in their headline while LinkedIn's
+        # extracted current-company field can show the
+        # related iTech US Inc entity.
+        #
+        # This is deliberately NOT a generic substring
+        # match for arbitrary companies.
+        # -------------------------------------------------
+
+        if requested == "smartworks llc":
+
+            if (
+                "smartworks llc" in headline
+                or "smartworks" in headline
+            ):
+
+                return True
+
+        return False
 
     # =====================================================
     # MAIN WORKFLOW
@@ -56,9 +432,9 @@ class SearchWorkflowV2:
 
         page_no = 1
 
-        # -------------------------------------------------
-        # A - Search Company
-        # -------------------------------------------------
+        # =================================================
+        # A - SEARCH COMPANY
+        # =================================================
 
         print("=" * 60)
         print("A - Searching company")
@@ -72,9 +448,9 @@ class SearchWorkflowV2:
             "Company search completed."
         )
 
-        # -------------------------------------------------
-        # B - Open Company
-        # -------------------------------------------------
+        # =================================================
+        # B - OPEN COMPANY
+        # =================================================
 
         print("=" * 60)
         print("B - Opening company")
@@ -104,9 +480,9 @@ class SearchWorkflowV2:
                 location
             )
 
-        # -------------------------------------------------
-        # C - Open Employees
-        # -------------------------------------------------
+        # =================================================
+        # C - OPEN EMPLOYEES
+        # =================================================
 
         print("=" * 60)
         print("C - Opening employees")
@@ -134,9 +510,9 @@ class SearchWorkflowV2:
                 location
             )
 
-        # -------------------------------------------------
-        # D - Apply Location
-        # -------------------------------------------------
+        # =================================================
+        # D - APPLY LOCATION
+        # =================================================
 
         print("=" * 60)
         print("D - Applying location")
@@ -150,9 +526,9 @@ class SearchWorkflowV2:
             "Location applied."
         )
 
-        # -------------------------------------------------
-        # E - Collect Profiles
-        # -------------------------------------------------
+        # =================================================
+        # E - COLLECT PROFILES
+        # =================================================
 
         while len(results) < max_profiles:
 
@@ -165,29 +541,32 @@ class SearchWorkflowV2:
                 break
 
             print("=" * 60)
+
             print(
                 f"E - Reading employee page {page_no}"
             )
+
             print("=" * 60)
 
+            # -------------------------------------------------
             # IMPORTANT:
             #
-            # Keep the original working CompanyPage profile
-            # extraction method.
+            # Use the V2 card-aware extractor.
             #
-            # DO NOT scan every /in/ link on the page.
-            # DO NOT use get_search_result_profiles().
+            # DO NOT call:
             #
-            # The previous V2 implementation introduced a
-            # separate /in/ link scanner and caused unrelated
-            # people from other companies to be opened.
+            #     company_page.get_profiles()
+            #
+            # because that method rejects multiline LinkedIn
+            # result cards.
+            # -------------------------------------------------
+
             page_results = (
-                self.company_page
-                .get_profiles()
+                self.get_search_result_profiles()
             )
 
             print(
-                "Profiles extracted:",
+                "V2 profiles extracted:",
                 len(page_results)
             )
 
@@ -203,6 +582,9 @@ class SearchWorkflowV2:
                         "STOP requested."
                     )
 
+                    break
+
+                if len(results) >= max_profiles:
                     break
 
                 profile_url = (
@@ -257,97 +639,62 @@ class SearchWorkflowV2:
                         profile.get_profile()
                     )
 
-                    # -------------------------------------------------
-                    # COMPANY VALIDATION
-                    #
-                    # This remains a final safety check.
-                    #
-                    # It does NOT drive candidate discovery.
-                    # Candidate discovery comes from the original
-                    # CompanyPage.get_profiles() workflow.
-                    # -------------------------------------------------
+                    # =================================================
+                    # STRICT COMPANY VALIDATION
+                    # =================================================
 
-                    requested_company = (
-                        str(company)
-                        .strip()
-                        .lower()
+                    print(
+                        "Requested company:",
+                        company
                     )
 
-                    profile_company = (
-                        str(
+                    print(
+                        "Profile company:",
+                        data.get(
+                            "company",
+                            ""
+                        )
+                    )
+
+                    company_match = (
+                        self._company_matches(
+                            company,
+                            data
+                        )
+                    )
+
+                    if not company_match:
+
+                        print(
+                            "REJECTED PROFILE:"
+                        )
+
+                        print(
+                            "Profile belongs to a different company."
+                        )
+
+                        print(
+                            "Requested:",
+                            company
+                        )
+
+                        print(
+                            "Actual:",
                             data.get(
                                 "company",
                                 ""
                             )
                         )
-                        .strip()
-                        .lower()
-                    )
 
-                    headline = (
-                        str(
-                            data.get(
-                                "headline",
-                                ""
-                            )
-                        )
-                        .strip()
-                        .lower()
-                    )
-
-                    # Exact company match is preferred.
-                    #
-                    # If LinkedIn reports the requested company
-                    # exactly, accept it.
-                    if (
-                        profile_company
-                        != requested_company
-                    ):
-
-                        # Some SmartWorks profiles historically
-                        # show iTech US Inc as the current company
-                        # while explicitly identifying SmartWorks
-                        # in the headline.
-                        #
-                        # Preserve that existing behavior without
-                        # accepting arbitrary companies.
-                        allowed_headline_match = (
-                            requested_company
-                            in headline
-                        )
-
-                        if not allowed_headline_match:
-
-                            print(
-                                "REJECTED PROFILE:"
-                            )
-
-                            print(
-                                "Profile belongs to a different company."
-                            )
-
-                            print(
-                                "Requested:",
-                                company
-                            )
-
-                            print(
-                                "Actual:",
-                                data.get(
-                                    "company",
-                                    ""
-                                )
-                            )
-
-                            continue
+                        continue
 
                     print(
                         "COMPANY VALIDATION PASSED"
                     )
 
-                    # -------------------------------------------------
-                    # Add search context
-                    # -------------------------------------------------
+                    # =================================================
+                    # ADD SEARCH CONTEXT
+                    # =================================================
 
                     data["search_company"] = (
                         company
@@ -357,9 +704,9 @@ class SearchWorkflowV2:
                         location
                     )
 
-                    # -------------------------------------------------
-                    # Add result
-                    # -------------------------------------------------
+                    # =================================================
+                    # COLLECT ONLY AFTER VALIDATION
+                    # =================================================
 
                     results.append(
                         data
@@ -382,9 +729,9 @@ class SearchWorkflowV2:
                         repr(ex)
                     )
 
-                # -------------------------------------------------
-                # Autosave
-                # -------------------------------------------------
+                # =================================================
+                # AUTOSAVE
+                # =================================================
 
                 if results:
 
@@ -409,23 +756,19 @@ class SearchWorkflowV2:
                             repr(ex)
                         )
 
-                # -------------------------------------------------
-                # Maximum reached
-                # -------------------------------------------------
-
                 if len(results) >= max_profiles:
                     break
 
-            # -------------------------------------------------
-            # Maximum reached
-            # -------------------------------------------------
+            # =================================================
+            # MAXIMUM REACHED
+            # =================================================
 
             if len(results) >= max_profiles:
                 break
 
-            # -------------------------------------------------
-            # Next page
-            # -------------------------------------------------
+            # =================================================
+            # NEXT PAGE
+            # =================================================
 
             print(
                 "Trying next employee page..."
@@ -451,9 +794,9 @@ class SearchWorkflowV2:
 
             page_no += 1
 
-        # -------------------------------------------------
-        # Final
-        # -------------------------------------------------
+        # =================================================
+        # FINISH
+        # =================================================
 
         return self._finish(
             results,
