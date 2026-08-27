@@ -501,13 +501,784 @@ class SearchWorkflowV2:
                 if len(results) >= max_profiles:
 
                     break
+from pages.company_page import CompanyPage
+from pages.linkedin_profile_page_v2 import LinkedInProfilePageV2
+
+from automation.exporter import Exporter
+from automation.search_controller import should_stop
+
+
+class SearchWorkflowV2:
+
+    def __init__(self, page):
+
+        self.page = page
+
+        # Existing logged-in LinkedIn page.
+        # DO NOT create another search page.
+        self.company_page = CompanyPage(
+            self.page
+        )
+
+        # Separate page for individual profiles.
+        self.profile_page = self.page.context.new_page()
+
+    # =====================================================
+    # V2 PROFILE EXTRACTION
+    # =====================================================
+
+    def get_search_result_profiles(self):
+
+        print("=" * 60)
+        print("V2 - Extracting actual employee search results")
+        print("=" * 60)
+
+        profiles = []
+        seen_urls = set()
+
+        # -------------------------------------------------
+        # IMPORTANT:
+        #
+        # Do NOT use every visible /in/ link on the page.
+        #
+        # LinkedIn employee search pages can contain unrelated
+        # profile links from recommendations, navigation,
+        # suggestions, etc.
+        #
+        # We first identify the employee result cards and then
+        # extract the profile link from those cards.
+        # -------------------------------------------------
+
+        result_cards = self.page.locator(
+            "li.reusable-search__result-container"
+        )
+
+        card_count = result_cards.count()
+
+        print(
+            "Employee result cards found:",
+            card_count
+        )
+
+        # -------------------------------------------------
+        # Fallback selectors.
+        #
+        # LinkedIn markup can vary. Try the known search-result
+        # containers before falling back to direct /in/ links.
+        # -------------------------------------------------
+
+        if card_count == 0:
+
+            fallback_selectors = [
+                "div.entity-result",
+                "div[data-chameleon-result-urn]",
+                "li[class*='search-result']",
+            ]
+
+            for selector in fallback_selectors:
+
+                try:
+
+                    candidate_cards = self.page.locator(
+                        selector
+                    )
+
+                    candidate_count = (
+                        candidate_cards.count()
+                    )
+
+                    if candidate_count > 0:
+
+                        print(
+                            "Using fallback result selector:",
+                            selector
+                        )
+
+                        result_cards = candidate_cards
+                        card_count = candidate_count
+
+                        break
+
+                except Exception:
+                    pass
+
+        # -------------------------------------------------
+        # Extract profiles from employee result cards.
+        # -------------------------------------------------
+
+        for i in range(card_count):
+
+            try:
+
+                card = result_cards.nth(i)
+
+                # -------------------------------------------------
+                # Find profile links INSIDE the result card.
+                # -------------------------------------------------
+
+                profile_links = card.locator(
+                    "a[href*='/in/']"
+                )
+
+                link_count = profile_links.count()
+
+                if link_count == 0:
+                    continue
+
+                selected_link = None
+
+                for j in range(link_count):
+
+                    try:
+
+                        link = profile_links.nth(j)
+
+                        href = link.get_attribute(
+                            "href"
+                        )
+
+                        if not href:
+                            continue
+
+                        href = href.strip()
+
+                        clean_url = (
+                            href
+                            .split("?")[0]
+                            .split("#")[0]
+                            .strip()
+                        )
+
+                        if "/in/" not in clean_url:
+                            continue
+
+                        if not clean_url.startswith("http"):
+
+                            clean_url = (
+                                "https://www.linkedin.com"
+                                + clean_url
+                            )
+
+                        selected_link = link
+
+                        break
+
+                    except Exception:
+                        continue
+
+                if not selected_link:
+                    continue
+
+                href = selected_link.get_attribute(
+                    "href"
+                )
+
+                if not href:
+                    continue
+
+                clean_url = (
+                    href
+                    .strip()
+                    .split("?")[0]
+                    .split("#")[0]
+                    .strip()
+                )
+
+                if not clean_url.startswith("http"):
+
+                    clean_url = (
+                        "https://www.linkedin.com"
+                        + clean_url
+                    )
+
+                if clean_url in seen_urls:
+                    continue
+
+                # -------------------------------------------------
+                # Get the person's name.
+                #
+                # Prefer the profile link text, but if LinkedIn
+                # renders the link differently, inspect the card.
+                # -------------------------------------------------
+
+                text = (
+                    selected_link
+                    .inner_text()
+                    .strip()
+                )
+
+                lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip()
+                ]
+
+                name = ""
+
+                if lines:
+
+                    name = lines[0]
+
+                # -------------------------------------------------
+                # If the direct link text isn't useful, inspect
+                # common entity-result title selectors.
+                # -------------------------------------------------
+
+                if not name:
+
+                    name_selectors = [
+                        "span[aria-hidden='true']",
+                        "a[data-control-name='search_srp_result']",
+                        ".entity-result__title-text",
+                        ".entity-result__title-line",
+                    ]
+
+                    for selector in name_selectors:
+
+                        try:
+
+                            name_locator = card.locator(
+                                selector
+                            ).first
+
+                            if (
+                                name_locator.count() > 0
+                                and name_locator.is_visible()
+                            ):
+
+                                candidate_name = (
+                                    name_locator
+                                    .inner_text()
+                                    .strip()
+                                )
+
+                                candidate_lines = [
+                                    line.strip()
+                                    for line in
+                                    candidate_name.splitlines()
+                                    if line.strip()
+                                ]
+
+                                if candidate_lines:
+
+                                    name = (
+                                        candidate_lines[0]
+                                    )
+
+                                    break
+
+                        except Exception:
+                            pass
+
+                # -------------------------------------------------
+                # Clean connection-degree markers.
+                # -------------------------------------------------
+
+                name = (
+                    name
+                    .replace("• 1st", "")
+                    .replace("• 2nd", "")
+                    .replace("• 3rd", "")
+                    .strip()
+                )
+
+                if not name:
+                    continue
+
+                # -------------------------------------------------
+                # Safeguards.
+                # -------------------------------------------------
+
+                if len(name) > 40:
+                    continue
+
+                if name.count(" ") > 4:
+                    continue
+
+                if name.lower() in (
+                    "view profile",
+                    "see profile",
+                    "linkedin member",
+                ):
+                    continue
+
+                # -------------------------------------------------
+                # Store profile.
+                # -------------------------------------------------
+
+                seen_urls.add(
+                    clean_url
+                )
+
+                profiles.append(
+                    {
+                        "full_name": name,
+                        "profile_url": clean_url
+                    }
+                )
+
+                print(
+                    f"{len(profiles)}. {name}"
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Employee result extraction failed:",
+                    repr(ex)
+                )
+
+        # -------------------------------------------------
+        # Diagnostic fallback ONLY if no result cards were
+        # found at all.
+        #
+        # This prevents the scraper from silently returning
+        # zero when LinkedIn changes its result-card markup.
+        #
+        # IMPORTANT:
+        # We do NOT use the old broad visible /in/ extraction
+        # when result cards exist.
+        # -------------------------------------------------
+
+        if card_count == 0 and not profiles:
+
+            print(
+                "WARNING: No employee result cards detected."
+            )
+
+            print(
+                "Using restricted visible profile-link fallback."
+            )
+
+            links = self.page.locator(
+                "a[href*='/in/']:visible"
+            )
+
+            count = links.count()
+
+            print(
+                "Visible /in/ links:",
+                count
+            )
+
+            for i in range(count):
+
+                try:
+
+                    link = links.nth(i)
+
+                    href = link.get_attribute(
+                        "href"
+                    )
+
+                    if not href:
+                        continue
+
+                    href = href.strip()
+
+                    clean_url = (
+                        href
+                        .split("?")[0]
+                        .split("#")[0]
+                        .strip()
+                    )
+
+                    if "/in/" not in clean_url:
+                        continue
+
+                    if not clean_url.startswith("http"):
+
+                        clean_url = (
+                            "https://www.linkedin.com"
+                            + clean_url
+                        )
+
+                    if clean_url in seen_urls:
+                        continue
+
+                    text = (
+                        link.inner_text()
+                        .strip()
+                    )
+
+                    if not text:
+                        continue
+
+                    lines = [
+                        line.strip()
+                        for line in text.splitlines()
+                        if line.strip()
+                    ]
+
+                    if not lines:
+                        continue
+
+                    name = lines[0]
+
+                    name = (
+                        name
+                        .replace("• 1st", "")
+                        .replace("• 2nd", "")
+                        .replace("• 3rd", "")
+                        .strip()
+                    )
+
+                    if not name:
+                        continue
+
+                    if len(name) > 40:
+                        continue
+
+                    if name.count(" ") > 4:
+                        continue
+
+                    if name.lower() in (
+                        "view profile",
+                        "see profile",
+                        "linkedin member",
+                    ):
+                        continue
+
+                    seen_urls.add(
+                        clean_url
+                    )
+
+                    profiles.append(
+                        {
+                            "full_name": name,
+                            "profile_url": clean_url
+                        }
+                    )
+
+                    print(
+                        f"{len(profiles)}. {name}"
+                    )
+
+                except Exception as ex:
+
+                    print(
+                        "Fallback profile extraction failed:",
+                        repr(ex)
+                    )
+
+        print("=" * 60)
+
+        print(
+            "Actual employee profiles extracted:",
+            len(profiles)
+        )
+
+        print("=" * 60)
+
+        return profiles
+
+    # =====================================================
+    # MAIN WORKFLOW
+    # =====================================================
+
+    def run(
+        self,
+        company,
+        location,
+        max_profiles=1
+    ):
+
+        print("=" * 70)
+        print("LINKEDIN SEARCH WORKFLOW V2")
+        print("=" * 70)
+
+        print(
+            "Company:",
+            company
+        )
+
+        print(
+            "Location:",
+            location
+        )
+
+        print(
+            "Maximum profiles:",
+            max_profiles
+        )
+
+        results = []
+
+        seen_urls = set()
+
+        page_no = 1
+
+        # -------------------------------------------------
+        # A - Search Company
+        # -------------------------------------------------
+
+        print("=" * 60)
+        print("A - Searching company")
+        print("=" * 60)
+
+        self.company_page.search_company(
+            company
+        )
+
+        print(
+            "Company search completed."
+        )
+
+        # -------------------------------------------------
+        # B - Open Company
+        # -------------------------------------------------
+
+        print("=" * 60)
+        print("B - Opening company")
+        print("=" * 60)
+
+        found = (
+            self.company_page
+            .open_company_result(
+                company
+            )
+        )
+
+        print(
+            "Company found:",
+            found
+        )
+
+        if not found:
+
+            print(
+                "Company not found."
+            )
+
+            return self._finish(
+                results,
+                company,
+                location
+            )
+
+        # -------------------------------------------------
+        # C - Open Employees
+        # -------------------------------------------------
+
+        print("=" * 60)
+        print("C - Opening employees")
+        print("=" * 60)
+
+        opened = (
+            self.company_page
+            .open_employees_page()
+        )
+
+        print(
+            "Employees page:",
+            opened
+        )
+
+        if not opened:
+
+            print(
+                "Employees page not found."
+            )
+
+            return self._finish(
+                results,
+                company,
+                location
+            )
+
+        # -------------------------------------------------
+        # D - Apply Location
+        # -------------------------------------------------
+
+        print("=" * 60)
+        print("D - Applying location")
+        print("=" * 60)
+
+        self.company_page.apply_location(
+            location
+        )
+
+        print(
+            "Location applied."
+        )
+
+        # -------------------------------------------------
+        # E - Collect Profiles
+        # -------------------------------------------------
+
+        while len(results) < max_profiles:
+
+            if should_stop():
+
+                print(
+                    "STOP requested."
+                )
+
+                break
+
+            print("=" * 60)
+
+            print(
+                f"E - Reading employee page {page_no}"
+            )
+
+            print("=" * 60)
+
+            page_results = (
+                self.get_search_result_profiles()
+            )
+
+            print(
+                "V2 profiles extracted:",
+                len(page_results)
+            )
+
+            # -------------------------------------------------
+            # Process profiles
+            # -------------------------------------------------
+
+            for row in page_results:
+
+                if should_stop():
+
+                    print(
+                        "STOP requested."
+                    )
+
+                    break
+
+                profile_url = (
+                    row.get(
+                        "profile_url",
+                        ""
+                    )
+                )
+
+                if not profile_url:
+                    continue
+
+                if profile_url in seen_urls:
+                    continue
+
+                seen_urls.add(
+                    profile_url
+                )
+
+                print("=" * 60)
+                print(
+                    "PROCESSING PROFILE"
+                )
+                print("=" * 60)
+
+                print(
+                    "Profile URL:",
+                    profile_url
+                )
+
+                try:
+
+                    profile = (
+                        LinkedInProfilePageV2(
+                            self.profile_page
+                        )
+                    )
+
+                    opened = (
+                        profile.open_profile(
+                            profile_url
+                        )
+                    )
+
+                    if not opened:
+
+                        print(
+                            "Unable to open profile."
+                        )
+
+                        continue
+
+                    data = (
+                        profile.get_profile()
+                    )
+
+                    # -------------------------------------------------
+                    # Add search context
+                    # -------------------------------------------------
+
+                    data["search_company"] = (
+                        company
+                    )
+
+                    data["search_location"] = (
+                        location
+                    )
+
+                    # -------------------------------------------------
+                    # Add result
+                    # -------------------------------------------------
+
+                    results.append(
+                        data
+                    )
+
+                    print("=" * 60)
+                    print(
+                        "PROFILE COLLECTED"
+                    )
+                    print("=" * 60)
+
+                    for key, value in data.items():
+
+                        print(
+                            f"{key}: {value}"
+                        )
+
+                except Exception as ex:
+
+                    print(
+                        "Profile processing failed:",
+                        repr(ex)
+                    )
+
+                # -------------------------------------------------
+                # Autosave
+                # -------------------------------------------------
+
+                if results:
+
+                    try:
+
+                        autosave = (
+                            Exporter.export_csv(
+                                results,
+                                f"{company}_{location}_v2_autosave.csv"
+                            )
+                        )
+
+                        print(
+                            "Autosave:",
+                            autosave
+                        )
+
+                    except Exception as ex:
+
+                        print(
+                            "Autosave failed:",
+                            repr(ex)
+                        )
+
+                # -------------------------------------------------
+                # Maximum reached
+                # -------------------------------------------------
+
+                if len(results) >= max_profiles:
+                    break
 
             # -------------------------------------------------
             # Maximum reached
             # -------------------------------------------------
 
             if len(results) >= max_profiles:
-
                 break
 
             # -------------------------------------------------
@@ -560,9 +1331,11 @@ class SearchWorkflowV2:
     ):
 
         print("=" * 70)
+
         print(
             "V2 WORKFLOW FINISHED"
         )
+
         print("=" * 70)
 
         print(
