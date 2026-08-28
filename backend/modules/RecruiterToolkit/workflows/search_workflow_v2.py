@@ -11,167 +11,54 @@ class SearchWorkflowV2:
 
         self.page = page
 
-        # Existing logged-in LinkedIn page.
-        # DO NOT create another search page.
+        # -------------------------------------------------
+        # IMPORTANT:
+        # Keep CompanyPage as the owner of the LinkedIn
+        # company search, employee search, location filter,
+        # result extraction, and pagination.
+        #
+        # DO NOT replace this with a raw /in/ DOM scan.
+        # -------------------------------------------------
         self.company_page = CompanyPage(
             self.page
         )
 
-        # Separate page for individual profiles.
+        # Separate page for individual profile navigation.
+        # This preserves the existing V2 profile/email extractor.
         self.profile_page = self.page.context.new_page()
 
     # =====================================================
-    # V2 PROFILE EXTRACTION
+    # FALLBACK RECORD
     # =====================================================
 
-    def get_search_result_profiles(self):
+    @staticmethod
+    def _search_result_fallback(row, company, location):
+        """
+        LinkedIn may allow the authenticated people-search page
+        while redirecting direct profile navigation to /authwall.
 
-        print("=" * 60)
-        print("V2 - Extracting actual employee search results")
-        print("=" * 60)
+        The employee was already obtained from CompanyPage.get_profiles()
+        on the company + location filtered people-search page.
 
-        profiles = []
-        seen_urls = set()
+        In that situation, preserve the employee in the CSV instead
+        of silently dropping the profile.
 
-        links = self.page.locator(
-            "a[href*='/in/']:visible"
-        )
+        Profile-specific fields that were not available because of the
+        authwall remain blank.
+        """
 
-        count = links.count()
-
-        print(
-            "Visible /in/ links:",
-            count
-        )
-
-        for i in range(count):
-
-            try:
-
-                link = links.nth(i)
-
-                href = link.get_attribute(
-                    "href"
-                )
-
-                if not href:
-                    continue
-
-                clean_url = (
-                    href
-                    .split("?")[0]
-                    .strip()
-                )
-
-                if "/in/" not in clean_url:
-                    continue
-
-                if not clean_url.startswith("http"):
-
-                    clean_url = (
-                        "https://www.linkedin.com"
-                        + clean_url
-                    )
-
-                if clean_url in seen_urls:
-                    continue
-
-                text = (
-                    link.inner_text()
-                    .strip()
-                )
-
-                if not text:
-                    continue
-
-                # -------------------------------------------------
-                # Actual result-card links are multiline and contain
-                # LinkedIn connection-degree information.
-                #
-                # Mutual connection links are normally just a name.
-                # -------------------------------------------------
-
-                has_degree_marker = (
-                    "• 1st" in text
-                    or "• 2nd" in text
-                    or "• 3rd" in text
-                )
-
-                has_multiple_lines = (
-                    "\n" in text
-                )
-
-                if not (
-                    has_degree_marker
-                    and has_multiple_lines
-                ):
-                    continue
-
-                # -------------------------------------------------
-                # First non-empty line = employee name
-                # -------------------------------------------------
-
-                lines = [
-                    line.strip()
-                    for line in text.splitlines()
-                    if line.strip()
-                ]
-
-                if not lines:
-                    continue
-
-                name = lines[0]
-
-                name = (
-                    name
-                    .replace("• 1st", "")
-                    .replace("• 2nd", "")
-                    .replace("• 3rd", "")
-                    .strip()
-                )
-
-                if not name:
-                    continue
-
-                if len(name) > 100:
-                    continue
-
-                if len(name.split()) > 12:
-                    continue
-
-                seen_urls.add(
-                    clean_url
-                )
-
-                profiles.append(
-                    {
-                        "full_name": name,
-                        "profile_url": clean_url
-                    }
-                )
-
-                print(
-                    f"{len(profiles)}. "
-                    f"{name}"
-                )
-
-            except Exception as ex:
-
-                print(
-                    "Profile extraction failed:",
-                    repr(ex)
-                )
-
-        print("=" * 60)
-
-        print(
-            "Actual employee profiles extracted:",
-            len(profiles)
-        )
-
-        print("=" * 60)
-
-        return profiles
+        return {
+            "full_name": row.get("full_name", ""),
+            "headline": row.get("headline", ""),
+            "location": row.get("location", ""),
+            "company": row.get("company", ""),
+            "email": "",
+            "email_source": "",
+            "profile_url": row.get("profile_url", ""),
+            "linked_email_id": "",
+            "search_company": company,
+            "search_location": location,
+        }
 
     # =====================================================
     # MAIN WORKFLOW
@@ -204,9 +91,7 @@ class SearchWorkflowV2:
         )
 
         results = []
-
         seen_urls = set()
-
         page_no = 1
 
         # -------------------------------------------------
@@ -304,7 +189,17 @@ class SearchWorkflowV2:
         )
 
         # -------------------------------------------------
-        # E - Collect Profiles
+        # E - Collect Employees
+        #
+        # CompanyPage.get_profiles() is intentionally retained.
+        #
+        # This is the working extraction logic that produced:
+        #
+        #   Vamshi Krishna Kota
+        #   Veena D. Gangadhariah
+        #   David Cooper
+        #
+        # on the SmartWorks, LLC + New Jersey search page.
         # -------------------------------------------------
 
         while len(results) < max_profiles:
@@ -318,32 +213,29 @@ class SearchWorkflowV2:
                 break
 
             print("=" * 60)
-
             print(
                 f"E - Reading employee page {page_no}"
             )
-
             print("=" * 60)
 
-            # -------------------------------------------------
-            # IMPORTANT:
-            #
-            # V2 uses its own extraction method.
-            # We DO NOT call company_page.get_profiles()
-            # because that method collects every /in/ link.
-            # -------------------------------------------------
-
             page_results = (
-                self.get_search_result_profiles()
+                self.company_page
+                .get_profiles()
             )
 
             print(
-                "V2 profiles extracted:",
+                "Profiles extracted:",
                 len(page_results)
             )
 
+            if not page_results:
+
+                print(
+                    "No employee profiles found on this page."
+                )
+
             # -------------------------------------------------
-            # Process profiles
+            # Process employees from CompanyPage
             # -------------------------------------------------
 
             for row in page_results:
@@ -371,7 +263,6 @@ class SearchWorkflowV2:
 
                     continue
 
-
                 seen_urls.add(
                     profile_url
                 )
@@ -387,7 +278,15 @@ class SearchWorkflowV2:
                     profile_url
                 )
 
+                profile_opened = False
+
                 try:
+
+                    # -------------------------------------------------
+                    # Existing V2 profile/email extraction.
+                    #
+                    # Do not replace LinkedInProfilePageV2.
+                    # -------------------------------------------------
 
                     profile = (
                         LinkedInProfilePageV2(
@@ -395,55 +294,54 @@ class SearchWorkflowV2:
                         )
                     )
 
-                    opened = (
+                    profile_opened = (
                         profile.open_profile(
                             profile_url
                         )
                     )
 
-                    if not opened:
+                    if profile_opened:
 
-                        print(
-                            "Unable to open profile."
+                        data = (
+                            profile.get_profile()
                         )
 
-                        continue
+                        # Safety check: do not write an empty profile
+                        # if LinkedIn returned an unexpected page.
+                        if not data.get("full_name"):
 
-                    data = (
-                        profile.get_profile()
-                    )
+                            print(
+                                "Profile opened but no profile name "
+                                "was extracted."
+                            )
 
-                    # -------------------------------------------------
-                    # Add search context
-                    # -------------------------------------------------
+                            profile_opened = False
 
-                    data["search_company"] = (
-                        company
-                    )
+                        else:
 
-                    data["search_location"] = (
-                        location
-                    )
+                            data["search_company"] = (
+                                company
+                            )
 
-                    # -------------------------------------------------
-                    # Add result
-                    # -------------------------------------------------
+                            data["search_location"] = (
+                                location
+                            )
 
-                    results.append(
-                        data
-                    )
+                            results.append(
+                                data
+                            )
 
-                    print("=" * 60)
-                    print(
-                        "PROFILE COLLECTED"
-                    )
-                    print("=" * 60)
+                            print("=" * 60)
+                            print(
+                                "PROFILE COLLECTED"
+                            )
+                            print("=" * 60)
 
-                    for key, value in data.items():
+                            for key, value in data.items():
 
-                        print(
-                            f"{key}: {value}"
-                        )
+                                print(
+                                    f"{key}: {value}"
+                                )
 
                 except Exception as ex:
 
@@ -452,8 +350,62 @@ class SearchWorkflowV2:
                         repr(ex)
                     )
 
+                    profile_opened = False
+
                 # -------------------------------------------------
-                # Autosave
+                # AUTHWALL / profile access fallback
+                #
+                # IMPORTANT:
+                # The employee already came from the correctly
+                # filtered CompanyPage people-search result.
+                #
+                # Therefore we must NOT discard the employee merely
+                # because direct profile navigation is blocked.
+                # -------------------------------------------------
+
+                if not profile_opened:
+
+                    print("=" * 60)
+                    print(
+                        "PROFILE PAGE NOT ACCESSIBLE"
+                    )
+                    print("=" * 60)
+
+                    print(
+                        "Keeping employee from search result."
+                    )
+
+                    fallback = (
+                        self._search_result_fallback(
+                            row,
+                            company,
+                            location
+                        )
+                    )
+
+                    results.append(
+                        fallback
+                    )
+
+                    print("=" * 60)
+                    print(
+                        "SEARCH RESULT PROFILE RETAINED"
+                    )
+                    print("=" * 60)
+
+                    for key, value in fallback.items():
+
+                        print(
+                            f"{key}: {value}"
+                        )
+
+                    print(
+                        "Email unavailable because "
+                        "LinkedIn profile navigation was blocked."
+                    )
+
+                # -------------------------------------------------
+                # Autosave after every retained employee
                 # -------------------------------------------------
 
                 if results:
@@ -496,7 +448,7 @@ class SearchWorkflowV2:
                 break
 
             # -------------------------------------------------
-            # Next page
+            # Next employee page
             # -------------------------------------------------
 
             print(
@@ -524,7 +476,7 @@ class SearchWorkflowV2:
             page_no += 1
 
         # -------------------------------------------------
-        # Final
+        # Final export
         # -------------------------------------------------
 
         return self._finish(
@@ -532,7 +484,8 @@ class SearchWorkflowV2:
             company,
             location
         )
-  # =====================================================
+
+    # =====================================================
     # FINAL EXPORT
     # =====================================================
 
@@ -580,11 +533,7 @@ class SearchWorkflowV2:
                 )
 
         return {
-
             "results": results,
-
             "count": len(results),
-
             "csv": output_file
-
         }
