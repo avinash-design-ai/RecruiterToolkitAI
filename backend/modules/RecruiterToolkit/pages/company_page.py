@@ -568,23 +568,35 @@ class CompanyPage(BasePage):
         company="",
         location=""
     ):
+        """
+        Extract employee profiles ONLY from LinkedIn's actual
+        people-search result area.
+
+        IMPORTANT SAFETY RULE:
+
+        We must never scan arbitrary visible /in/ links and accept
+        them merely because they are present on the page.
+
+        LinkedIn pages can contain /in/ links from:
+            - search results
+            - recommendations
+            - friends/network suggestions
+            - sidebar content
+            - navigation
+            - other unrelated modules
+
+        Therefore every candidate profile must first be associated
+        with a nearby result container and that SAME container must
+        contain the requested company name.
+
+        The current LinkedIn DOM does not always expose the old
+        reusable-search__result-container selectors, so this version
+        discovers the container by walking upward from each /in/ link.
+        """
 
         print("=" * 60)
-        print("EXTRACTING COMPANY-MATCHED PROFILES V2")
+        print("EXTRACTING COMPANY-MATCHED PROFILES V3")
         print("=" * 60)
-
-        profiles = []
-        seen = set()
-
-        requested_company = (
-            company
-            or ""
-        ).strip().lower()
-
-        requested_location = (
-            location
-            or ""
-        ).strip().lower()
 
         print(
             "Requested company:",
@@ -596,46 +608,299 @@ class CompanyPage(BasePage):
             location
         )
 
+        profiles = []
+        seen = set()
+
+        requested_company = (
+            (company or "")
+            .strip()
+            .lower()
+        )
+
+        requested_location = (
+            (location or "")
+            .strip()
+            .lower()
+        )
+
         # ---------------------------------------------------------
-        # IMPORTANT
+        # Candidate profile links
         #
-        # We intentionally do NOT scan every /in/ link and accept it.
+        # We inspect /in/ links only as CANDIDATES.
         #
-        # A profile is accepted only when:
-        #
-        #   1. The /in/ link exists.
-        #   2. We can identify a meaningful parent result container.
-        #   3. The SAME result container contains the requested
-        #      company name.
-        #
-        # This prevents sidebar/friend/recommendation profiles from
-        # being accepted merely because they contain /in/.
+        # A /in/ link is NOT automatically accepted.
         # ---------------------------------------------------------
 
-        profile_links = self.page.locator(
+        links = self.page.locator(
             "a[href*='/in/']:visible"
         )
 
-        link_count = profile_links.count()
+        try:
+            count = links.count()
+        except Exception:
+            count = 0
 
         print(
             "Visible /in/ links discovered:",
-            link_count
+            count
         )
 
-        if link_count == 0:
+        if not count:
 
             print(
                 "No visible profile links found."
             )
 
+            print(
+                "Profiles extracted: 0"
+            )
+
             return profiles
 
-        for i in range(link_count):
+        # ---------------------------------------------------------
+        # Helper: normalize text
+        # ---------------------------------------------------------
+
+        def normalize(value):
+            if not value:
+                return ""
+
+            return " ".join(
+                str(value)
+                .replace("\xa0", " ")
+                .split()
+            ).strip().lower()
+
+        # ---------------------------------------------------------
+        # Helper: determine whether a DOM node looks like a
+        # LinkedIn search result container.
+        #
+        # We intentionally do NOT depend on one exact class name.
+        # ---------------------------------------------------------
+
+        def looks_like_result_container(element):
+            try:
+
+                tag = element.evaluate(
+                    "(el) => el.tagName.toLowerCase()"
+                )
+
+                classes = element.get_attribute(
+                    "class"
+                ) or ""
+
+                data_view = (
+                    element.get_attribute(
+                        "data-view-name"
+                    )
+                    or ""
+                )
+
+                role = (
+                    element.get_attribute(
+                        "role"
+                    )
+                    or ""
+                )
+
+                aria = (
+                    element.get_attribute(
+                        "aria-label"
+                    )
+                    or ""
+                )
+
+                class_text = normalize(classes)
+
+                data_text = normalize(data_view)
+
+                role_text = normalize(role)
+
+                aria_text = normalize(aria)
+
+                # Known LinkedIn result patterns.
+                if (
+                    "search-result" in class_text
+                    or "search-entity-result" in class_text
+                    or "reusable-search" in class_text
+                    or "entity-result" in class_text
+                ):
+                    return True
+
+                if (
+                    "search-entity-result" in data_text
+                    or "universal-template" in data_text
+                ):
+                    return True
+
+                # LinkedIn sometimes exposes result items as list items.
+                if (
+                    tag == "li"
+                    and (
+                        "result" in class_text
+                        or "search" in class_text
+                    )
+                ):
+                    return True
+
+                # Some versions use article-like result containers.
+                if (
+                    tag == "article"
+                    and (
+                        "result" in class_text
+                        or "search" in class_text
+                        or role_text == "article"
+                    )
+                ):
+                    return True
+
+                # Explicit result roles are useful when available.
+                if role_text in (
+                    "listitem",
+                    "option",
+                    "article",
+                ):
+                    return True
+
+                # aria labels containing result/search wording.
+                if (
+                    "search result" in aria_text
+                    or "search result" in class_text
+                ):
+                    return True
+
+            except Exception:
+                pass
+
+            return False
+
+        # ---------------------------------------------------------
+        # Helper: find the nearest plausible result container.
+        #
+        # We walk upward from the profile link instead of searching
+        # globally for one particular selector.
+        #
+        # Maximum depth prevents accidentally reaching <body>/<html>
+        # and treating the entire page as one result.
+        # ---------------------------------------------------------
+
+        def find_result_container(link):
+            current = link
+
+            for depth in range(1, 9):
+
+                try:
+
+                    current = current.locator(
+                        ".."
+                    )
+
+                    if current.count() == 0:
+                        return None
+
+                    if looks_like_result_container(
+                        current
+                    ):
+
+                        return current
+
+                except Exception:
+
+                    return None
+
+            return None
+
+        # ---------------------------------------------------------
+        # Helper: fallback structural container.
+        #
+        # If LinkedIn has removed recognizable class names entirely,
+        # use a bounded ancestor that:
+        #
+        #   1. contains the candidate /in/ link
+        #   2. has enough text to represent a result
+        #   3. contains the requested company
+        #
+        # We never use body/html/document as a container.
+        # ---------------------------------------------------------
+
+        def find_company_matching_ancestor(link):
+
+            current = link
+
+            for depth in range(1, 9):
+
+                try:
+
+                    current = current.locator(
+                        ".."
+                    )
+
+                    if current.count() == 0:
+                        return None
+
+                    tag = current.evaluate(
+                        "(el) => el.tagName.toLowerCase()"
+                    )
+
+                    if tag in (
+                        "body",
+                        "html",
+                        "main",
+                    ):
+                        return None
+
+                    text = normalize(
+                        current.inner_text(
+                            timeout=2000
+                        )
+                    )
+
+                    if not text:
+                        continue
+
+                    # Prevent accepting an enormous page-level container.
+                    if len(text) > 5000:
+                        continue
+
+                    if (
+                        requested_company
+                        and requested_company in text
+                    ):
+
+                        return current
+
+                except Exception:
+
+                    continue
+
+            return None
+
+        # ---------------------------------------------------------
+        # Process candidates
+        # ---------------------------------------------------------
+
+        for i in range(count):
 
             try:
 
-                link = profile_links.nth(i)
+                link = links.nth(i)
+
+                name = normalize(
+                    link.inner_text(
+                        timeout=2000
+                    )
+                )
+
+                if not name:
+                    continue
+
+                # Avoid accepting obvious multi-line/navigation text.
+                if "\n" in (
+                    link.inner_text(
+                        timeout=2000
+                    )
+                ):
+                    continue
 
                 href = link.get_attribute(
                     "href"
@@ -646,280 +911,189 @@ class CompanyPage(BasePage):
 
                 href = href.strip()
 
-                clean_url = href.split("?")[0]
+                # -------------------------------------------------
+                # Normalize profile URL.
+                # -------------------------------------------------
 
-                if clean_url.startswith("/"):
+                clean_url = href.split(
+                    "?"
+                )[0].rstrip("/")
+
+                if not clean_url.startswith(
+                    "http"
+                ):
+
                     clean_url = (
                         "https://www.linkedin.com"
                         + clean_url
                     )
 
+                # Must actually be a LinkedIn profile URL.
                 if "/in/" not in clean_url.lower():
                     continue
 
-                # -------------------------------------------------
-                # Extract candidate name from the link.
-                # -------------------------------------------------
+                if clean_url in seen:
+                    continue
 
-                name = (
-                    link.inner_text()
-                    .strip()
+                print(
+                    "-" * 60
                 )
 
-                if not name:
-                    continue
+                print(
+                    "Candidate:",
+                    name
+                )
 
-                if "\n" in name:
-                    continue
-
-                if len(name) > 80:
-                    continue
-
-                if name.count(" ") > 8:
-                    continue
+                print(
+                    "Candidate URL:",
+                    clean_url
+                )
 
                 # -------------------------------------------------
-                # Find the SAME search-result container.
-                #
-                # LinkedIn changes its classes frequently, so do not
-                # depend on one exact class.
-                #
-                # We walk upward from the /in/ link and inspect
-                # ancestors for search-result characteristics.
+                # FIRST: look for an explicit LinkedIn result
+                # container.
                 # -------------------------------------------------
 
-                container = None
+                container = (
+                    find_result_container(
+                        link
+                    )
+                )
 
-                try:
-
-                    container = link.locator(
-                        "xpath=ancestor::*["
-                        "self::li "
-                        "or "
-                        "contains(@class,'search-result') "
-                        "or "
-                        "contains(@class,'search-entity-result') "
-                        "or "
-                        "contains(@class,'reusable-search') "
-                        "or "
-                        "contains(@data-view-name,'search-entity')"
-                        "][1]"
-                    ).first
-
-                    if container.count() == 0:
-                        container = None
-
-                except Exception:
-                    container = None
-
-                # -------------------------------------------------
-                # If class-based detection fails, inspect a limited
-                # number of ancestors manually.
-                #
-                # This is NOT a global /in/ fallback.
-                # The search starts from the profile link itself.
-                # -------------------------------------------------
-
-                if container is None:
+                if container:
 
                     try:
 
-                        candidate = link.locator(
-                            "xpath=.."
+                        container_text = normalize(
+                            container.inner_text(
+                                timeout=2000
+                            )
                         )
-
-                        for level in range(8):
-
-                            try:
-
-                                if candidate.count() == 0:
-                                    break
-
-                                tag = candidate.evaluate(
-                                    "(el) => el.tagName"
-                                )
-
-                                cls = candidate.get_attribute(
-                                    "class"
-                                ) or ""
-
-                                data_view = (
-                                    candidate.get_attribute(
-                                        "data-view-name"
-                                    )
-                                    or ""
-                                )
-
-                                tag = (
-                                    tag
-                                    or ""
-                                ).lower()
-
-                                cls = (
-                                    cls
-                                    or ""
-                                ).lower()
-
-                                data_view = (
-                                    data_view
-                                    or ""
-                                ).lower()
-
-                                looks_like_result = (
-
-                                    "search-result"
-                                    in cls
-
-                                    or
-                                    "search-entity-result"
-                                    in cls
-
-                                    or
-                                    "reusable-search"
-                                    in cls
-
-                                    or
-                                    "search-entity"
-                                    in data_view
-
-                                    or
-                                    (
-                                        tag == "li"
-                                        and
-                                        len(
-                                            candidate.inner_text(
-                                                timeout=1000
-                                            ).strip()
-                                        ) > 20
-                                    )
-                                )
-
-                                if looks_like_result:
-
-                                    container = candidate
-                                    break
-
-                                candidate = candidate.locator(
-                                    "xpath=.."
-                                )
-
-                            except Exception:
-
-                                break
 
                     except Exception:
 
-                        container = None
+                        container_text = ""
 
-                # -------------------------------------------------
-                # No identifiable result container.
-                #
-                # IMPORTANT:
-                # Do NOT accept the profile.
-                # -------------------------------------------------
+                    if (
+                        requested_company
+                        and requested_company not in container_text
+                    ):
 
-                if container is None:
+                        print(
+                            "REJECT - company not found "
+                            "inside result container:",
+                            name
+                        )
+
+                        continue
+
+                    if not requested_company:
+
+                        print(
+                            "REJECT - requested company "
+                            "is empty."
+                        )
+
+                        continue
+
+                    # -------------------------------------------------
+                    # Optional location validation.
+                    #
+                    # Do NOT reject solely because LinkedIn omits
+                    # location text from a result card. The actual
+                    # people-search URL already carries the location
+                    # filter applied by the workflow.
+                    #
+                    # We therefore log location information but make
+                    # company membership the mandatory DOM validation.
+                    # -------------------------------------------------
+
+                    if (
+                        requested_location
+                        and requested_location in container_text
+                    ):
+
+                        print(
+                            "Location match found in result."
+                        )
+
+                    else:
+
+                        print(
+                            "Location text not explicitly present "
+                            "in result; relying on LinkedIn location "
+                            "filter."
+                        )
+
+                    seen.add(
+                        clean_url
+                    )
+
+                    profiles.append(
+                        {
+                            "full_name": (
+                                link.inner_text()
+                                .strip()
+                            ),
+                            "profile_url": clean_url,
+                            "company": company,
+                            "location": location,
+                        }
+                    )
 
                     print(
-                        "SKIP - no search-result container:",
+                        "ACCEPT - company validated:",
                         name
                     )
 
                     continue
 
                 # -------------------------------------------------
-                # Read ONLY the text from the same result container.
+                # SECOND: structural fallback.
+                #
+                # We still require the requested company to exist
+                # inside the SAME bounded ancestor.
+                #
+                # This is NOT a global page scan.
                 # -------------------------------------------------
+
+                fallback_container = (
+                    find_company_matching_ancestor(
+                        link
+                    )
+                )
+
+                if not fallback_container:
+
+                    print(
+                        "REJECT - no bounded result container "
+                        "with company match:",
+                        name
+                    )
+
+                    continue
 
                 try:
 
-                    card_text = (
-                        container.inner_text(
-                            timeout=3000
+                    fallback_text = normalize(
+                        fallback_container.inner_text(
+                            timeout=2000
                         )
-                        .strip()
                     )
 
                 except Exception:
 
+                    fallback_text = ""
+
+                if (
+                    not requested_company
+                    or requested_company not in fallback_text
+                ):
+
                     print(
-                        "SKIP - unable to read result container:",
+                        "REJECT - company validation failed:",
                         name
                     )
-
-                    continue
-
-                card_text_lower = (
-                    card_text.lower()
-                )
-
-                # -------------------------------------------------
-                # COMPANY VALIDATION
-                #
-                # The requested company must occur inside the same
-                # result container as the profile link.
-                # -------------------------------------------------
-
-                company_match = False
-
-                if requested_company:
-
-                    company_match = (
-                        requested_company
-                        in card_text_lower
-                    )
-
-                else:
-
-                    # If no company was supplied, never silently
-                    # accept a profile.
-                    company_match = False
-
-                if not company_match:
-
-                    print("=" * 50)
-                    print(
-                        "SKIP - COMPANY MISMATCH"
-                    )
-                    print(
-                        "Profile:",
-                        name
-                    )
-                    print(
-                        "Requested company:",
-                        company
-                    )
-                    print(
-                        "Result container does not contain "
-                        "requested company."
-                    )
-                    print("=" * 50)
-
-                    continue
-
-                # -------------------------------------------------
-                # OPTIONAL LOCATION VALIDATION
-                #
-                # Location is normally already applied by
-                # apply_location(). We log it here, but do not make
-                # extraction dependent on exact LinkedIn location
-                # wording because LinkedIn may abbreviate it.
-                # -------------------------------------------------
-
-                if requested_location:
-
-                    print(
-                        "Company matched:",
-                        name,
-                        "->",
-                        company
-                    )
-
-                # -------------------------------------------------
-                # FINAL URL DEDUPLICATION
-                # -------------------------------------------------
-
-                if clean_url in seen:
 
                     continue
 
@@ -929,37 +1103,19 @@ class CompanyPage(BasePage):
 
                 profiles.append(
                     {
-                        "full_name": name,
+                        "full_name": (
+                            link.inner_text()
+                            .strip()
+                        ),
                         "profile_url": clean_url,
                         "company": company,
                         "location": location,
                     }
                 )
 
-                print("=" * 60)
                 print(
-                    "COMPANY-MATCHED PROFILE ACCEPTED"
-                )
-                print("=" * 60)
-
-                print(
-                    "Name:",
+                    "ACCEPT - bounded ancestor company match:",
                     name
-                )
-
-                print(
-                    "Company:",
-                    company
-                )
-
-                print(
-                    "Location filter:",
-                    location
-                )
-
-                print(
-                    "Profile URL:",
-                    clean_url
                 )
 
             except Exception as ex:
@@ -969,12 +1125,30 @@ class CompanyPage(BasePage):
                     repr(ex)
                 )
 
+        # ---------------------------------------------------------
+        # Final output
+        # ---------------------------------------------------------
+
         print("=" * 60)
         print(
-            "COMPANY-MATCHED PROFILES EXTRACTED:",
-            len(profiles)
+            "COMPANY-MATCHED PROFILES EXTRACTED:"
+            f" {len(profiles)}"
         )
         print("=" * 60)
+
+        for profile in profiles:
+
+            print(
+                profile.get(
+                    "full_name",
+                    ""
+                ),
+                "->",
+                profile.get(
+                    "profile_url",
+                    ""
+                )
+            )
 
         return profiles
 
