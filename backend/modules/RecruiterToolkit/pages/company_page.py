@@ -2,6 +2,7 @@ from pages.base_page import BasePage
 from urllib.parse import urlparse, parse_qs
 
 
+import re
 class CompanyPage(BasePage):
 
     def __init__(self, page):
@@ -135,385 +136,561 @@ class CompanyPage(BasePage):
         print("OPENING COMPANY EMPLOYEES / PEOPLE SEARCH")
         print("=" * 60)
 
-        print("Current URL:")
-        print(self.page.url)
+        # --------------------------------------------------------
+        # IMPORTANT DESIGN RULE
+        #
+        # The company was already selected by open_company_result().
+        #
+        # We must preserve that company identity and use LinkedIn's
+        # own currentCompany people-search link.
+        #
+        # We must NOT:
+        #   - construct an unrelated company ID
+        #   - choose a network=F URL
+        #   - scan arbitrary /in/ links
+        #   - fall back to generic people search
+        # --------------------------------------------------------
+
+        company_page_url = self.page.url
+
+        print("Current company URL:")
+        print(company_page_url)
 
         # --------------------------------------------------------
-        # 1. First inspect all links for an existing people search
+        # Helper: validate a people-search URL.
         # --------------------------------------------------------
 
-        print("Looking for existing employee search URL...")
+        def is_valid_people_url(url):
 
-        links = self.page.locator("a")
+            if not url:
+                return False
 
-        count = links.count()
+            lower = url.lower()
 
-        candidate_urls = []
+            if "/search/results/people/" not in lower:
+                return False
 
-        for i in range(count):
+            if "currentcompany" not in lower:
+                return False
+
+            return True
+
+        # --------------------------------------------------------
+        # Helper: identify whether LinkedIn redirected away from
+        # the requested people-search page.
+        # --------------------------------------------------------
+
+        def is_bad_navigation_url(url):
+
+            if not url:
+                return True
+
+            lower = url.lower()
+
+            if is_valid_people_url(url):
+                return False
+
+            bad_parts = (
+                "linkedin.com/",
+                "/login",
+                "/authwall",
+                "/checkpoint",
+                "/uas/login",
+                "/signup",
+                "/feed",
+            )
+
+            # Root LinkedIn page must be treated as failure.
+            if lower.rstrip("/") == "https://www.linkedin.com":
+                return True
+
+            if "/search/results/" not in lower:
+                return True
+
+            return False
+
+        # --------------------------------------------------------
+        # Helper: extract currentCompany IDs from a URL.
+        # --------------------------------------------------------
+
+        def current_company_values(url):
+
+            import urllib.parse
 
             try:
 
-                href = links.nth(i).get_attribute(
-                    "href"
+                parsed = urllib.parse.urlparse(url)
+
+                query = urllib.parse.parse_qs(
+                    parsed.query
                 )
 
-                if not href:
-                    continue
+                values = query.get(
+                    "currentCompany",
+                    []
+                )
 
-                href = href.strip()
-
-                if "/search/results/people/" in href:
-
-                    candidate_urls.append(href)
-
-                    print(
-                        "Candidate employee URL:",
-                        href
-                    )
+                return [
+                    value.strip()
+                    for value in values
+                    if value.strip()
+                ]
 
             except Exception:
-                pass
+
+                return []
 
         # --------------------------------------------------------
-        # 2. Prefer currentCompany people-search URL
+        # 1. Find LinkedIn's own currentCompany employee link.
+        #
+        # Prefer:
+        #   currentCompany=...
+        #
+        # Reject:
+        #   network=F
+        #   unrelated currentCompany IDs
         # --------------------------------------------------------
 
-        best_url = None
+        def find_employee_link():
 
-        for url in candidate_urls:
+            print("=" * 60)
+            print("DISCOVERING LINKEDIN COMPANY EMPLOYEE LINK")
+            print("=" * 60)
 
-            if "currentCompany" in url:
+            links = self.page.locator(
+                "a[href*='/search/results/people/']"
+            )
 
-                best_url = url
-
-                print(
-                    "Selected existing currentCompany URL:"
-                )
-
-                print(best_url)
-
-                break
-
-        if not best_url and candidate_urls:
-
-            best_url = candidate_urls[0]
+            count = links.count()
 
             print(
-                "Selected existing people-search URL:"
+                "People-search links found:",
+                count
             )
 
-            print(best_url)
-
-        # --------------------------------------------------------
-        # 3. If LinkedIn does not expose the URL, get company ID
-        # --------------------------------------------------------
-
-        if not best_url:
-
-            print(
-                "No employee search URL exposed by LinkedIn."
-            )
-
-            print(
-                "Attempting to determine company ID..."
-            )
-
-            company_id = None
-
-            # ----------------------------------------------------
-            # Inspect current company URL
-            # ----------------------------------------------------
-
-            current_url = self.page.url
-
-            print(
-                "Company page URL:",
-                current_url
-            )
-
-            parsed = urlparse(
-                current_url
-            )
-
-            path_parts = [
-                part
-                for part in parsed.path.split("/")
-                if part
-            ]
-
-            # Typical:
-            # /company/company-name/
-            #
-            # Company numeric ID may not always be in URL,
-            # so this is only a first attempt.
-
-            # ----------------------------------------------------
-            # Look for currentCompany anywhere in href attributes
-            # ----------------------------------------------------
+            candidates = []
 
             for i in range(count):
 
                 try:
 
-                    href = links.nth(i).get_attribute(
+                    link = links.nth(i)
+
+                    href = link.get_attribute(
                         "href"
                     )
 
                     if not href:
                         continue
 
-                    if "currentCompany" in href:
+                    href = href.strip()
 
-                        parsed_href = urlparse(
+                    if "/search/results/people/" not in href:
+                        continue
+
+                    if "currentCompany" not in href:
+                        continue
+
+                    lower_href = href.lower()
+
+                    # ------------------------------------------------
+                    # Never prefer a network-filtered URL.
+                    # We want the complete company employee search.
+                    # ------------------------------------------------
+
+                    if "network=" in lower_href:
+                        print(
+                            "SKIP network-filtered employee URL:",
                             href
                         )
+                        continue
 
-                        params = parse_qs(
-                            parsed_href.query
+                    values = current_company_values(
+                        href
+                    )
+
+                    if not values:
+                        continue
+
+                    candidates.append(
+                        (
+                            link,
+                            href,
+                            values
                         )
-
-                        values = params.get(
-                            "currentCompany"
-                        )
-
-                        if values:
-
-                            company_id = (
-                                values[0]
-                            )
-
-                            print(
-                                "Company ID found:",
-                                company_id
-                            )
-
-                            break
-
-                except Exception:
-                    pass
-
-            # ----------------------------------------------------
-            # Search page HTML for currentCompany
-            # ----------------------------------------------------
-
-            if not company_id:
-
-                print(
-                    "Searching page HTML for company ID..."
-                )
-
-                try:
-
-                    html = self.page.content()
-
-                    import re
-
-                    patterns = [
-
-                        r'currentCompany[^0-9]{0,50}([0-9]{3,20})',
-
-                        r'"companyId"\s*:\s*"([0-9]{3,20})"',
-
-                        r'"companyId"\s*:\s*([0-9]{3,20})',
-
-                        r'urn:li:fsd_company:([0-9]{3,20})',
-
-                        r'urn:li:organization:([0-9]{3,20})',
-
-                    ]
-
-                    for pattern in patterns:
-
-                        match = re.search(
-                            pattern,
-                            html,
-                            re.IGNORECASE
-                        )
-
-                        if match:
-
-                            company_id = (
-                                match.group(1)
-                            )
-
-                            print(
-                                "Company ID extracted from page:"
-                            )
-
-                            print(company_id)
-
-                            break
+                    )
 
                 except Exception as ex:
 
                     print(
-                        "Company ID HTML search failed:",
+                        "Employee-link inspection failed:",
                         repr(ex)
                     )
 
-            # ----------------------------------------------------
-            # 4. Construct LinkedIn employee search URL
-            # ----------------------------------------------------
+            print(
+                "Valid company employee candidates:",
+                len(candidates)
+            )
 
-            if company_id:
+            if not candidates:
+                return None
 
-                best_url = (
-                    "https://www.linkedin.com/"
-                    "search/results/people/"
-                    f"?currentCompany=%5B%22{company_id}%22%5D"
+            # --------------------------------------------------------
+            # We normally expect exactly one clean currentCompany
+            # URL on the company page.
+            #
+            # Select the first clean LinkedIn-provided candidate.
+            # Do NOT manufacture another URL here.
+            # --------------------------------------------------------
+
+            link, href, values = candidates[0]
+
+            print(
+                "Selected LinkedIn employee link:"
+            )
+
+            print(href)
+
+            print(
+                "currentCompany values:",
+                values
+            )
+
+            return link
+
+        # --------------------------------------------------------
+        # Helper: click LinkedIn's employee link and validate result.
+        # --------------------------------------------------------
+
+        def click_employee_link():
+
+            link = find_employee_link()
+
+            if not link:
+
+                print(
+                    "No valid currentCompany employee link found."
+                )
+
+                return False
+
+            try:
+
+                print("=" * 60)
+                print("CLICKING LINKEDIN EMPLOYEE LINK")
+                print("=" * 60)
+
+                link.click()
+
+                self.page.wait_for_timeout(
+                    5000
+                )
+
+                current_url = self.page.url
+
+                print(
+                    "URL after employee-link click:"
                 )
 
                 print(
-                    "Constructed employee search URL:"
+                    current_url
                 )
 
-                print(best_url)
-
-        # --------------------------------------------------------
-        # 5. Last fallback: click People / employees UI
-        # --------------------------------------------------------
-
-        if not best_url:
-
-            print(
-                "Trying visible People / employees controls..."
-            )
-
-            possible_texts = [
-                "People",
-                "employees",
-                "See all employees",
-                "See all people",
-                "View all employees",
-                "View all people",
-            ]
-
-            for text in possible_texts:
-
-                try:
-
-                    locator = self.page.get_by_text(
-                        text,
-                        exact=False
-                    ).first
-
-                    if locator.count() == 0:
-                        continue
-
-                    if not locator.is_visible():
-                        continue
+                if is_valid_people_url(
+                    current_url
+                ):
 
                     print(
-                        "Clicking employee control:",
-                        text
+                        "Employee search page confirmed."
                     )
 
-                    locator.click()
+                    return True
 
-                    self.page.wait_for_timeout(
-                        5000
-                    )
+                print(
+                    "Employee link click did not produce "
+                    "a valid company people-search page."
+                )
 
-                    print(
-                        "URL after employee control:",
-                        self.page.url
-                    )
+                return False
 
-                    if (
-                        "/search/results/people/"
-                        in self.page.url
-                    ):
+            except Exception as ex:
 
-                        print(
-                            "Employee search page opened."
-                        )
+                print(
+                    "Employee-link click failed:",
+                    repr(ex)
+                )
 
-                        return True
-
-                except Exception as ex:
-
-                    print(
-                        "Employee control attempt failed:",
-                        repr(ex)
-                    )
+                return False
 
         # --------------------------------------------------------
-        # 6. Nothing worked
+        # 2. FIRST AND PREFERRED METHOD
+        #
+        # Click the exact employee-search link LinkedIn exposed
+        # on the selected company page.
         # --------------------------------------------------------
 
-        if not best_url:
+        if click_employee_link():
 
-            print(
-                "Employee search URL could not be determined."
-            )
-
-            return False
+            return True
 
         # --------------------------------------------------------
-        # 7. Navigate to employee search
+        # 3. CONTROLLED RECOVERY
+        #
+        # If LinkedIn redirected to / or another invalid page,
+        # restore the authenticated feed.
+        #
+        # We do NOT attempt generic people search.
         # --------------------------------------------------------
 
         print("=" * 60)
-        print("NAVIGATING TO EMPLOYEE SEARCH")
+        print("EMPLOYEE SEARCH NAVIGATION RECOVERY")
         print("=" * 60)
 
         print(
-            "Using URL:"
-        )
-
-        print(
-            best_url
+            "Navigation failed. Current URL:",
+            self.page.url
         )
 
         try:
 
+            print(
+                "Returning to authenticated LinkedIn feed..."
+            )
+
             self.page.goto(
-                best_url,
+                "https://www.linkedin.com/feed/",
                 wait_until="domcontentloaded",
                 timeout=60000
+            )
+
+            self.page.wait_for_timeout(
+                3000
+            )
+
+            feed_url = self.page.url
+
+            print(
+                "Recovery feed URL:",
+                feed_url
+            )
+
+            if (
+                "/feed" not in feed_url.lower()
+                or "/login" in feed_url.lower()
+                or "/authwall" in feed_url.lower()
+                or "/checkpoint" in feed_url.lower()
+            ):
+
+                print(
+                    "Authenticated feed recovery failed."
+                )
+
+                return False
+
+            print(
+                "Authenticated feed recovered."
             )
 
         except Exception as ex:
 
             print(
-                "Employee search navigation failed:",
+                "Feed recovery failed:",
                 repr(ex)
             )
 
             return False
 
-        self.page.wait_for_timeout(
-            5000
-        )
-
-        print(
-            "Employee page loaded:"
-        )
-
-        print(
-            self.page.url
-        )
-
         # --------------------------------------------------------
-        # Validate
+        # 4. Re-open the SAME company.
+        #
+        # We intentionally use the existing company URL captured
+        # before employee navigation when possible.
+        #
+        # If LinkedIn no longer accepts it, use the existing
+        # company search workflow instead of guessing.
         # --------------------------------------------------------
 
-        current_url = self.page.url.lower()
+        company_reopened = False
 
-        if "/search/results/people/" not in current_url:
+        try:
+
+            if (
+                company_page_url
+                and "/company/" in company_page_url.lower()
+            ):
+
+                print(
+                    "Re-opening previously selected company:"
+                )
+
+                print(
+                    company_page_url
+                )
+
+                self.page.goto(
+                    company_page_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                self.page.wait_for_timeout(
+                    3000
+                )
+
+                reopened_url = self.page.url
+
+                print(
+                    "Company recovery URL:",
+                    reopened_url
+                )
+
+                if "/company/" in reopened_url.lower():
+
+                    company_reopened = True
+
+        except Exception as ex:
 
             print(
-                "WARNING: LinkedIn did not open people search."
+                "Direct company recovery failed:",
+                repr(ex)
             )
 
-            return False
+        # --------------------------------------------------------
+        # 5. If direct company recovery failed, re-run the existing
+        # company search.
+        #
+        # IMPORTANT:
+        # This uses the existing search_company() and
+        # open_company_result() methods.
+        #
+        # Therefore company matching remains exactly as before.
+        # --------------------------------------------------------
+
+        if not company_reopened:
+
+            print(
+                "Re-running existing company search recovery..."
+            )
+
+            try:
+
+                # The original company name is not stored as an
+                # attribute, so derive it only from the existing
+                # selected company page when possible.
+                #
+                # We refuse to guess a company name.
+                #
+                # Search for a visible h1 first.
+
+                company_name = ""
+
+                try:
+
+                    heading = self.page.locator(
+                        "h1"
+                    ).first
+
+                    if heading.count():
+
+                        text = (
+                            heading.inner_text()
+                            .strip()
+                        )
+
+                        if text:
+
+                            company_name = text
+
+                except Exception:
+                    pass
+
+                if not company_name:
+
+                    print(
+                        "Could not safely recover company name."
+                    )
+
+                    print(
+                        "Refusing generic people search."
+                    )
+
+                    return False
+
+                print(
+                    "Recovered company name:",
+                    company_name
+                )
+
+                self.search_company(
+                    company_name
+                )
+
+                found = (
+                    self.open_company_result(
+                        company_name
+                    )
+                )
+
+                if not found:
+
+                    print(
+                        "Company recovery search failed."
+                    )
+
+                    return False
+
+                company_reopened = True
+
+            except Exception as ex:
+
+                print(
+                    "Company search recovery failed:",
+                    repr(ex)
+                )
+
+                return False
+
+        # --------------------------------------------------------
+        # 6. Re-discover and CLICK the employee link.
+        #
+        # We deliberately do NOT use page.goto(best_url) here.
+        # --------------------------------------------------------
+
+        if company_reopened:
+
+            print(
+                "Company page recovered."
+            )
+
+            if click_employee_link():
+
+                return True
+
+        # --------------------------------------------------------
+        # 7. Last controlled fallback:
+        #
+        # Re-scan the current company page for the employee link.
+        # If LinkedIn exposes nothing, fail safely.
+        #
+        # Never construct generic people search.
+        # Never scan /in/ links.
+        # --------------------------------------------------------
+
+        print("=" * 60)
+        print("EMPLOYEE SEARCH COULD NOT BE SAFELY OPENED")
+        print("=" * 60)
 
         print(
-            "Employee search page confirmed."
+            "No valid LinkedIn currentCompany employee "
+            "navigation succeeded."
         )
 
-        return True
+        print(
+            "Refusing generic people search to prevent "
+            "unrelated profiles."
+        )
+
+        return False
 
     def apply_location(self, location):
 
@@ -569,33 +746,29 @@ class CompanyPage(BasePage):
         location=""
     ):
         """
-        Extract employee profiles ONLY from LinkedIn's actual
-        people-search result area.
+        Extract employee profiles from LinkedIn's people-search
+        result area.
 
-        IMPORTANT SAFETY RULE:
+        Company comparison is normalized so punctuation,
+        capitalization and separators do not cause false rejection.
 
-        We must never scan arbitrary visible /in/ links and accept
-        them merely because they are present on the page.
+        Examples:
 
-        LinkedIn pages can contain /in/ links from:
-            - search results
-            - recommendations
-            - friends/network suggestions
-            - sidebar content
-            - navigation
-            - other unrelated modules
+            SmartWorks, LLC
+            SmartWorks LLC
+            SMARTWORKS, LLC
+            SmartWorks - LLC
 
-        Therefore every candidate profile must first be associated
-        with a nearby result container and that SAME container must
-        contain the requested company name.
+        all normalize to:
 
-        The current LinkedIn DOM does not always expose the old
-        reusable-search__result-container selectors, so this version
-        discovers the container by walking upward from each /in/ link.
+            smartworks llc
+
+        A candidate is still required to have the requested
+        company inside a bounded result container/ancestor.
         """
 
         print("=" * 60)
-        print("EXTRACTING COMPANY-MATCHED PROFILES V3")
+        print("EXTRACTING COMPANY-MATCHED PROFILES V4")
         print("=" * 60)
 
         print(
@@ -608,36 +781,57 @@ class CompanyPage(BasePage):
             location
         )
 
+        # --------------------------------------------------------
+        # Company normalization
+        # --------------------------------------------------------
+
+        def normalize_company(value):
+
+            if not value:
+                return ""
+
+            value = (
+                str(value)
+                .replace("\xa0", " ")
+                .strip()
+                .lower()
+            )
+
+            value = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                value
+            )
+
+            return " ".join(
+                value.split()
+            )
+
+        requested_company = normalize_company(
+            company
+        )
+
+        requested_location = normalize_company(
+            location
+        )
+
         profiles = []
         seen = set()
 
-        requested_company = (
-            (company or "")
-            .strip()
-            .lower()
-        )
-
-        requested_location = (
-            (location or "")
-            .strip()
-            .lower()
-        )
-
-        # ---------------------------------------------------------
-        # Candidate profile links
-        #
-        # We inspect /in/ links only as CANDIDATES.
-        #
-        # A /in/ link is NOT automatically accepted.
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
+        # Candidate /in/ links
+        # --------------------------------------------------------
 
         links = self.page.locator(
             "a[href*='/in/']:visible"
         )
 
         try:
+
             count = links.count()
+
         except Exception:
+
             count = 0
 
         print(
@@ -657,134 +851,127 @@ class CompanyPage(BasePage):
 
             return profiles
 
-        # ---------------------------------------------------------
-        # Helper: normalize text
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
+        # Identify result container
+        # --------------------------------------------------------
 
-        def normalize(value):
-            if not value:
-                return ""
+        def looks_like_result_container(
+            element
+        ):
 
-            return " ".join(
-                str(value)
-                .replace("\xa0", " ")
-                .split()
-            ).strip().lower()
-
-        # ---------------------------------------------------------
-        # Helper: determine whether a DOM node looks like a
-        # LinkedIn search result container.
-        #
-        # We intentionally do NOT depend on one exact class name.
-        # ---------------------------------------------------------
-
-        def looks_like_result_container(element):
             try:
 
-                tag = element.evaluate(
-                    "(el) => el.tagName.toLowerCase()"
+                tag = (
+                    element.evaluate(
+                        "(el) => el.tagName.toLowerCase()"
+                    )
+                    or ""
                 )
 
-                classes = element.get_attribute(
-                    "class"
-                ) or ""
+                classes = normalize_company(
+                    element.get_attribute(
+                        "class"
+                    )
+                    or ""
+                )
 
-                data_view = (
+                data_view = normalize_company(
                     element.get_attribute(
                         "data-view-name"
                     )
                     or ""
                 )
 
-                role = (
+                role = normalize_company(
                     element.get_attribute(
                         "role"
                     )
                     or ""
                 )
 
-                aria = (
+                aria = normalize_company(
                     element.get_attribute(
                         "aria-label"
                     )
                     or ""
                 )
 
-                class_text = normalize(classes)
-
-                data_text = normalize(data_view)
-
-                role_text = normalize(role)
-
-                aria_text = normalize(aria)
-
                 # Known LinkedIn result patterns.
+
                 if (
-                    "search-result" in class_text
-                    or "search-entity-result" in class_text
-                    or "reusable-search" in class_text
-                    or "entity-result" in class_text
+                    "search-result" in classes
+                    or
+                    "search-entity-result" in classes
+                    or
+                    "reusable-search" in classes
+                    or
+                    "entity-result" in classes
                 ):
+
                     return True
 
                 if (
-                    "search-entity-result" in data_text
-                    or "universal-template" in data_text
+                    "search-entity-result" in data_view
+                    or
+                    "universal-template" in data_view
                 ):
+
                     return True
 
-                # LinkedIn sometimes exposes result items as list items.
                 if (
                     tag == "li"
-                    and (
-                        "result" in class_text
-                        or "search" in class_text
+                    and
+                    (
+                        "result" in classes
+                        or
+                        "search" in classes
                     )
                 ):
+
                     return True
 
-                # Some versions use article-like result containers.
                 if (
                     tag == "article"
-                    and (
-                        "result" in class_text
-                        or "search" in class_text
-                        or role_text == "article"
+                    and
+                    (
+                        "result" in classes
+                        or
+                        "search" in classes
+                        or
+                        role == "article"
                     )
                 ):
+
                     return True
 
-                # Explicit result roles are useful when available.
-                if role_text in (
+                if role in (
                     "listitem",
                     "option",
-                    "article",
+                    "article"
                 ):
+
                     return True
 
-                # aria labels containing result/search wording.
                 if (
-                    "search result" in aria_text
-                    or "search result" in class_text
+                    "search result" in aria
                 ):
+
                     return True
 
             except Exception:
+
                 pass
 
             return False
 
-        # ---------------------------------------------------------
-        # Helper: find the nearest plausible result container.
-        #
-        # We walk upward from the profile link instead of searching
-        # globally for one particular selector.
-        #
-        # Maximum depth prevents accidentally reaching <body>/<html>
-        # and treating the entire page as one result.
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
+        # Walk upward from candidate link
+        # --------------------------------------------------------
 
-        def find_result_container(link):
+        def find_result_container(
+            link
+        ):
+
             current = link
 
             for depth in range(1, 9):
@@ -796,6 +983,7 @@ class CompanyPage(BasePage):
                     )
 
                     if current.count() == 0:
+
                         return None
 
                     if looks_like_result_container(
@@ -810,20 +998,13 @@ class CompanyPage(BasePage):
 
             return None
 
-        # ---------------------------------------------------------
-        # Helper: fallback structural container.
-        #
-        # If LinkedIn has removed recognizable class names entirely,
-        # use a bounded ancestor that:
-        #
-        #   1. contains the candidate /in/ link
-        #   2. has enough text to represent a result
-        #   3. contains the requested company
-        #
-        # We never use body/html/document as a container.
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
+        # Controlled bounded fallback
+        # --------------------------------------------------------
 
-        def find_company_matching_ancestor(link):
+        def find_company_matching_ancestor(
+            link
+        ):
 
             current = link
 
@@ -836,35 +1017,44 @@ class CompanyPage(BasePage):
                     )
 
                     if current.count() == 0:
+
                         return None
 
-                    tag = current.evaluate(
-                        "(el) => el.tagName.toLowerCase()"
-                    )
+                    tag = (
+                        current.evaluate(
+                            "(el) => el.tagName.toLowerCase()"
+                        )
+                        or ""
+                    ).lower()
 
                     if tag in (
                         "body",
                         "html",
-                        "main",
+                        "main"
                     ):
+
                         return None
 
-                    text = normalize(
+                    text = normalize_company(
                         current.inner_text(
                             timeout=2000
                         )
                     )
 
                     if not text:
+
                         continue
 
-                    # Prevent accepting an enormous page-level container.
+                    # Prevent page-level containers.
+
                     if len(text) > 5000:
+
                         continue
 
                     if (
                         requested_company
-                        and requested_company in text
+                        and
+                        requested_company in text
                     ):
 
                         return current
@@ -875,9 +1065,9 @@ class CompanyPage(BasePage):
 
             return None
 
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
         # Process candidates
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
 
         for i in range(count):
 
@@ -885,21 +1075,22 @@ class CompanyPage(BasePage):
 
                 link = links.nth(i)
 
-                name = normalize(
-                    link.inner_text(
+                raw_name = (
+                    link
+                    .inner_text(
                         timeout=2000
                     )
+                    .strip()
                 )
 
-                if not name:
+                if not raw_name:
+
                     continue
 
-                # Avoid accepting obvious multi-line/navigation text.
-                if "\n" in (
-                    link.inner_text(
-                        timeout=2000
-                    )
-                ):
+                # Avoid navigation/multi-line links.
+
+                if "\n" in raw_name:
+
                     continue
 
                 href = link.get_attribute(
@@ -907,17 +1098,14 @@ class CompanyPage(BasePage):
                 )
 
                 if not href:
+
                     continue
 
-                href = href.strip()
-
-                # -------------------------------------------------
-                # Normalize profile URL.
-                # -------------------------------------------------
-
-                clean_url = href.split(
-                    "?"
-                )[0].rstrip("/")
+                clean_url = (
+                    href
+                    .split("?")[0]
+                    .rstrip("/")
+                )
 
                 if not clean_url.startswith(
                     "http"
@@ -928,11 +1116,15 @@ class CompanyPage(BasePage):
                         + clean_url
                     )
 
-                # Must actually be a LinkedIn profile URL.
-                if "/in/" not in clean_url.lower():
+                if (
+                    "/in/"
+                    not in clean_url.lower()
+                ):
+
                     continue
 
                 if clean_url in seen:
+
                     continue
 
                 print(
@@ -941,7 +1133,7 @@ class CompanyPage(BasePage):
 
                 print(
                     "Candidate:",
-                    name
+                    raw_name
                 )
 
                 print(
@@ -949,10 +1141,11 @@ class CompanyPage(BasePage):
                     clean_url
                 )
 
-                # -------------------------------------------------
-                # FIRST: look for an explicit LinkedIn result
-                # container.
-                # -------------------------------------------------
+                matched = False
+
+                # ------------------------------------------------
+                # First: explicit LinkedIn result container
+                # ------------------------------------------------
 
                 container = (
                     find_result_container(
@@ -964,8 +1157,9 @@ class CompanyPage(BasePage):
 
                     try:
 
-                        container_text = normalize(
-                            container.inner_text(
+                        container_text = (
+                            container
+                            .inner_text(
                                 timeout=2000
                             )
                         )
@@ -974,128 +1168,76 @@ class CompanyPage(BasePage):
 
                         container_text = ""
 
+                    normalized_container = (
+                        normalize_company(
+                            container_text
+                        )
+                    )
+
+                    print(
+                        "Normalized requested company:",
+                        requested_company
+                    )
+
                     if (
                         requested_company
-                        and requested_company not in container_text
+                        and
+                        requested_company
+                        in normalized_container
                     ):
 
-                        print(
-                            "REJECT - company not found "
-                            "inside result container:",
-                            name
-                        )
-
-                        continue
-
-                    if not requested_company:
+                        matched = True
 
                         print(
-                            "REJECT - requested company "
-                            "is empty."
-                        )
-
-                        continue
-
-                    # -------------------------------------------------
-                    # Optional location validation.
-                    #
-                    # Do NOT reject solely because LinkedIn omits
-                    # location text from a result card. The actual
-                    # people-search URL already carries the location
-                    # filter applied by the workflow.
-                    #
-                    # We therefore log location information but make
-                    # company membership the mandatory DOM validation.
-                    # -------------------------------------------------
-
-                    if (
-                        requested_location
-                        and requested_location in container_text
-                    ):
-
-                        print(
-                            "Location match found in result."
+                            "Company match found "
+                            "in result container."
                         )
 
                     else:
 
                         print(
-                            "Location text not explicitly present "
-                            "in result; relying on LinkedIn location "
-                            "filter."
+                            "Company NOT found "
+                            "in normalized result container."
                         )
 
-                    seen.add(
-                        clean_url
-                    )
+                # ------------------------------------------------
+                # Second: bounded ancestor fallback
+                # ------------------------------------------------
 
-                    profiles.append(
-                        {
-                            "full_name": (
-                                link.inner_text()
-                                .strip()
-                            ),
-                            "profile_url": clean_url,
-                            "company": company,
-                            "location": location,
-                        }
-                    )
+                if not matched:
 
-                    print(
-                        "ACCEPT - company validated:",
-                        name
-                    )
-
-                    continue
-
-                # -------------------------------------------------
-                # SECOND: structural fallback.
-                #
-                # We still require the requested company to exist
-                # inside the SAME bounded ancestor.
-                #
-                # This is NOT a global page scan.
-                # -------------------------------------------------
-
-                fallback_container = (
-                    find_company_matching_ancestor(
-                        link
-                    )
-                )
-
-                if not fallback_container:
-
-                    print(
-                        "REJECT - no bounded result container "
-                        "with company match:",
-                        name
-                    )
-
-                    continue
-
-                try:
-
-                    fallback_text = normalize(
-                        fallback_container.inner_text(
-                            timeout=2000
+                    fallback_container = (
+                        find_company_matching_ancestor(
+                            link
                         )
                     )
 
-                except Exception:
+                    if fallback_container:
 
-                    fallback_text = ""
+                        matched = True
 
-                if (
-                    not requested_company
-                    or requested_company not in fallback_text
-                ):
+                        print(
+                            "Company match found "
+                            "in bounded ancestor."
+                        )
+
+                # ------------------------------------------------
+                # Reject if company was not validated
+                # ------------------------------------------------
+
+                if not matched:
 
                     print(
-                        "REJECT - company validation failed:",
-                        name
+                        "REJECT - company not found "
+                        "inside bounded result area:",
+                        raw_name
                     )
 
                     continue
+
+                # ------------------------------------------------
+                # Accept candidate
+                # ------------------------------------------------
 
                 seen.add(
                     clean_url
@@ -1103,10 +1245,7 @@ class CompanyPage(BasePage):
 
                 profiles.append(
                     {
-                        "full_name": (
-                            link.inner_text()
-                            .strip()
-                        ),
+                        "full_name": raw_name,
                         "profile_url": clean_url,
                         "company": company,
                         "location": location,
@@ -1114,8 +1253,8 @@ class CompanyPage(BasePage):
                 )
 
                 print(
-                    "ACCEPT - bounded ancestor company match:",
-                    name
+                    "ACCEPT - company validated:",
+                    raw_name
                 )
 
             except Exception as ex:
@@ -1125,15 +1264,17 @@ class CompanyPage(BasePage):
                     repr(ex)
                 )
 
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
         # Final output
-        # ---------------------------------------------------------
+        # --------------------------------------------------------
 
         print("=" * 60)
+
         print(
-            "COMPANY-MATCHED PROFILES EXTRACTED:"
-            f" {len(profiles)}"
+            "COMPANY-MATCHED PROFILES EXTRACTED:",
+            len(profiles)
         )
+
         print("=" * 60)
 
         for profile in profiles:
