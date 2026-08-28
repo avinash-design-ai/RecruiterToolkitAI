@@ -160,6 +160,114 @@ class SearchWorkflowV2:
             opened
         )
 
+        # -------------------------------------------------
+        # V2 EMPLOYEE SEARCH RECOVERY
+        #
+        # LinkedIn may redirect the currentCompany people
+        # search through /ssr-login/remember-me-auto-login
+        # even though the authenticated feed session works.
+        #
+        # Do not immediately terminate the workflow.
+        # Re-establish the authenticated company page and
+        # retry the existing CompanyPage employee navigation.
+        # -------------------------------------------------
+
+        if not opened:
+
+            current_url = self.page.url.lower()
+
+            if (
+                "/ssr-login/" in current_url
+                or "remember-me-auto-login" in current_url
+                or "/login" in current_url
+            ):
+
+                print("=" * 60)
+                print(
+                    "EMPLOYEE SEARCH REDIRECT RECOVERY"
+                )
+                print("=" * 60)
+
+                print(
+                    "Redirected employee URL:",
+                    self.page.url
+                )
+
+                try:
+
+                    # -------------------------------------------------
+                    # Return to the authenticated LinkedIn feed.
+                    # -------------------------------------------------
+
+                    self.page.goto(
+                        "https://www.linkedin.com/feed/",
+                        wait_until="domcontentloaded",
+                        timeout=60000
+                    )
+
+                    self.page.wait_for_timeout(
+                        3000
+                    )
+
+                    print(
+                        "Recovery feed URL:",
+                        self.page.url
+                    )
+
+                    if (
+                        "/feed" in self.page.url.lower()
+                        and "/login" not in self.page.url.lower()
+                    ):
+
+                        print(
+                            "Authenticated feed recovered."
+                        )
+
+                        # -------------------------------------------------
+                        # Repeat the existing V2 company-search flow.
+                        #
+                        # We are NOT replacing CompanyPage.
+                        # -------------------------------------------------
+
+                        self.company_page.search_company(
+                            company
+                        )
+
+                        found_again = (
+                            self.company_page
+                            .open_company_result(
+                                company
+                            )
+                        )
+
+                        print(
+                            "Company recovery result:",
+                            found_again
+                        )
+
+                        if found_again:
+
+                            opened = (
+                                self.company_page
+                                .open_employees_page()
+                            )
+
+                            print(
+                                "Employee recovery result:",
+                                opened
+                            )
+
+                except Exception as ex:
+
+                    print(
+                        "Employee search recovery failed:",
+                        repr(ex)
+                    )
+
+        # -------------------------------------------------
+        # Final employee-search failure
+        # -------------------------------------------------
+
         if not opened:
 
             print(
