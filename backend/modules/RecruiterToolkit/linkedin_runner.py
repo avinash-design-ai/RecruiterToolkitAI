@@ -351,23 +351,35 @@ def _wait_for_login_result(
         # Still on login page
         # -------------------------------------------------
 
+                # -------------------------------------------------
+        # Still on login page
+        #
+        # IMPORTANT:
+        # Remaining on /login/ does NOT prove that LinkedIn
+        # requires verification.
+        #
+        # It may simply mean:
+        #   - login failed
+        #   - credentials were rejected
+        #   - LinkedIn has not completed processing
+        #   - the page is still loading
+        #
+        # Do NOT classify this as verification here.
+        # Continue waiting until timeout.
+        # -------------------------------------------------
+
         if (
             "linkedin.com/login" in current_url_lower
             or "linkedin.com/uas/login" in current_url_lower
             or "linkedin.com/uas/signin" in current_url_lower
         ):
 
-            if elapsed >= 15:
+            if elapsed % 10 == 0:
 
                 print(
-                    "LinkedIn is still requesting authentication."
+                    "LinkedIn still on login page; "
+                    "verification has NOT been confirmed."
                 )
-
-                return {
-                    "authenticated": False,
-                    "verification_required": True,
-                    "timeout": False,
-                }
 
         page.wait_for_timeout(1000)
 
