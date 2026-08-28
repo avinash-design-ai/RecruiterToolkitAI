@@ -356,6 +356,100 @@ class SearchWorkflowV2:
 
                     break
 
+                # -------------------------------------------------
+                # COMPANY VALIDATION BEFORE PROFILE NAVIGATION
+                #
+                # LinkedIn's people-search results can occasionally
+                # contain profiles whose current company does not
+                # match the requested company.
+                #
+                # IMPORTANT:
+                # Validate the employee search-result company BEFORE
+                # opening the individual LinkedIn profile.
+                #
+                # If the company does not match:
+                #
+                #   - DO NOT open the profile
+                #   - DO NOT run LinkedInProfilePageV2
+                #   - DO NOT create a fallback record
+                #   - DO NOT add it to the CSV
+                #
+                # This prevents unrelated profiles such as:
+                #
+                #   Quantix, Inc.
+                #   NTT DATA Services
+                #
+                # from being collected during a SmartWorks, LLC search.
+                # -------------------------------------------------
+
+                row_company = (
+                    row.get(
+                        "company",
+                        ""
+                    )
+                )
+
+                requested_company_normalized = (
+                    normalize_company(
+                        company
+                    )
+                )
+
+                row_company_normalized = (
+                    normalize_company(
+                        row_company
+                    )
+                )
+
+                print(
+                    "Company validation:",
+                    repr(row_company),
+                    "vs requested:",
+                    repr(company)
+                )
+
+                if (
+                    not row_company_normalized
+                    or
+                    row_company_normalized
+                    != requested_company_normalized
+                ):
+
+                    print("=" * 60)
+                    print(
+                        "SKIPPING PROFILE - COMPANY MISMATCH"
+                    )
+                    print("=" * 60)
+
+                    print(
+                        "Profile:",
+                        row.get(
+                            "full_name",
+                            ""
+                        )
+                    )
+
+                    print(
+                        "Profile company:",
+                        row_company
+                    )
+
+                    print(
+                        "Requested company:",
+                        company
+                    )
+
+                    print(
+                        "Profile will NOT be opened."
+                    )
+
+                    continue
+
+                print(
+                    "Company validation PASSED:",
+                    row_company
+                )
+
                 profile_url = (
                     row.get(
                         "profile_url",
