@@ -841,11 +841,158 @@ class CompanyPage(BasePage):
             if not value:
                 return ""
 
-            return " ".join(
+            value = (
                 str(value)
                 .replace("\xa0", " ")
-                .split()
-            ).strip().lower()
+                .strip()
+                .lower()
+            )
+
+            # Normalize punctuation and repeated whitespace.
+            value = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                value
+            )
+
+            return " ".join(
+                value.split()
+            ).strip()
+
+        # ---------------------------------------------------------
+        # Company matching helpers
+        #
+        # IMPORTANT:
+        # Matching is performed only against the text belonging
+        # to the candidate's bounded result container.
+        #
+        # We do NOT use arbitrary page text.
+        # ---------------------------------------------------------
+
+        def company_tokens(value):
+            normalized = normalize(value)
+
+            if not normalized:
+                return []
+
+            return normalized.split()
+
+
+        def company_matches(
+            requested,
+            result_text
+        ):
+            requested_normalized = normalize(
+                requested
+            )
+
+            result_normalized = normalize(
+                result_text
+            )
+
+            if not requested_normalized:
+                return False
+
+            if not result_normalized:
+                return False
+
+            # Exact normalized phrase.
+            if requested_normalized in result_normalized:
+                return True
+
+            requested_tokens = company_tokens(
+                requested_normalized
+            )
+
+            if not requested_tokens:
+                return False
+
+            result_tokens = company_tokens(
+                result_normalized
+            )
+
+            if not result_tokens:
+                return False
+
+            # ----------------------------------------------------
+            # Company suffix handling.
+            #
+            # Example:
+            #   requested = "Smartworks"
+            #   result    = "Smartworks LLC"
+            #
+            # This is deliberately conservative:
+            # only common legal/company suffixes may follow the
+            # requested company tokens.
+            # ----------------------------------------------------
+
+            suffixes = {
+                "llc",
+                "inc",
+                "incorporated",
+                "ltd",
+                "limited",
+                "corp",
+                "corporation",
+                "co",
+                "company",
+                "pvt",
+                "private",
+                "plc",
+            }
+
+            if len(result_tokens) >= len(requested_tokens):
+
+                for start in range(
+                    0,
+                    len(result_tokens)
+                    - len(requested_tokens)
+                    + 1
+                ):
+
+                    window = result_tokens[
+                        start:
+                        start + len(requested_tokens)
+                    ]
+
+                    if window != requested_tokens:
+                        continue
+
+                    remainder = result_tokens[
+                        start + len(requested_tokens):
+                    ]
+
+                    if not remainder:
+                        return True
+
+                    if all(
+                        token in suffixes
+                        for token in remainder
+                    ):
+                        return True
+
+            return False
+
+
+        def company_match_debug(
+            requested,
+            result_text
+        ):
+            requested_normalized = normalize(
+                requested
+            )
+
+            result_normalized = normalize(
+                result_text
+            )
+
+            return (
+                "requested="
+                + repr(requested_normalized)
+                + " | result="
+                + repr(result_normalized)
+            )
+
 
         # ---------------------------------------------------------
         # Helper: determine whether a DOM node looks like a
@@ -1150,9 +1297,18 @@ class CompanyPage(BasePage):
 
                         container_text = ""
 
-                    if (
-                        requested_company
-                        and requested_company not in container_text
+                    if not requested_company:
+
+                        print(
+                            "REJECT - requested company "
+                            "is empty."
+                        )
+
+                        continue
+
+                    if not company_matches(
+                        requested_company,
+                        container_text
                     ):
 
                         print(
@@ -1161,13 +1317,23 @@ class CompanyPage(BasePage):
                             name
                         )
 
-                        continue
+                        print(
+                            "Company match diagnostics:",
+                            company_match_debug(
+                                requested_company,
+                                container_text
+                            )
+                        )
 
-                    if not requested_company:
+                        # Print the bounded card text only.
+                        # This is diagnostic information and does
+                        # not affect matching.
+                        print(
+                            "Result-container text:"
+                        )
 
                         print(
-                            "REJECT - requested company "
-                            "is empty."
+                            container_text[:1500]
                         )
 
                         continue
@@ -1261,14 +1427,39 @@ class CompanyPage(BasePage):
 
                     fallback_text = ""
 
-                if (
-                    not requested_company
-                    or requested_company not in fallback_text
+                if not requested_company:
+
+                    print(
+                        "REJECT - requested company "
+                        "is empty."
+                    )
+
+                    continue
+
+                if not company_matches(
+                    requested_company,
+                    fallback_text
                 ):
 
                     print(
                         "REJECT - company validation failed:",
                         name
+                    )
+
+                    print(
+                        "Company match diagnostics:",
+                        company_match_debug(
+                            requested_company,
+                            fallback_text
+                        )
+                    )
+
+                    print(
+                        "Bounded ancestor text:"
+                    )
+
+                    print(
+                        fallback_text[:1500]
                     )
 
                     continue
