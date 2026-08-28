@@ -1222,14 +1222,88 @@ class CompanyPage(BasePage):
                         )
 
                 # ------------------------------------------------
-                # Reject if company was not validated
+                # V5 controlled broader company validation
+                #
+                # LinkedIn can place the current-company text outside
+                # the exact result container used by V4. Before rejecting
+                # the candidate, inspect a limited set of nearby ancestors.
+                # This does NOT use the entire page text.
+                # ------------------------------------------------
+
+                if not matched:
+
+                    print(
+                        "V5 - bounded match failed; "
+                        "checking nearby candidate ancestors..."
+                    )
+
+                    nearby = link
+
+                    for depth in range(1, 13):
+
+                        try:
+
+                            nearby = nearby.locator("..")
+
+                            if nearby.count() == 0:
+                                break
+
+                            tag = (
+                                nearby.evaluate(
+                                    "(el) => el.tagName.toLowerCase()"
+                                )
+                                or ""
+                            ).lower()
+
+                            if tag in (
+                                "body",
+                                "html",
+                                "main"
+                            ):
+                                break
+
+                            nearby_text = normalize_company(
+                                nearby.inner_text(
+                                    timeout=2000
+                                )
+                            )
+
+                            if not nearby_text:
+                                continue
+
+                            # Never accept a page-level container.
+                            if len(nearby_text) > 8000:
+                                continue
+
+                            if (
+                                requested_company
+                                and
+                                requested_company in nearby_text
+                            ):
+
+                                matched = True
+
+                                print(
+                                    "V5 company match found "
+                                    "in nearby candidate ancestor "
+                                    f"(depth {depth})."
+                                )
+
+                                break
+
+                        except Exception:
+
+                            continue
+
+                # ------------------------------------------------
+                # Reject only after all controlled checks fail
                 # ------------------------------------------------
 
                 if not matched:
 
                     print(
                         "REJECT - company not found "
-                        "inside bounded result area:",
+                        "after V4/V5 bounded validation:",
                         raw_name
                     )
 
