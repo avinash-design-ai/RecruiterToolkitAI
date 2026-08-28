@@ -349,10 +349,6 @@ def _wait_for_login_result(
 
         # -------------------------------------------------
         # Still on login page
-        # -------------------------------------------------
-
-                # -------------------------------------------------
-        # Still on login page
         #
         # IMPORTANT:
         # Remaining on /login/ does NOT prove that LinkedIn
