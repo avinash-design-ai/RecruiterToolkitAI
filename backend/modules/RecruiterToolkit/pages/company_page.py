@@ -2,6 +2,7 @@ from pages.base_page import BasePage
 from urllib.parse import urlparse, parse_qs
 
 
+import re
 class CompanyPage(BasePage):
 
     def __init__(self, page):
