@@ -5,6 +5,22 @@ from automation.exporter import Exporter
 from automation.search_controller import should_stop
 
 
+def normalize_company(value):
+    """
+    Normalize company names only for comparison.
+    Does not alter the original company value used elsewhere.
+    """
+    if not value:
+        return ""
+
+    import re
+
+    value = str(value).strip().lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+
+    return " ".join(value.split())
+
+
 class SearchWorkflowV2:
 
     def __init__(self, page):
