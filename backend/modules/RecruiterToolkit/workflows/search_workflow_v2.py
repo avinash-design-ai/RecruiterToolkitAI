@@ -328,7 +328,10 @@ class SearchWorkflowV2:
 
             page_results = (
                 self.company_page
-                .get_profiles()
+                .get_profiles(
+                    company,
+                    location
+                )
             )
 
             print(
