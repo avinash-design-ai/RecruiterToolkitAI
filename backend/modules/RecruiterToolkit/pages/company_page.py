@@ -563,698 +563,384 @@ class CompanyPage(BasePage):
 
         return True
 
-    def get_profiles(self):
+    def get_profiles(
+        self,
+        company="",
+        location=""
+    ):
+
+        print("=" * 60)
+        print("EXTRACTING COMPANY-MATCHED PROFILES V2")
+        print("=" * 60)
 
         profiles = []
-
-        print("=" * 60)
-        print("EXTRACTING COMPANY-MATCHED PROFILES")
-        print("=" * 60)
-
-        # --------------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT scan every visible /in/ link on the page.
-        #
-        # LinkedIn can expose /in/ links belonging to:
-        #
-        #   - recommendations
-        #   - connections
-        #   - sidebar content
-        #   - other visible components
-        #   - unrelated people
-        #
-        # We therefore restrict extraction to LinkedIn search
-        # result cards and validate the company text contained
-        # inside each result card.
-        # --------------------------------------------------------
-
-        # --------------------------------------------------------
-        # Possible search-result card selectors used by LinkedIn.
-        #
-        # The first selector normally identifies the actual
-        # people-search result list.
-        # --------------------------------------------------------
-
-        card_selectors = [
-
-            "li.reusable-search__result-container",
-
-            "li[class*='reusable-search__result-container']",
-
-            "div[data-view-name='search-entity-result-universal-template']",
-
-            "div[class*='search-entity-result']",
-
-            "li[class*='search-result']",
-
-        ]
-
-        cards = None
-
-        for selector in card_selectors:
-
-            try:
-
-                candidate = self.page.locator(
-                    selector
-                )
-
-                count = candidate.count()
-
-                print(
-                    f"Result-card selector: {selector} -> {count}"
-                )
-
-                if count > 0:
-
-                    cards = candidate
-
-                    print(
-                        "Using result-card selector:",
-                        selector
-                    )
-
-                    break
-
-            except Exception as ex:
-
-                print(
-                    "Selector inspection failed:",
-                    selector,
-                    repr(ex)
-                )
-
-        if cards is None:
-
-            print("=" * 60)
-            print("NO SEARCH RESULT CARDS FOUND")
-            print("=" * 60)
-
-            print(
-                "IMPORTANT: No /in/ links will be scanned as a "
-                "fallback because that could collect unrelated "
-                "profiles."
-            )
-
-            return profiles
-
-
-        # --------------------------------------------------------
-        # Determine the company being searched.
-        #
-        # SearchWorkflowV2 creates CompanyPage and calls
-        # search_company(company).
-        #
-        # We support both the new stored value and the existing
-        # page-derived company value where possible.
-        # --------------------------------------------------------
-
-        search_company = getattr(
-            self,
-            "_search_company",
-            ""
-        )
-
-        search_company = (
-            search_company or ""
-        ).strip()
-
-        print(
-            "Expected company:",
-            search_company
-        )
-
-
-        # --------------------------------------------------------
-        # If the CompanyPage does not yet have the company value,
-        # attempt to determine it from the current URL/page.
-        #
-        # This is only secondary protection.
-        # --------------------------------------------------------
-
-        if not search_company:
-
-            try:
-
-                # Search for a visible company heading/link on
-                # the current people-search page.
-                company_candidates = self.page.locator(
-                    "a[href*='/company/']"
-                )
-
-                company_count = company_candidates.count()
-
-                for i in range(company_count):
-
-                    try:
-
-                        candidate_text = (
-                            company_candidates
-                            .nth(i)
-                            .inner_text()
-                            .strip()
-                        )
-
-                        if candidate_text:
-
-                            first_line = (
-                                candidate_text
-                                .split("\n")[0]
-                                .strip()
-                            )
-
-                            if first_line:
-
-                                search_company = (
-                                    first_line
-                                )
-
-                                break
-
-                    except Exception:
-                        pass
-
-            except Exception:
-                pass
-
-
-        if not search_company:
-
-            print("=" * 60)
-            print("COMPANY VALIDATION VALUE NOT AVAILABLE")
-            print("=" * 60)
-
-            print(
-                "No company name is available for validation."
-            )
-
-            print(
-                "NO PROFILES WILL BE EXTRACTED."
-            )
-
-            return profiles
-
-
-        # --------------------------------------------------------
-        # Normalize company names for comparison.
-        #
-        # We intentionally do NOT perform fuzzy matching here.
-        # A profile should only pass when LinkedIn's result card
-        # explicitly contains the requested company.
-        # --------------------------------------------------------
-
-        def normalize_company(value):
-
-            value = (
-                value or ""
-            ).strip().lower()
-
-            value = re.sub(
-                r"\s+",
-                " ",
-                value
-            )
-
-            value = value.replace(
-                "’",
-                "'"
-            )
-
-            return value
-
-
-        expected_company = normalize_company(
-            search_company
-        )
-
-        print(
-            "Normalized expected company:",
-            expected_company
-        )
-
-
-        # --------------------------------------------------------
-        # Process ONLY result cards.
-        # --------------------------------------------------------
-
         seen = set()
 
-        card_count = cards.count()
+        requested_company = (
+            company
+            or ""
+        ).strip().lower()
+
+        requested_location = (
+            location
+            or ""
+        ).strip().lower()
 
         print(
-            "Search result cards:",
-            card_count
+            "Requested company:",
+            company
         )
 
+        print(
+            "Requested location:",
+            location
+        )
 
-        for i in range(card_count):
+        # ---------------------------------------------------------
+        # IMPORTANT
+        #
+        # We intentionally do NOT scan every /in/ link and accept it.
+        #
+        # A profile is accepted only when:
+        #
+        #   1. The /in/ link exists.
+        #   2. We can identify a meaningful parent result container.
+        #   3. The SAME result container contains the requested
+        #      company name.
+        #
+        # This prevents sidebar/friend/recommendation profiles from
+        # being accepted merely because they contain /in/.
+        # ---------------------------------------------------------
+
+        profile_links = self.page.locator(
+            "a[href*='/in/']:visible"
+        )
+
+        link_count = profile_links.count()
+
+        print(
+            "Visible /in/ links discovered:",
+            link_count
+        )
+
+        if link_count == 0:
+
+            print(
+                "No visible profile links found."
+            )
+
+            return profiles
+
+        for i in range(link_count):
 
             try:
 
-                card = cards.nth(i)
+                link = profile_links.nth(i)
 
-                if not card.is_visible():
-
-                    continue
-
-
-                # ------------------------------------------------
-                # Read complete result-card text.
-                #
-                # This is used ONLY to verify the company.
-                # ------------------------------------------------
-
-                card_text = (
-                    card.inner_text()
-                    .strip()
-                )
-
-                if not card_text:
-
-                    continue
-
-
-                print("=" * 50)
-                print(
-                    f"RESULT CARD {i + 1}"
-                )
-                print("=" * 50)
-
-                print(
-                    card_text[:1000]
-                )
-
-
-                # ------------------------------------------------
-                # Find company information inside this card.
-                #
-                # Prefer explicit company-related elements rather
-                # than blindly treating every line as company.
-                # ------------------------------------------------
-
-                company_texts = []
-
-
-                company_selectors = [
-
-                    "a[href*='/company/']",
-
-                    "a[data-field='experience_company']",
-
-                    "span[aria-label*='company' i]",
-
-                    "div[class*='entity-result__primary-subtitle']",
-
-                    "div[class*='primary-subtitle']",
-
-                    "div[class*='secondary-subtitle']",
-
-                    "p[class*='subline']",
-
-                ]
-
-
-                for company_selector in company_selectors:
-
-                    try:
-
-                        company_nodes = card.locator(
-                            company_selector
-                        )
-
-                        company_node_count = (
-                            company_nodes.count()
-                        )
-
-                        for j in range(
-                            company_node_count
-                        ):
-
-                            try:
-
-                                value = (
-                                    company_nodes
-                                    .nth(j)
-                                    .inner_text()
-                                    .strip()
-                                )
-
-                                if value:
-
-                                    company_texts.append(
-                                        value
-                                    )
-
-                            except Exception:
-                                pass
-
-                    except Exception:
-                        pass
-
-
-                # ------------------------------------------------
-                # Remove duplicates while preserving order.
-                # ------------------------------------------------
-
-                unique_company_texts = []
-
-                seen_company_texts = set()
-
-                for value in company_texts:
-
-                    normalized_value = normalize_company(
-                        value
-                    )
-
-                    if not normalized_value:
-                        continue
-
-                    if normalized_value in seen_company_texts:
-                        continue
-
-                    seen_company_texts.add(
-                        normalized_value
-                    )
-
-                    unique_company_texts.append(
-                        value
-                    )
-
-
-                print(
-                    "Company candidates:",
-                    unique_company_texts
-                )
-
-
-                # ------------------------------------------------
-                # STRICT COMPANY MATCH
-                # ------------------------------------------------
-
-                company_matches = False
-
-                for company_value in unique_company_texts:
-
-                    normalized_company_value = (
-                        normalize_company(
-                            company_value
-                        )
-                    )
-
-                    if (
-                        normalized_company_value
-                        == expected_company
-                    ):
-
-                        company_matches = True
-
-                        print(
-                            "COMPANY MATCH:",
-                            company_value
-                        )
-
-                        break
-
-
-                if not company_matches:
-
-                    print(
-                        "SKIPPED: result card does not "
-                        "explicitly match requested company."
-                    )
-
-                    continue
-
-
-                # ------------------------------------------------
-                # Find profile link ONLY inside this validated card.
-                # ------------------------------------------------
-
-                profile_links = card.locator(
-                    "a[href*='/in/']"
-                )
-
-                profile_count = (
-                    profile_links.count()
-                )
-
-                print(
-                    "Profile links inside validated card:",
-                    profile_count
-                )
-
-
-                selected_link = None
-
-
-                for j in range(profile_count):
-
-                    try:
-
-                        link = (
-                            profile_links
-                            .nth(j)
-                        )
-
-                        href = (
-                            link.get_attribute(
-                                "href"
-                            )
-                        )
-
-                        if not href:
-                            continue
-
-                        href = href.strip()
-
-                        clean_url = (
-                            href.split("?")[0]
-                            .split("#")[0]
-                        )
-
-                        if not clean_url.startswith(
-                            "http"
-                        ):
-
-                            clean_url = (
-                                "https://www.linkedin.com"
-                                + clean_url
-                            )
-
-                        if not clean_url.startswith(
-                            "https://www.linkedin.com/in/"
-                        ):
-
-                            continue
-
-                        selected_link = link
-
-                        break
-
-                    except Exception:
-                        pass
-
-
-                if selected_link is None:
-
-                    print(
-                        "SKIPPED: validated company card "
-                        "contains no profile URL."
-                    )
-
-                    continue
-
-
-                # ------------------------------------------------
-                # Extract profile URL.
-                # ------------------------------------------------
-
-                href = (
-                    selected_link
-                    .get_attribute(
-                        "href"
-                    )
+                href = link.get_attribute(
+                    "href"
                 )
 
                 if not href:
-
                     continue
 
-                clean_url = (
-                    href.split("?")[0]
-                    .split("#")[0]
-                )
+                href = href.strip()
 
-                if not clean_url.startswith(
-                    "http"
-                ):
+                clean_url = href.split("?")[0]
 
+                if clean_url.startswith("/"):
                     clean_url = (
                         "https://www.linkedin.com"
                         + clean_url
                     )
 
+                if "/in/" not in clean_url.lower():
+                    continue
+
+                # -------------------------------------------------
+                # Extract candidate name from the link.
+                # -------------------------------------------------
+
+                name = (
+                    link.inner_text()
+                    .strip()
+                )
+
+                if not name:
+                    continue
+
+                if "\n" in name:
+                    continue
+
+                if len(name) > 80:
+                    continue
+
+                if name.count(" ") > 8:
+                    continue
+
+                # -------------------------------------------------
+                # Find the SAME search-result container.
+                #
+                # LinkedIn changes its classes frequently, so do not
+                # depend on one exact class.
+                #
+                # We walk upward from the /in/ link and inspect
+                # ancestors for search-result characteristics.
+                # -------------------------------------------------
+
+                container = None
+
+                try:
+
+                    container = link.locator(
+                        "xpath=ancestor::*["
+                        "self::li "
+                        "or "
+                        "contains(@class,'search-result') "
+                        "or "
+                        "contains(@class,'search-entity-result') "
+                        "or "
+                        "contains(@class,'reusable-search') "
+                        "or "
+                        "contains(@data-view-name,'search-entity')"
+                        "][1]"
+                    ).first
+
+                    if container.count() == 0:
+                        container = None
+
+                except Exception:
+                    container = None
+
+                # -------------------------------------------------
+                # If class-based detection fails, inspect a limited
+                # number of ancestors manually.
+                #
+                # This is NOT a global /in/ fallback.
+                # The search starts from the profile link itself.
+                # -------------------------------------------------
+
+                if container is None:
+
+                    try:
+
+                        candidate = link.locator(
+                            "xpath=.."
+                        )
+
+                        for level in range(8):
+
+                            try:
+
+                                if candidate.count() == 0:
+                                    break
+
+                                tag = candidate.evaluate(
+                                    "(el) => el.tagName"
+                                )
+
+                                cls = candidate.get_attribute(
+                                    "class"
+                                ) or ""
+
+                                data_view = (
+                                    candidate.get_attribute(
+                                        "data-view-name"
+                                    )
+                                    or ""
+                                )
+
+                                tag = (
+                                    tag
+                                    or ""
+                                ).lower()
+
+                                cls = (
+                                    cls
+                                    or ""
+                                ).lower()
+
+                                data_view = (
+                                    data_view
+                                    or ""
+                                ).lower()
+
+                                looks_like_result = (
+
+                                    "search-result"
+                                    in cls
+
+                                    or
+                                    "search-entity-result"
+                                    in cls
+
+                                    or
+                                    "reusable-search"
+                                    in cls
+
+                                    or
+                                    "search-entity"
+                                    in data_view
+
+                                    or
+                                    (
+                                        tag == "li"
+                                        and
+                                        len(
+                                            candidate.inner_text(
+                                                timeout=1000
+                                            ).strip()
+                                        ) > 20
+                                    )
+                                )
+
+                                if looks_like_result:
+
+                                    container = candidate
+                                    break
+
+                                candidate = candidate.locator(
+                                    "xpath=.."
+                                )
+
+                            except Exception:
+
+                                break
+
+                    except Exception:
+
+                        container = None
+
+                # -------------------------------------------------
+                # No identifiable result container.
+                #
+                # IMPORTANT:
+                # Do NOT accept the profile.
+                # -------------------------------------------------
+
+                if container is None:
+
+                    print(
+                        "SKIP - no search-result container:",
+                        name
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # Read ONLY the text from the same result container.
+                # -------------------------------------------------
+
+                try:
+
+                    card_text = (
+                        container.inner_text(
+                            timeout=3000
+                        )
+                        .strip()
+                    )
+
+                except Exception:
+
+                    print(
+                        "SKIP - unable to read result container:",
+                        name
+                    )
+
+                    continue
+
+                card_text_lower = (
+                    card_text.lower()
+                )
+
+                # -------------------------------------------------
+                # COMPANY VALIDATION
+                #
+                # The requested company must occur inside the same
+                # result container as the profile link.
+                # -------------------------------------------------
+
+                company_match = False
+
+                if requested_company:
+
+                    company_match = (
+                        requested_company
+                        in card_text_lower
+                    )
+
+                else:
+
+                    # If no company was supplied, never silently
+                    # accept a profile.
+                    company_match = False
+
+                if not company_match:
+
+                    print("=" * 50)
+                    print(
+                        "SKIP - COMPANY MISMATCH"
+                    )
+                    print(
+                        "Profile:",
+                        name
+                    )
+                    print(
+                        "Requested company:",
+                        company
+                    )
+                    print(
+                        "Result container does not contain "
+                        "requested company."
+                    )
+                    print("=" * 50)
+
+                    continue
+
+                # -------------------------------------------------
+                # OPTIONAL LOCATION VALIDATION
+                #
+                # Location is normally already applied by
+                # apply_location(). We log it here, but do not make
+                # extraction dependent on exact LinkedIn location
+                # wording because LinkedIn may abbreviate it.
+                # -------------------------------------------------
+
+                if requested_location:
+
+                    print(
+                        "Company matched:",
+                        name,
+                        "->",
+                        company
+                    )
+
+                # -------------------------------------------------
+                # FINAL URL DEDUPLICATION
+                # -------------------------------------------------
 
                 if clean_url in seen:
 
                     continue
 
-
-                # ------------------------------------------------
-                # Extract name from the profile link itself.
-                # ------------------------------------------------
-
-                name = (
-                    selected_link
-                    .inner_text()
-                    .strip()
-                )
-
-
-                if not name:
-
-                    # Try common LinkedIn result name selectors.
-                    name_selectors = [
-
-                        "span[aria-hidden='true']",
-
-                        "a[data-control-name='search_srp_result']",
-
-                        "span[class*='entity-result__title-text']",
-
-                        "div[class*='entity-result__title-text']",
-
-                    ]
-
-                    for name_selector in name_selectors:
-
-                        try:
-
-                            name_node = (
-                                card
-                                .locator(
-                                    name_selector
-                                )
-                                .first
-                            )
-
-                            if name_node.count() > 0:
-
-                                candidate_name = (
-                                    name_node
-                                    .inner_text()
-                                    .strip()
-                                )
-
-                                if candidate_name:
-
-                                    name = candidate_name
-
-                                    break
-
-                        except Exception:
-                            pass
-
-
-                if not name:
-
-                    print(
-                        "SKIPPED: profile name unavailable."
-                    )
-
-                    continue
-
-
-                # ------------------------------------------------
-                # Keep the existing simple name safety checks.
-                # ------------------------------------------------
-
-                if "\n" in name:
-
-                    continue
-
-                if len(name) > 80:
-
-                    continue
-
-
                 seen.add(
                     clean_url
                 )
 
-
-                # ------------------------------------------------
-                # Extract headline/location where available.
-                # These are still from the SAME validated card.
-                # ------------------------------------------------
-
-                headline = ""
-                result_location = ""
-
-
-                try:
-
-                    subtitle_nodes = card.locator(
-                        "div[class*='entity-result__primary-subtitle'], "
-                        "div[class*='primary-subtitle']"
-                    )
-
-                    subtitle_count = (
-                        subtitle_nodes.count()
-                    )
-
-                    if subtitle_count > 0:
-
-                        headline = (
-                            subtitle_nodes
-                            .first
-                            .inner_text()
-                            .strip()
-                        )
-
-                except Exception:
-                    pass
-
-
-                try:
-
-                    secondary_nodes = card.locator(
-                        "div[class*='entity-result__secondary-subtitle'], "
-                        "div[class*='secondary-subtitle']"
-                    )
-
-                    secondary_count = (
-                        secondary_nodes.count()
-                    )
-
-                    if secondary_count > 0:
-
-                        result_location = (
-                            secondary_nodes
-                            .first
-                            .inner_text()
-                            .strip()
-                        )
-
-                except Exception:
-                    pass
-
-
                 profiles.append(
                     {
                         "full_name": name,
-                        "headline": headline,
-                        "location": result_location,
-                        "company": search_company,
                         "profile_url": clean_url,
+                        "company": company,
+                        "location": location,
                     }
                 )
 
-
-                print("=" * 50)
-                print("PROFILE ACCEPTED")
-                print("=" * 50)
+                print("=" * 60)
+                print(
+                    "COMPANY-MATCHED PROFILE ACCEPTED"
+                )
+                print("=" * 60)
 
                 print(
                     "Name:",
@@ -1263,7 +949,12 @@ class CompanyPage(BasePage):
 
                 print(
                     "Company:",
-                    search_company
+                    company
+                )
+
+                print(
+                    "Location filter:",
+                    location
                 )
 
                 print(
@@ -1271,19 +962,17 @@ class CompanyPage(BasePage):
                     clean_url
                 )
 
-
             except Exception as ex:
 
                 print(
-                    "Result-card processing failed:",
+                    "Profile candidate processing failed:",
                     repr(ex)
                 )
 
-
         print("=" * 60)
         print(
-            f"Company-matched profiles extracted: "
-            f"{len(profiles)}"
+            "COMPANY-MATCHED PROFILES EXTRACTED:",
+            len(profiles)
         )
         print("=" * 60)
 
