@@ -172,6 +172,66 @@ class LoginPage(BasePage):
             password
         )
 
+        # TEMPORARY PASSWORD VISIBILITY DIAGNOSTIC
+        try:
+            password_field = None
+
+            for selector in self.PASSWORD:
+                try:
+                    locator = self.page.locator(selector)
+
+                    for i in range(locator.count()):
+                        candidate = locator.nth(i)
+
+                        if candidate.is_visible():
+                            password_field = candidate
+                            break
+
+                    if password_field:
+                        break
+
+                except Exception:
+                    continue
+
+            if password_field:
+                password_field.evaluate("""
+                    (input) => {
+                        input.type = 'text';
+
+                        const button =
+                            document.createElement('button');
+
+                        button.type = 'button';
+                        button.innerText = 'Hide password';
+
+                        button.style.marginLeft = '8px';
+                        button.style.padding = '8px 12px';
+                        button.style.position = 'relative';
+                        button.style.zIndex = '999999';
+                        button.style.cursor = 'pointer';
+
+                        button.onclick = () => {
+                            if (input.type === 'password') {
+                                input.type = 'text';
+                                button.innerText = 'Hide password';
+                            } else {
+                                input.type = 'password';
+                                button.innerText = 'Show password';
+                            }
+                        };
+
+                        input.parentElement.appendChild(button);
+                    }
+                """)
+
+                print("TEMPORARY PASSWORD VISIBILITY BUTTON ADDED")
+
+            else:
+                print("PASSWORD FIELD NOT FOUND")
+
+        except Exception as ex:
+            print("Password visibility diagnostic error:", repr(ex))
+
         print("Clicking Login...")
 
         self.click_login()

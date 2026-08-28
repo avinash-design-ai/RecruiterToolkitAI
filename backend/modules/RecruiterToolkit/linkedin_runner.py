@@ -280,6 +280,64 @@ def _wait_for_login_result(
 
         current_url_lower = current_url.lower()
 
+        # -------------------------------------------------
+        # AUTHENTICATION STATE DIAGNOSTIC
+        # -------------------------------------------------
+
+        if current_url != last_url:
+
+            try:
+                print("=" * 60)
+                print("AUTHENTICATION STATE DIAGNOSTIC")
+                print("=" * 60)
+                print("URL:", current_url)
+                print("TITLE:", page.title())
+
+                print(
+                    "LOGIN PAGE:",
+                    "linkedin.com/login" in current_url_lower
+                )
+
+                print(
+                    "CHECKPOINT:",
+                    "checkpoint" in current_url_lower
+                )
+
+                print(
+                    "CHALLENGE:",
+                    "challenge" in current_url_lower
+                )
+
+                try:
+                    body_text = page.locator("body").inner_text(
+                        timeout=3000
+                    )
+
+                    diagnostic_text = (
+                        body_text
+                        .replace("\\n", " ")
+                        .strip()
+                    )
+
+                    print(
+                        "PAGE TEXT:",
+                        diagnostic_text[:1000]
+                    )
+
+                except Exception as ex:
+                    print(
+                        "PAGE TEXT ERROR:",
+                        repr(ex)
+                    )
+
+                print("=" * 60)
+
+            except Exception as ex:
+                print(
+                    "AUTHENTICATION DIAGNOSTIC ERROR:",
+                    repr(ex)
+                )
+
         if current_url != last_url:
 
             print(
