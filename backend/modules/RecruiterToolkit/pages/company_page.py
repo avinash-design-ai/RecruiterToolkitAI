@@ -1,3 +1,5 @@
+import re
+
 from pages.base_page import BasePage
 from urllib.parse import urlparse, parse_qs
 
