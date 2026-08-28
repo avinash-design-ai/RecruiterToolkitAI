@@ -63,11 +63,39 @@ class LinkedInProfilePageV2(BasePage):
             # ---------------------------------------------
 
             if "/authwall" in current_url.lower():
-
                 print(
                     "AUTHWALL DETECTED - "
                     "Profile was not accessible."
                 )
+
+                # -------------------------------------------------
+                # PROFILE PAGE RECOVERY
+                #
+                # Reset the dedicated profile page after LinkedIn
+                # sends profile navigation to /authwall.
+                # The employee search page remains untouched.
+                # -------------------------------------------------
+
+                try:
+                    print(
+                        "Resetting blocked profile page..."
+                    )
+
+                    self.page.goto(
+                        "about:blank",
+                        wait_until="domcontentloaded"
+                    )
+
+                    print(
+                        "Profile page reset:",
+                        self.page.url
+                    )
+
+                except Exception as reset_ex:
+                    print(
+                        "Profile page reset failed:",
+                        repr(reset_ex)
+                    )
 
                 return False
 
