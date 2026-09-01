@@ -294,22 +294,46 @@ class CompanyPage(BasePage):
                     lower_href = href.lower()
 
                     # ------------------------------------------------
-                    # Never prefer a network-filtered URL.
-                    # We want the complete company employee search.
+                    # LinkedIn may include additional filters such as
+                    # network=["F"] in its own company employee URL.
+                    #
+                    # Do NOT reject a LinkedIn-provided URL merely
+                    # because network= is present.
+                    #
+                    # The important safety requirement is that this
+                    # remains a people-search URL with currentCompany.
                     # ------------------------------------------------
-
-                    if "network=" in lower_href:
-                        print(
-                            "SKIP network-filtered employee URL:",
-                            href
-                        )
-                        continue
 
                     values = current_company_values(
                         href
                     )
 
                     if not values:
+                        continue
+
+                    # ------------------------------------------------
+                    # Safety check:
+                    #
+                    # If the selected company URL contains a
+                    # currentCompany value, require the employee
+                    # link to use the SAME company value.
+                    #
+                    # This prevents unrelated company people-search
+                    # URLs from being accepted.
+                    # ------------------------------------------------
+
+                    selected_company_values = current_company_values(
+                        company_page_url
+                    )
+
+                    if (
+                        selected_company_values
+                        and values != selected_company_values
+                    ):
+                        print(
+                            "SKIP unrelated currentCompany URL:",
+                            href
+                        )
                         continue
 
                     candidates.append(
