@@ -294,15 +294,22 @@ class CompanyPage(BasePage):
                     lower_href = href.lower()
 
                     # ------------------------------------------------
-                    # LinkedIn may include additional filters such as
-                    # network=["F"] in its own company employee URL.
+                    # IMPORTANT:
                     #
-                    # Do NOT reject a LinkedIn-provided URL merely
-                    # because network= is present.
+                    # LinkedIn may expose multiple company people-search
+                    # links, including network-filtered canned searches.
                     #
-                    # The important safety requirement is that this
-                    # remains a people-search URL with currentCompany.
+                    # We must NOT select network-filtered employee links.
+                    # The known-good flow uses the clean company employee
+                    # search URL.
                     # ------------------------------------------------
+
+                    if "network=" in lower_href:
+                        print(
+                            "SKIP network-filtered employee URL:",
+                            href
+                        )
+                        continue
 
                     values = current_company_values(
                         href
