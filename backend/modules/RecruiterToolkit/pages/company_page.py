@@ -296,20 +296,14 @@ class CompanyPage(BasePage):
                     # ------------------------------------------------
                     # IMPORTANT:
                     #
-                    # LinkedIn may expose multiple company people-search
-                    # links, including network-filtered canned searches.
+                    # LinkedIn may expose the company employee search as
+                    # a canned search containing network/origin filters.
                     #
-                    # We must NOT select network-filtered employee links.
-                    # The known-good flow uses the clean company employee
-                    # search URL.
+                    # Do NOT reject that LinkedIn-provided link.
+                    #
+                    # Instead, preserve the same currentCompany URL and
+                    # remove only the canned-search filters before click.
                     # ------------------------------------------------
-
-                    if "network=" in lower_href:
-                        print(
-                            "SKIP network-filtered employee URL:",
-                            href
-                        )
-                        continue
 
                     values = current_company_values(
                         href
@@ -410,6 +404,54 @@ class CompanyPage(BasePage):
                 print("=" * 60)
                 print("CLICKING LINKEDIN EMPLOYEE LINK")
                 print("=" * 60)
+
+                # ------------------------------------------------
+                # Clean LinkedIn canned-search filters while
+                # preserving the exact currentCompany value.
+                #
+                # We modify the href of the LinkedIn-provided
+                # employee link and then click that same link.
+                # ------------------------------------------------
+
+                original_href = link.get_attribute("href")
+
+                if original_href:
+                    parts = original_href.split("?", 1)
+
+                    if len(parts) == 2:
+                        base_url = parts[0]
+                        query_parts = parts[1].split("&")
+                        clean_parts = []
+
+                        for part in query_parts:
+                            key = part.split("=", 1)[0].lower()
+
+                            if key in (
+                                "network",
+                                "origin",
+                                "schoolfilter",
+                            ):
+                                continue
+
+                            clean_parts.append(part)
+
+                        clean_href = base_url
+
+                        if clean_parts:
+                            clean_href += "?" + "&".join(clean_parts)
+
+                        print("Original employee link:")
+                        print(original_href)
+
+                        print("Clean employee link:")
+                        print(clean_href)
+
+                        link.evaluate(
+                            """(element, href) => {
+                                element.setAttribute("href", href);
+                            }""",
+                            clean_href
+                        )
 
                 link.click()
 
