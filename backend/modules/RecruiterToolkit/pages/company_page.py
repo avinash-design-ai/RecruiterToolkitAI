@@ -973,19 +973,135 @@ class CompanyPage(BasePage):
             1000
         )
 
+        # ------------------------------------------------------------
+        # Apply the selected location.
+        #
+        # Do NOT silently ignore a failed Show results click.
+        # If LinkedIn does not apply the filter, the next extraction
+        # step can run against an incomplete/stale page and return
+        # zero profiles.
+        # ------------------------------------------------------------
+
+        print(
+            "Looking for Show results..."
+        )
+
+        show_results = self.page.get_by_text(
+            "Show results",
+            exact=False
+        )
+
+        visible_show_results = []
+
+        for i in range(
+            show_results.count()
+        ):
+
+            try:
+
+                candidate = show_results.nth(i)
+
+                if candidate.is_visible():
+
+                    visible_show_results.append(
+                        candidate
+                    )
+
+            except Exception:
+
+                pass
+
+        print(
+            "Visible Show results controls:",
+            len(visible_show_results)
+        )
+
+        if not visible_show_results:
+
+            raise RuntimeError(
+                "Location was selected, but LinkedIn "
+                "did not expose a visible 'Show results' "
+                "control."
+            )
+
+        print(
+            "Clicking Show results..."
+        )
+
+        visible_show_results[0].click(
+            timeout=30000
+        )
+
+        # ------------------------------------------------------------
+        # Give LinkedIn time to apply the filter and render results.
+        # ------------------------------------------------------------
+
+        self.page.wait_for_timeout(
+            3000
+        )
+
+        print(
+            "URL after Show results:",
+            self.page.url
+        )
+
+        # ------------------------------------------------------------
+        # Make sure we are back on the people-search results page.
+        # ------------------------------------------------------------
+
+        current_url = self.page.url.lower()
+
+        if "/search/results/people/" not in current_url:
+
+            raise RuntimeError(
+                "Show results did not return to the "
+                "LinkedIn people-search page. "
+                f"Current URL: {self.page.url}"
+            )
+
+        # ------------------------------------------------------------
+        # Wait for LinkedIn's employee results to render.
+        #
+        # The extractor should not run immediately while the page is
+        # still rendering.
+        # ------------------------------------------------------------
+
+        print(
+            "Waiting for employee search results..."
+        )
+
         try:
 
-            self.page.get_by_text(
-                "Show results",
-                exact=False
-            ).first.click()
+            self.page.locator(
+                "a[href*='/in/']:visible"
+            ).first.wait_for(
+                state="visible",
+                timeout=30000
+            )
 
         except Exception:
 
-            pass
+            print(
+                "No visible profile links appeared "
+                "within the initial wait."
+            )
 
-        self.page.wait_for_timeout(
-            5000
+            # LinkedIn can render the result list late.
+            self.page.wait_for_timeout(
+                5000
+            )
+
+        profile_count = self.page.locator(
+            "a[href*='/in/']:visible"
+        ).count()
+
+        print(
+            "Visible profile links after location filter:",
+            profile_count
+        )
+
+        print(
+            "Location applied successfully."
         )
 
         return True
