@@ -722,20 +722,244 @@ class CompanyPage(BasePage):
             f"Applying location: {location}"
         )
 
+        # ------------------------------------------------------------
+        # LinkedIn may leave an open dialog/modal over the people
+        # search page. When that happens, the Locations filter is
+        # visible but Playwright cannot click it because the dialog
+        # intercepts pointer events.
+        #
+        # Close the blocking dialog before interacting with filters.
+        # Do NOT force-click through the dialog.
+        # ------------------------------------------------------------
+
+        try:
+
+            dialogs = self.page.locator(
+                "dialog[open], [role='dialog']:visible"
+            )
+
+            dialog_count = dialogs.count()
+
+            if dialog_count:
+
+                print(
+                    "Open LinkedIn dialog(s) detected:",
+                    dialog_count
+                )
+
+                for i in range(dialog_count):
+
+                    try:
+
+                        dialog = dialogs.nth(i)
+
+                        try:
+
+                            dialog_text = (
+                                dialog.inner_text(
+                                    timeout=2000
+                                )
+                                .strip()
+                            )
+
+                            print(
+                                "Dialog text:",
+                                dialog_text[:500]
+                            )
+
+                        except Exception:
+
+                            dialog_text = ""
+
+                        # First try LinkedIn's normal Escape behavior.
+                        try:
+
+                            self.page.keyboard.press(
+                                "Escape"
+                            )
+
+                            self.page.wait_for_timeout(
+                                1000
+                            )
+
+                        except Exception as ex:
+
+                            print(
+                                "Dialog Escape failed:",
+                                repr(ex)
+                            )
+
+                        # Check whether this dialog is still open.
+                        try:
+
+                            if not dialog.is_visible(
+                                timeout=1000
+                            ):
+
+                                continue
+
+                        except Exception:
+
+                            continue
+
+                        # ------------------------------------------------
+                        # Escape did not close it.
+                        # Try common LinkedIn close/dismiss controls.
+                        # ------------------------------------------------
+
+                        close_selectors = [
+                            "button[aria-label*='Close' i]",
+                            "button[aria-label*='Dismiss' i]",
+                            "[aria-label*='Close' i]",
+                            "[aria-label*='Dismiss' i]",
+                        ]
+
+                        closed = False
+
+                        for selector in close_selectors:
+
+                            try:
+
+                                close_button = (
+                                    dialog.locator(
+                                        selector
+                                    ).first
+                                )
+
+                                if (
+                                    close_button.count()
+                                    and
+                                    close_button.is_visible()
+                                ):
+
+                                    print(
+                                        "Closing LinkedIn dialog using:",
+                                        selector
+                                    )
+
+                                    close_button.click(
+                                        timeout=3000
+                                    )
+
+                                    self.page.wait_for_timeout(
+                                        1000
+                                    )
+
+                                    closed = True
+                                    break
+
+                            except Exception:
+
+                                pass
+
+                        if not closed:
+
+                            # One final Escape attempt.
+                            try:
+
+                                self.page.keyboard.press(
+                                    "Escape"
+                                )
+
+                                self.page.wait_for_timeout(
+                                    1000
+                                )
+
+                            except Exception:
+
+                                pass
+
+                    except Exception as ex:
+
+                        print(
+                            "Dialog handling failed:",
+                            repr(ex)
+                        )
+
+            # --------------------------------------------------------
+            # Verify that no visible dialog is still blocking the page.
+            # --------------------------------------------------------
+
+            remaining_dialogs = self.page.locator(
+                "dialog[open], [role='dialog']:visible"
+            )
+
+            remaining_count = remaining_dialogs.count()
+
+            if remaining_count:
+
+                print(
+                    "WARNING: LinkedIn dialog remains open:",
+                    remaining_count
+                )
+
+                for i in range(
+                    min(remaining_count, 3)
+                ):
+
+                    try:
+
+                        print(
+                            "Remaining dialog:",
+                            remaining_dialogs.nth(i)
+                            .inner_text(timeout=1000)
+                            .strip()[:500]
+                        )
+
+                    except Exception:
+
+                        pass
+
+                raise RuntimeError(
+                    "A visible LinkedIn dialog is still "
+                    "blocking the Locations filter."
+                )
+
+        except RuntimeError:
+
+            raise
+
+        except Exception as ex:
+
+            print(
+                "Unexpected dialog detection error:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # Open the Locations filter.
+        # ------------------------------------------------------------
+
+        print(
+            "Opening Locations filter..."
+        )
+
         self.page.get_by_text(
             "Locations",
             exact=False
-        ).first.click()
+        ).first.click(
+            timeout=30000
+        )
 
-        self.page.wait_for_timeout(2000)
+        self.page.wait_for_timeout(
+            2000
+        )
+
+        # ------------------------------------------------------------
+        # Existing location-selection logic.
+        # ------------------------------------------------------------
 
         location_box = self.page.locator(
             "input"
         ).last
 
-        location_box.fill(location)
+        location_box.fill(
+            location
+        )
 
-        self.page.wait_for_timeout(2000)
+        self.page.wait_for_timeout(
+            2000
+        )
 
         self.page.keyboard.press(
             "ArrowDown"
@@ -745,7 +969,9 @@ class CompanyPage(BasePage):
             "Enter"
         )
 
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(
+            1000
+        )
 
         try:
 
