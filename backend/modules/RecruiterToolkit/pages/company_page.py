@@ -453,7 +453,11 @@ class CompanyPage(BasePage):
                             clean_href
                         )
 
-                link.click()
+                self.page.goto(
+                    clean_href,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
 
                 self.page.wait_for_timeout(
                     5000
