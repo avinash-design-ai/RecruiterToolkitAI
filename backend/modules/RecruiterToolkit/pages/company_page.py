@@ -428,9 +428,14 @@ class CompanyPage(BasePage):
 
                             if key in (
                                 "network",
-                                "origin",
                                 "schoolfilter",
                             ):
+                                continue
+
+                            if key == "origin":
+                                clean_parts.append(
+                                    "origin=COMPANY_PAGE_CANNED_SEARCH"
+                                )
                                 continue
 
                             clean_parts.append(part)
@@ -453,11 +458,7 @@ class CompanyPage(BasePage):
                             clean_href
                         )
 
-                self.page.goto(
-                    clean_href,
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
+                link.click()
 
                 self.page.wait_for_timeout(
                     5000
