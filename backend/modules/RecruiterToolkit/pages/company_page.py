@@ -771,6 +771,39 @@ class CompanyPage(BasePage):
             f"Applying location: {location}"
         )
 
+        # ------------------------------------------------------------
+        # Dismiss any LinkedIn dialog blocking the filter controls.
+        # LinkedIn can leave an open dialog over the people-search
+        # page, causing Playwright clicks to be intercepted.
+        #
+        # Keep the original location-selection method unchanged.
+        # ------------------------------------------------------------
+
+        try:
+
+            dialogs = self.page.locator(
+                "dialog[open], [role='dialog']:visible"
+            )
+
+            if dialogs.count():
+
+                print(
+                    "Open LinkedIn dialog detected. "
+                    "Attempting to dismiss it..."
+                )
+
+                self.page.keyboard.press(
+                    "Escape"
+                )
+
+                self.page.wait_for_timeout(
+                    1000
+                )
+
+        except Exception:
+
+            pass
+
         self.page.get_by_text(
             "Locations",
             exact=False
