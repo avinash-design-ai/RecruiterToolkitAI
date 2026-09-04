@@ -8,6 +8,8 @@ class LinkedInProfilePageV2(BasePage):
     def __init__(self, page):
 
         super().__init__(page)
+        self._original_profile_page = page
+        self._temporary_profile_page = None
 
         self.profile_url = ""
 
@@ -16,346 +18,377 @@ class LinkedInProfilePageV2(BasePage):
     # =====================================================
 
     def open_profile(self, profile_url):
+        """
+        Open an employee profile through the authenticated LinkedIn
+        employee-search page.
+
+        Direct profile goto() can trigger LinkedIn authwall even when
+        the profile is accessible from the authenticated employee
+        search results.
+
+        Therefore the preferred path is:
+
+            authenticated search page
+                -> exact /in/ employee link
+                -> Ctrl-click
+                -> new tab
+                -> extract existing profile data
+
+        The existing email extraction remains unchanged.
+        """
+
         print("=" * 60)
-        print("Opening LinkedIn profile")
-        print(profile_url)
+        print("OPENING EMPLOYEE PROFILE")
         print("=" * 60)
 
-        try:
-            self.profile_url = profile_url
+        print(
+            "Requested profile URL:",
+            profile_url
+        )
 
-            print("=" * 70)
-            print("PROFILE NAVIGATION DIAGNOSTICS")
-            print("=" * 70)
-            print("Profile target:", profile_url)
-            print("Current page URL:", self.page.url)
-            print("Page count in context:", len(self.page.context.pages))
-
-            for index, context_page in enumerate(
-                self.page.context.pages
-            ):
-                print(
-                    f"Page {index}: {context_page.url}"
-                )
-
-            print("=" * 70)
-
-            # -------------------------------------------------
-            # IMPORTANT:
-            #
-            # The profile page is already a separate page created
-            # by SearchWorkflowV2 inside the SAME authenticated
-            # browser context.
-            #
-            # First try normal navigation.
-            #
-            # If LinkedIn sends this page to /authwall, retry
-            # through the authenticated context using a temporary
-            # page and preserve the existing profile page.
-            # -------------------------------------------------
-
-            print("PROFILE NAVIGATION START")
-            print("Target profile URL:", profile_url)
-            print(
-                "Profile page before goto:",
-                self.page.url
-            )
-            print(
-                "Context page count:",
-                len(self.page.context.pages)
-            )
-
-            # -------------------------------------------------
-            # Normalize profile URL
-            # -------------------------------------------------
-
-            if profile_url:
-                profile_url = profile_url.strip()
-
-            if not profile_url:
-                print(
-                    "Profile URL is empty."
-                )
-                return False
-
-            if profile_url.startswith("/"):
-                profile_url = (
-                    "https://www.linkedin.com"
-                    + profile_url
-                )
-
-            # -------------------------------------------------
-            # FIRST ATTEMPT
-            # -------------------------------------------------
-
-            try:
-                self.page.goto(
-                    profile_url,
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-
-                print(
-                    "Profile page after goto:",
-                    self.page.url
-                )
-
-                try:
-                    print(
-                        "Profile page title:",
-                        self.page.title()
-                    )
-                except Exception:
-                    pass
-
-                self.page.wait_for_timeout(4000)
-
-            except Exception as goto_ex:
-                print(
-                    "Direct profile navigation failed:",
-                    repr(goto_ex)
-                )
-
-            current_url = self.page.url
-
-            print(
-                "Profile loaded:",
-                current_url
-            )
-
-            # -------------------------------------------------
-            # SUCCESS
-            # -------------------------------------------------
-
-            if (
-                "/in/" in current_url.lower()
-                and "/authwall" not in current_url.lower()
-                and "/login" not in current_url.lower()
-            ):
-                print(
-                    "Valid LinkedIn profile page detected."
-                )
-                return True
-
-            # -------------------------------------------------
-            # AUTHWALL / LOGIN RECOVERY
-            # -------------------------------------------------
-
-            if (
-                "/authwall" in current_url.lower()
-                or "/login" in current_url.lower()
-                or "/ssr-login/" in current_url.lower()
-                or "remember-me-auto-login" in current_url.lower()
-            ):
-
-                print("=" * 60)
-                print(
-                    "PROFILE NAVIGATION REDIRECTED"
-                )
-                print("=" * 60)
-                print(
-                    "Blocked profile URL:",
-                    current_url
-                )
-
-                print(
-                    "Attempting authenticated-context "
-                    "profile recovery..."
-                )
-
-                recovery_page = None
-
-                try:
-                    # -------------------------------------------------
-                    # Create a temporary page in the SAME authenticated
-                    # browser context.
-                    # -------------------------------------------------
-
-                    recovery_page = (
-                        self.page.context.new_page()
-                    )
-
-                    print(
-                        "Recovery page created."
-                    )
-
-                    print(
-                        "Recovery page URL:",
-                        recovery_page.url
-                    )
-
-                    recovery_page.goto(
-                        profile_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
-
-                    print(
-                        "Recovery page after goto:",
-                        recovery_page.url
-                    )
-
-                    recovery_page.wait_for_timeout(
-                        5000
-                    )
-
-                    recovery_url = (
-                        recovery_page.url
-                    )
-
-                    print(
-                        "Recovery profile URL:",
-                        recovery_url
-                    )
-
-                    # -------------------------------------------------
-                    # Check whether recovery succeeded.
-                    # -------------------------------------------------
-
-                    if (
-                        "/in/" in recovery_url.lower()
-                        and "/authwall" not in recovery_url.lower()
-                        and "/login" not in recovery_url.lower()
-                    ):
-
-                        print("=" * 60)
-                        print(
-                            "PROFILE RECOVERY SUCCESSFUL"
-                        )
-                        print("=" * 60)
-
-                        # -------------------------------------------------
-                        # We cannot replace the Playwright Page object
-                        # stored in BasePage safely.
-                        #
-                        # Therefore copy the recovered page state into
-                        # the existing profile page by navigating the
-                        # existing page to the recovered final URL.
-                        #
-                        # This is intentionally done only after LinkedIn
-                        # has successfully resolved the profile URL.
-                        # -------------------------------------------------
-
-                        resolved_url = (
-                            recovery_url
-                        )
-
-                        try:
-                            self.page.goto(
-                                resolved_url,
-                                wait_until="domcontentloaded",
-                                timeout=60000
-                            )
-
-                            self.page.wait_for_timeout(
-                                4000
-                            )
-
-                            final_url = self.page.url
-
-                            print(
-                                "Final profile page:",
-                                final_url
-                            )
-
-                            if (
-                                "/in/" in final_url.lower()
-                                and "/authwall" not in final_url.lower()
-                                and "/login" not in final_url.lower()
-                            ):
-                                print(
-                                    "Valid LinkedIn profile page "
-                                    "detected after recovery."
-                                )
-                                return True
-
-                        except Exception as final_ex:
-                            print(
-                                "Final profile navigation failed:",
-                                repr(final_ex)
-                            )
-
-                    else:
-                        print(
-                            "Recovery page was also blocked:"
-                        )
-                        print(
-                            recovery_url
-                        )
-
-                except Exception as recovery_ex:
-                    print(
-                        "Authenticated profile recovery failed:",
-                        repr(recovery_ex)
-                    )
-
-                finally:
-                    # -------------------------------------------------
-                    # Always close the temporary recovery page.
-                    # -------------------------------------------------
-
-                    if recovery_page:
-                        try:
-                            recovery_page.close()
-
-                            print(
-                                "Recovery page closed."
-                            )
-
-                        except Exception as close_ex:
-                            print(
-                                "Recovery page close failed:",
-                                repr(close_ex)
-                            )
-
-                # -------------------------------------------------
-                # Final cleanup.
-                #
-                # Do NOT touch the employee search page.
-                # -------------------------------------------------
-
-                try:
-                    print(
-                        "Resetting dedicated profile page..."
-                    )
-
-                    self.page.goto(
-                        "about:blank",
-                        wait_until="domcontentloaded",
-                        timeout=30000
-                    )
-
-                    print(
-                        "Profile page reset:",
-                        self.page.url
-                    )
-
-                except Exception as reset_ex:
-                    print(
-                        "Profile page reset failed:",
-                        repr(reset_ex)
-                    )
-
-                return False
-
-            # -------------------------------------------------
-            # Unexpected LinkedIn page
-            # -------------------------------------------------
-
-            print(
-                "Not a LinkedIn profile page."
-            )
-
-            print(
-                "Unexpected URL:",
-                current_url
-            )
-
+        if not profile_url:
+            print("Profile URL is empty.")
             return False
 
+        def canonical(url):
+
+            if not url:
+                return ""
+
+            url = url.strip()
+
+            if url.startswith("/"):
+                url = (
+                    "https://www.linkedin.com"
+                    + url
+                )
+
+            url = (
+                url
+                .split("?")[0]
+                .split("#")[0]
+                .rstrip("/")
+            )
+
+            return url.lower()
+
+        requested = canonical(profile_url)
+
+        # --------------------------------------------------------
+        # Restore the original search page if a previous temporary
+        # profile tab is still active.
+        # --------------------------------------------------------
+
+        temporary_page = getattr(
+            self,
+            "_temporary_profile_page",
+            None
+        )
+
+        original_page = getattr(
+            self,
+            "_original_profile_page",
+            None
+        )
+
+        if temporary_page is not None:
+
+            try:
+                if not temporary_page.is_closed():
+                    temporary_page.close()
+            except Exception:
+                pass
+
+        self._temporary_profile_page = None
+
+        if original_page is not None:
+
+            try:
+                self.page = original_page
+            except Exception:
+                pass
+
+        # --------------------------------------------------------
+        # Find the authenticated employee-search page in the SAME
+        # Playwright browser context.
+        # --------------------------------------------------------
+
+        search_page = None
+
+        try:
+
+            for candidate in self.page.context.pages:
+
+                try:
+
+                    url = candidate.url.lower()
+
+                    if (
+                        "/search/results/people/"
+                        in url
+                        and "currentcompany="
+                        in url
+                    ):
+
+                        search_page = candidate
+                        break
+
+                except Exception:
+                    continue
+
         except Exception as ex:
+
             print(
-                "Failed to open profile:",
+                "Could not inspect browser pages:",
+                repr(ex)
+            )
+
+        # --------------------------------------------------------
+        # Preferred path: exact profile link already rendered on
+        # authenticated search results.
+        # --------------------------------------------------------
+
+        if search_page is not None:
+
+            print(
+                "Authenticated employee search page found:"
+            )
+
+            print(
+                search_page.url
+            )
+
+            try:
+
+                links = search_page.locator(
+                    "a[href*='/in/']:visible"
+                )
+
+                count = links.count()
+
+                print(
+                    "Visible employee profile links:",
+                    count
+                )
+
+                matching_link = None
+
+                for i in range(count):
+
+                    try:
+
+                        link = links.nth(i)
+
+                        href = canonical(
+                            link.get_attribute(
+                                "href"
+                            )
+                        )
+
+                        if (
+                            href
+                            and href == requested
+                        ):
+
+                            matching_link = link
+                            break
+
+                    except Exception:
+                        continue
+
+                if matching_link is not None:
+
+                    print(
+                        "Exact employee profile link "
+                        "found on authenticated search page."
+                    )
+
+                    print(
+                        "Opening employee profile in new tab..."
+                    )
+
+                    try:
+
+                        with (
+                            search_page.context.expect_page(
+                                timeout=15000
+                            )
+                            as page_info
+                        ):
+
+                            matching_link.click(
+                                modifiers=["Control"],
+                                timeout=15000
+                            )
+
+                        profile_page = page_info.value
+
+                        profile_page.wait_for_load_state(
+                            "domcontentloaded",
+                            timeout=30000
+                        )
+
+                        profile_page.wait_for_timeout(
+                            3000
+                        )
+
+                        print(
+                            "Profile tab URL:",
+                            profile_page.url
+                        )
+
+                        current_url = (
+                            profile_page.url.lower()
+                        )
+
+                        # ------------------------------------------------
+                        # Reject LinkedIn auth/login/remember-me pages.
+                        # ------------------------------------------------
+
+                        if (
+                            "/authwall"
+                            in current_url
+                            or "/login"
+                            in current_url
+                            or "/ssr-login/"
+                            in current_url
+                        ):
+
+                            print(
+                                "PROFILE TAB HIT AUTH/LOGIN PAGE."
+                            )
+
+                            try:
+                                profile_page.close()
+                            except Exception:
+                                pass
+
+                            return False
+
+                        if "/in/" not in current_url:
+
+                            print(
+                                "PROFILE TAB DID NOT OPEN "
+                                "A REAL /in/ PROFILE."
+                            )
+
+                            try:
+                                profile_page.close()
+                            except Exception:
+                                pass
+
+                            return False
+
+                        # ------------------------------------------------
+                        # Keep the authenticated search page alive.
+                        # Temporarily switch self.page to the profile tab.
+                        # ------------------------------------------------
+
+                        self._original_profile_page = (
+                            search_page
+                        )
+
+                        self._temporary_profile_page = (
+                            profile_page
+                        )
+
+                        self.page = profile_page
+
+                        print(
+                            "Authenticated employee profile "
+                            "opened successfully."
+                        )
+
+                        return True
+
+                    except Exception as ex:
+
+                        print(
+                            "Authenticated profile-tab "
+                            "opening failed:",
+                            repr(ex)
+                        )
+
+                else:
+
+                    print(
+                        "Exact employee profile URL was "
+                        "not found among visible search links."
+                    )
+
+            except Exception as ex:
+
+                print(
+                    "Authenticated search-page profile "
+                    "lookup failed:",
+                    repr(ex)
+                )
+
+        # --------------------------------------------------------
+        # Controlled fallback.
+        #
+        # This preserves the old behavior if LinkedIn changes the
+        # search-page markup and the exact link cannot be found.
+        # --------------------------------------------------------
+
+        print(
+            "Trying controlled direct profile navigation fallback..."
+        )
+
+        try:
+
+            self.page.goto(
+                profile_url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            self.page.wait_for_timeout(
+                4000
+            )
+
+            current_url = (
+                self.page.url.lower()
+            )
+
+            print(
+                "Profile navigation URL:",
+                self.page.url
+            )
+
+            if (
+                "/authwall"
+                in current_url
+                or "/login"
+                in current_url
+                or "/ssr-login/"
+                in current_url
+            ):
+
+                print(
+                    "AUTHWALL / LOGIN DETECTED."
+                )
+
+                return False
+
+            if "/in/" not in current_url:
+
+                print(
+                    "Profile URL is not a LinkedIn /in/ profile."
+                )
+
+                return False
+
+            print(
+                "Direct profile navigation succeeded."
+            )
+
+            return True
+
+        except Exception as ex:
+
+            print(
+                "Profile navigation failed:",
                 repr(ex)
             )
 
