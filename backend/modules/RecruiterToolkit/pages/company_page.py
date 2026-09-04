@@ -96,6 +96,9 @@ class CompanyPage(BasePage):
 
             return False
 
+        print(
+            "Clicking selected company result..."
+        )
         exact_match.click()
 
         self.page.wait_for_timeout(
@@ -413,50 +416,9 @@ class CompanyPage(BasePage):
                 # employee link and then click that same link.
                 # ------------------------------------------------
 
-                original_href = link.get_attribute("href")
-
-                if original_href:
-                    parts = original_href.split("?", 1)
-
-                    if len(parts) == 2:
-                        base_url = parts[0]
-                        query_parts = parts[1].split("&")
-                        clean_parts = []
-
-                        for part in query_parts:
-                            key = part.split("=", 1)[0].lower()
-
-                            if key in (
-                                "network",
-                                "schoolfilter",
-                            ):
-                                continue
-
-                            if key == "origin":
-                                clean_parts.append(
-                                    "origin=COMPANY_PAGE_CANNED_SEARCH"
-                                )
-                                continue
-
-                            clean_parts.append(part)
-
-                        clean_href = base_url
-
-                        if clean_parts:
-                            clean_href += "?" + "&".join(clean_parts)
-
-                        print("Original employee link:")
-                        print(original_href)
-
-                        print("Clean employee link:")
-                        print(clean_href)
-
-                        link.evaluate(
-                            """(element, href) => {
-                                element.setAttribute("href", href);
-                            }""",
-                            clean_href
-                        )
+                print(
+                    "Clicking LinkedIn employee search option..."
+                )
 
                 link.click()
 
