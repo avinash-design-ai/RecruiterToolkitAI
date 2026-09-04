@@ -1303,3 +1303,53 @@ class LinkedInProfilePageV2(BasePage):
                 email
             )
         )
+
+
+# ============================================================
+# Temporary profile-tab cleanup wrapper
+# ============================================================
+
+_OriginalLinkedInProfilePageV2GetProfile = (
+    LinkedInProfilePageV2.get_profile
+)
+
+def _LinkedInProfilePageV2GetProfileWithCleanup(self):
+    try:
+        return _OriginalLinkedInProfilePageV2GetProfile(self)
+    finally:
+        temporary_page = getattr(
+            self,
+            "_temporary_profile_page",
+            None
+        )
+
+        original_page = getattr(
+            self,
+            "_original_profile_page",
+            None
+        )
+
+        if temporary_page is not None:
+            try:
+                if not temporary_page.is_closed():
+                    temporary_page.close()
+            except Exception as ex:
+                print(
+                    "Temporary profile-tab cleanup failed:",
+                    repr(ex)
+                )
+
+        self._temporary_profile_page = None
+
+        if original_page is not None:
+            try:
+                self.page = original_page
+            except Exception as ex:
+                print(
+                    "Original search-page restoration failed:",
+                    repr(ex)
+                )
+
+LinkedInProfilePageV2.get_profile = (
+    _LinkedInProfilePageV2GetProfileWithCleanup
+)

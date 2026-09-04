@@ -127,25 +127,67 @@ class CompanyPage(BasePage):
             "Opening actual LinkedIn company page..."
         )
 
-        self.page.goto(
-            company_href,
-            wait_until="domcontentloaded",
-            timeout=60000
-        )
+        # Prefer the exact authenticated search-result link.
+        # LinkedIn can redirect a direct goto() to the root page.
+        navigation_succeeded = False
 
-        self.page.wait_for_timeout(
-            5000
-        )
+        try:
+            print("Clicking exact company result link...")
+            exact_match.click(timeout=15000)
+            self.page.wait_for_timeout(5000)
 
-        print(
-            "After company navigation URL:",
-            self.page.url
-        )
+            print(
+                "After company result click URL:",
+                self.page.url
+            )
 
-        if "/company/" not in self.page.url.lower():
+            if "/company/" in self.page.url.lower():
+                navigation_succeeded = True
+
+        except Exception as ex:
+            print(
+                "Exact company-result click failed:",
+                repr(ex)
+            )
+
+        # Controlled fallback using the exact href supplied by LinkedIn.
+        if not navigation_succeeded:
+            try:
+                print(
+                    "Trying exact company href navigation fallback..."
+                )
+
+                self.page.goto(
+                    company_href,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                self.page.wait_for_timeout(5000)
+
+                print(
+                    "After company href navigation URL:",
+                    self.page.url
+                )
+
+                if "/company/" in self.page.url.lower():
+                    navigation_succeeded = True
+
+            except Exception as ex:
+                print(
+                    "Exact company href navigation failed:",
+                    repr(ex)
+                )
+
+        if not navigation_succeeded:
 
             print(
                 "ERROR: LinkedIn company page was not opened."
+            )
+
+            print(
+                "Final URL:",
+                self.page.url
             )
 
             return False
@@ -1263,102 +1305,18 @@ class CompanyPage(BasePage):
                     clean_url
                 )
 
-                matched = False
-
                 # ------------------------------------------------
-                # First: explicit LinkedIn result container
-                # ------------------------------------------------
-
-                container = (
-                    find_result_container(
-                        link
-                    )
-                )
-
-                if container:
-
-                    try:
-
-                        container_text = (
-                            container
-                            .inner_text(
-                                timeout=2000
-                            )
-                        )
-
-                    except Exception:
-
-                        container_text = ""
-
-                    normalized_container = (
-                        normalize_company(
-                            container_text
-                        )
-                    )
-
-                    print(
-                        "Normalized requested company:",
-                        requested_company
-                    )
-
-                    if (
-                        requested_company
-                        and
-                        requested_company
-                        in normalized_container
-                    ):
-
-                        matched = True
-
-                        print(
-                            "Company match found "
-                            "in result container."
-                        )
-
-                    else:
-
-                        print(
-                            "Company NOT found "
-                            "in normalized result container."
-                        )
-
-                # ------------------------------------------------
-                # Second: bounded ancestor fallback
-                # ------------------------------------------------
-
-                if not matched:
-
-                    fallback_container = (
-                        find_company_matching_ancestor(
-                            link
-                        )
-                    )
-
-                    if fallback_container:
-
-                        matched = True
-
-                        print(
-                            "Company match found "
-                            "in bounded ancestor."
-                        )
-
-                # ------------------------------------------------
-                # Reject if company was not validated
-                # ------------------------------------------------
-
-                if not matched:
-
-                    print(
-                        "REJECT - company not found "
-                        "inside bounded result area:",
-                        raw_name
-                    )
-
-                    continue
-
-                # ------------------------------------------------
-                # Accept candidate
+                # Accept visible employee-search result.
+                #
+                # The current page is already LinkedIn's
+                # currentCompany people-search page. Requiring the
+                # company name to be repeated inside the rendered
+                # result card causes legitimate employees to be
+                # rejected because LinkedIn does not consistently
+                # render that text in the card.
+                #
+                # Keep the /in/ link and visible-result requirement.
+                # Do not reject solely because company text is absent.
                 # ------------------------------------------------
 
                 seen.add(
@@ -1375,7 +1333,7 @@ class CompanyPage(BasePage):
                 )
 
                 print(
-                    "ACCEPT - company validated:",
+                    "ACCEPT - visible employee result:",
                     raw_name
                 )
 
