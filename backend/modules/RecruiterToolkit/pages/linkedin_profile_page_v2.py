@@ -16,14 +16,12 @@ class LinkedInProfilePageV2(BasePage):
     # =====================================================
 
     def open_profile(self, profile_url):
-
         print("=" * 60)
         print("Opening LinkedIn profile")
         print(profile_url)
         print("=" * 60)
 
         try:
-
             self.profile_url = profile_url
 
             print("=" * 70)
@@ -32,24 +30,91 @@ class LinkedInProfilePageV2(BasePage):
             print("Profile target:", profile_url)
             print("Current page URL:", self.page.url)
             print("Page count in context:", len(self.page.context.pages))
-            for index, context_page in enumerate(self.page.context.pages):
-                print(f"Page {index}: {context_page.url}")
+
+            for index, context_page in enumerate(
+                self.page.context.pages
+            ):
+                print(
+                    f"Page {index}: {context_page.url}"
+                )
+
             print("=" * 70)
+
+            # -------------------------------------------------
+            # IMPORTANT:
+            #
+            # The profile page is already a separate page created
+            # by SearchWorkflowV2 inside the SAME authenticated
+            # browser context.
+            #
+            # First try normal navigation.
+            #
+            # If LinkedIn sends this page to /authwall, retry
+            # through the authenticated context using a temporary
+            # page and preserve the existing profile page.
+            # -------------------------------------------------
 
             print("PROFILE NAVIGATION START")
             print("Target profile URL:", profile_url)
-            print("Profile page before goto:", self.page.url)
-            print("Context page count:", len(self.page.context.pages))
-
-            self.page.goto(
-                profile_url,
-                wait_until="domcontentloaded"
+            print(
+                "Profile page before goto:",
+                self.page.url
+            )
+            print(
+                "Context page count:",
+                len(self.page.context.pages)
             )
 
-            print("Profile page after goto:", self.page.url)
-            print("Profile page title:", self.page.title())
+            # -------------------------------------------------
+            # Normalize profile URL
+            # -------------------------------------------------
 
-            self.page.wait_for_timeout(4000)
+            if profile_url:
+                profile_url = profile_url.strip()
+
+            if not profile_url:
+                print(
+                    "Profile URL is empty."
+                )
+                return False
+
+            if profile_url.startswith("/"):
+                profile_url = (
+                    "https://www.linkedin.com"
+                    + profile_url
+                )
+
+            # -------------------------------------------------
+            # FIRST ATTEMPT
+            # -------------------------------------------------
+
+            try:
+                self.page.goto(
+                    profile_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                print(
+                    "Profile page after goto:",
+                    self.page.url
+                )
+
+                try:
+                    print(
+                        "Profile page title:",
+                        self.page.title()
+                    )
+                except Exception:
+                    pass
+
+                self.page.wait_for_timeout(4000)
+
+            except Exception as goto_ex:
+                print(
+                    "Direct profile navigation failed:",
+                    repr(goto_ex)
+                )
 
             current_url = self.page.url
 
@@ -58,32 +123,206 @@ class LinkedInProfilePageV2(BasePage):
                 current_url
             )
 
-            # ---------------------------------------------
-            # Reject authentication wall
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # SUCCESS
+            # -------------------------------------------------
 
-            if "/authwall" in current_url.lower():
+            if (
+                "/in/" in current_url.lower()
+                and "/authwall" not in current_url.lower()
+                and "/login" not in current_url.lower()
+            ):
                 print(
-                    "AUTHWALL DETECTED - "
-                    "Profile was not accessible."
+                    "Valid LinkedIn profile page detected."
+                )
+                return True
+
+            # -------------------------------------------------
+            # AUTHWALL / LOGIN RECOVERY
+            # -------------------------------------------------
+
+            if (
+                "/authwall" in current_url.lower()
+                or "/login" in current_url.lower()
+                or "/ssr-login/" in current_url.lower()
+                or "remember-me-auto-login" in current_url.lower()
+            ):
+
+                print("=" * 60)
+                print(
+                    "PROFILE NAVIGATION REDIRECTED"
+                )
+                print("=" * 60)
+                print(
+                    "Blocked profile URL:",
+                    current_url
                 )
 
+                print(
+                    "Attempting authenticated-context "
+                    "profile recovery..."
+                )
+
+                recovery_page = None
+
+                try:
+                    # -------------------------------------------------
+                    # Create a temporary page in the SAME authenticated
+                    # browser context.
+                    # -------------------------------------------------
+
+                    recovery_page = (
+                        self.page.context.new_page()
+                    )
+
+                    print(
+                        "Recovery page created."
+                    )
+
+                    print(
+                        "Recovery page URL:",
+                        recovery_page.url
+                    )
+
+                    recovery_page.goto(
+                        profile_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000
+                    )
+
+                    print(
+                        "Recovery page after goto:",
+                        recovery_page.url
+                    )
+
+                    recovery_page.wait_for_timeout(
+                        5000
+                    )
+
+                    recovery_url = (
+                        recovery_page.url
+                    )
+
+                    print(
+                        "Recovery profile URL:",
+                        recovery_url
+                    )
+
+                    # -------------------------------------------------
+                    # Check whether recovery succeeded.
+                    # -------------------------------------------------
+
+                    if (
+                        "/in/" in recovery_url.lower()
+                        and "/authwall" not in recovery_url.lower()
+                        and "/login" not in recovery_url.lower()
+                    ):
+
+                        print("=" * 60)
+                        print(
+                            "PROFILE RECOVERY SUCCESSFUL"
+                        )
+                        print("=" * 60)
+
+                        # -------------------------------------------------
+                        # We cannot replace the Playwright Page object
+                        # stored in BasePage safely.
+                        #
+                        # Therefore copy the recovered page state into
+                        # the existing profile page by navigating the
+                        # existing page to the recovered final URL.
+                        #
+                        # This is intentionally done only after LinkedIn
+                        # has successfully resolved the profile URL.
+                        # -------------------------------------------------
+
+                        resolved_url = (
+                            recovery_url
+                        )
+
+                        try:
+                            self.page.goto(
+                                resolved_url,
+                                wait_until="domcontentloaded",
+                                timeout=60000
+                            )
+
+                            self.page.wait_for_timeout(
+                                4000
+                            )
+
+                            final_url = self.page.url
+
+                            print(
+                                "Final profile page:",
+                                final_url
+                            )
+
+                            if (
+                                "/in/" in final_url.lower()
+                                and "/authwall" not in final_url.lower()
+                                and "/login" not in final_url.lower()
+                            ):
+                                print(
+                                    "Valid LinkedIn profile page "
+                                    "detected after recovery."
+                                )
+                                return True
+
+                        except Exception as final_ex:
+                            print(
+                                "Final profile navigation failed:",
+                                repr(final_ex)
+                            )
+
+                    else:
+                        print(
+                            "Recovery page was also blocked:"
+                        )
+                        print(
+                            recovery_url
+                        )
+
+                except Exception as recovery_ex:
+                    print(
+                        "Authenticated profile recovery failed:",
+                        repr(recovery_ex)
+                    )
+
+                finally:
+                    # -------------------------------------------------
+                    # Always close the temporary recovery page.
+                    # -------------------------------------------------
+
+                    if recovery_page:
+                        try:
+                            recovery_page.close()
+
+                            print(
+                                "Recovery page closed."
+                            )
+
+                        except Exception as close_ex:
+                            print(
+                                "Recovery page close failed:",
+                                repr(close_ex)
+                            )
+
                 # -------------------------------------------------
-                # PROFILE PAGE RECOVERY
+                # Final cleanup.
                 #
-                # Reset the dedicated profile page after LinkedIn
-                # sends profile navigation to /authwall.
-                # The employee search page remains untouched.
+                # Do NOT touch the employee search page.
                 # -------------------------------------------------
 
                 try:
                     print(
-                        "Resetting blocked profile page..."
+                        "Resetting dedicated profile page..."
                     )
 
                     self.page.goto(
                         "about:blank",
-                        wait_until="domcontentloaded"
+                        wait_until="domcontentloaded",
+                        timeout=30000
                     )
 
                     print(
@@ -99,38 +338,22 @@ class LinkedInProfilePageV2(BasePage):
 
                 return False
 
-            # ---------------------------------------------
-            # Reject login page
-            # ---------------------------------------------
-
-            if "/login" in current_url.lower():
-
-                print(
-                    "LOGIN PAGE DETECTED."
-                )
-
-                return False
-
-            # ---------------------------------------------
-            # Verify profile URL
-            # ---------------------------------------------
-
-            if "/in/" not in current_url.lower():
-
-                print(
-                    "Not a LinkedIn profile page."
-                )
-
-                return False
+            # -------------------------------------------------
+            # Unexpected LinkedIn page
+            # -------------------------------------------------
 
             print(
-                "Valid LinkedIn profile page detected."
+                "Not a LinkedIn profile page."
             )
 
-            return True
+            print(
+                "Unexpected URL:",
+                current_url
+            )
+
+            return False
 
         except Exception as ex:
-
             print(
                 "Failed to open profile:",
                 repr(ex)
