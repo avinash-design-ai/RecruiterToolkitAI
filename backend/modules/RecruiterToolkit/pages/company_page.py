@@ -45,7 +45,10 @@ class CompanyPage(BasePage):
 
         count = company_links.count()
 
-        print("Company links found:", count)
+        print(
+            "Company links found:",
+            count
+        )
 
         exact_match = None
 
@@ -96,19 +99,56 @@ class CompanyPage(BasePage):
 
             return False
 
-        print(
-            "Clicking selected company result..."
+        company_href = exact_match.get_attribute(
+            "href"
         )
-        exact_match.click()
+
+        print(
+            "LinkedIn company href:",
+            company_href
+        )
+
+        if not company_href:
+
+            print(
+                "Company result has no href."
+            )
+
+            return False
+
+        if company_href.startswith("/"):
+
+            company_href = (
+                "https://www.linkedin.com"
+                + company_href
+            )
+
+        print(
+            "Opening actual LinkedIn company page..."
+        )
+
+        self.page.goto(
+            company_href,
+            wait_until="domcontentloaded",
+            timeout=60000
+        )
 
         self.page.wait_for_timeout(
             5000
         )
 
         print(
-            "After click URL:",
+            "After company navigation URL:",
             self.page.url
         )
+
+        if "/company/" not in self.page.url.lower():
+
+            print(
+                "ERROR: LinkedIn company page was not opened."
+            )
+
+            return False
 
         try:
 
@@ -125,6 +165,7 @@ class CompanyPage(BasePage):
             )
 
         except Exception:
+
             pass
 
         return True
