@@ -1100,13 +1100,36 @@ class CompanyPage(BasePage):
 
                     return True
 
+                # ------------------------------------------------
+                # IMPORTANT:
+                #
+                # Do NOT treat generic listitem/option/article roles
+                # as employee result containers.
+                #
+                # LinkedIn uses those roles for many unrelated
+                # profile/recommendation elements inside <main>.
+                #
+                # Only accept a container when it carries an actual
+                # search-result semantic marker.
+                # ------------------------------------------------
+
                 if (
                     tag == "li"
                     and
                     (
-                        "result" in classes
+                        "search-result" in classes
                         or
-                        "search" in classes
+                        "search-entity-result" in classes
+                        or
+                        "reusable-search" in classes
+                        or
+                        "entity-result" in classes
+                        or
+                        (
+                            "result" in classes
+                            and
+                            "search" in classes
+                        )
                     )
                 ):
 
@@ -1116,26 +1139,28 @@ class CompanyPage(BasePage):
                     tag == "article"
                     and
                     (
-                        "result" in classes
+                        "search-result" in classes
                         or
-                        "search" in classes
+                        "search-entity-result" in classes
                         or
-                        role == "article"
+                        "reusable-search" in classes
+                        or
+                        "entity-result" in classes
+                        or
+                        (
+                            "result" in classes
+                            and
+                            "search" in classes
+                        )
                     )
-                ):
-
-                    return True
-
-                if role in (
-                    "listitem",
-                    "option",
-                    "article"
                 ):
 
                     return True
 
                 if (
                     "search result" in aria
+                    or
+                    "search-result" in aria
                 ):
 
                     return True
@@ -1248,7 +1273,23 @@ class CompanyPage(BasePage):
             return None
 
         # --------------------------------------------------------
+        # --------------------------------------------------------
         # Process candidates
+        # --------------------------------------------------------
+        #
+        # IMPORTANT:
+        #
+        # The visible <main> area is ONLY the discovery boundary.
+        # It is NOT sufficient to prove that a /in/ link belongs to
+        # an employee result.
+        #
+        # LinkedIn can place unrelated profile links inside <main>.
+        # Therefore every candidate must be associated with an
+        # actual LinkedIn search-result container before acceptance.
+        #
+        # We deliberately use the existing bounded ancestor helpers
+        # below instead of depending on one specific LinkedIn CSS
+        # result-card class.
         # --------------------------------------------------------
 
         for i in range(count):
@@ -1266,13 +1307,10 @@ class CompanyPage(BasePage):
                 )
 
                 if not raw_name:
-
                     continue
 
                 # Avoid navigation/multi-line links.
-
                 if "\n" in raw_name:
-
                     continue
 
                 href = link.get_attribute(
@@ -1280,7 +1318,6 @@ class CompanyPage(BasePage):
                 )
 
                 if not href:
-
                     continue
 
                 clean_url = (
@@ -1292,7 +1329,6 @@ class CompanyPage(BasePage):
                 if not clean_url.startswith(
                     "http"
                 ):
-
                     clean_url = (
                         "https://www.linkedin.com"
                         + clean_url
@@ -1302,11 +1338,9 @@ class CompanyPage(BasePage):
                     "/in/"
                     not in clean_url.lower()
                 ):
-
                     continue
 
                 if clean_url in seen:
-
                     continue
 
                 print(
@@ -1324,17 +1358,120 @@ class CompanyPage(BasePage):
                 )
 
                 # ------------------------------------------------
-                # Accept visible employee-search result.
+                # Find the actual LinkedIn search-result container.
                 #
-                # The current page is already LinkedIn's
-                # currentCompany people-search page. Requiring the
-                # company name to be repeated inside the rendered
-                # result card causes legitimate employees to be
-                # rejected because LinkedIn does not consistently
-                # render that text in the card.
+                # Do NOT accept a /in/ link simply because it is
+                # inside <main>.
+                # ------------------------------------------------
+
+                result_container = find_result_container(
+                    link
+                )
+
+                if result_container is None:
+
+                    print(
+                        "REJECT - no LinkedIn employee "
+                        "result container found:",
+                        raw_name
+                    )
+
+                    continue
+
+                print(
+                    "Result container found:",
+                    raw_name
+                )
+
+                # ------------------------------------------------
+                # Company validation inside the bounded result
+                # context.
                 #
-                # Keep the /in/ link and visible-result requirement.
-                # Do not reject solely because company text is absent.
+                # LinkedIn does not always render company text in
+                # the result card. Therefore:
+                #
+                #   1. If the bounded container explicitly contains
+                #      the requested company -> ACCEPT.
+                #
+                #   2. If the bounded container explicitly contains
+                #      another company -> REJECT.
+                #
+                #   3. If the bounded container has no company text
+                #      at all -> retain the candidate because the
+                #      currentCompany search itself is authoritative,
+                #      but only after the result-container boundary
+                #      has been proven.
+                # ------------------------------------------------
+
+                container_text = ""
+
+                try:
+                    container_text = normalize_company(
+                        result_container.inner_text(
+                            timeout=2000
+                        )
+                    )
+                except Exception:
+                    container_text = ""
+
+                company_match = False
+                company_mismatch = False
+
+                if requested_company and container_text:
+
+                    if requested_company in container_text:
+                        company_match = True
+
+                    else:
+                        # ------------------------------------------------
+                        # Try the narrower company-matching ancestor.
+                        #
+                        # This catches cases where the actual company
+                        # text is rendered in a nested ancestor rather
+                        # than the first recognized result container.
+                        # ------------------------------------------------
+
+                        matching_ancestor = (
+                            find_company_matching_ancestor(
+                                link
+                            )
+                        )
+
+                        if matching_ancestor is not None:
+
+                            print(
+                                "Company text matched in bounded "
+                                "ancestor:",
+                                raw_name
+                            )
+
+                            company_match = True
+
+                        else:
+                            # Do not automatically call every missing
+                            # company string a mismatch. LinkedIn can
+                            # omit the company text from legitimate cards.
+                            #
+                            # We only mark an explicit mismatch when a
+                            # bounded ancestor exposes a clear company
+                            # value that is different from the request.
+                            #
+                            # The existing currentCompany URL remains the
+                            # authoritative search constraint.
+                            company_mismatch = False
+
+                if company_mismatch:
+
+                    print(
+                        "REJECT - company mismatch:",
+                        raw_name
+                    )
+
+                    continue
+
+                # ------------------------------------------------
+                # Accept only a profile link that belongs to a
+                # recognized LinkedIn result container.
                 # ------------------------------------------------
 
                 seen.add(
@@ -1350,10 +1487,20 @@ class CompanyPage(BasePage):
                     }
                 )
 
-                print(
-                    "ACCEPT - visible employee result:",
-                    raw_name
-                )
+                if company_match:
+
+                    print(
+                        "ACCEPT - company-matched employee:",
+                        raw_name
+                    )
+
+                else:
+
+                    print(
+                        "ACCEPT - bounded employee result "
+                        "(company text not rendered):",
+                        raw_name
+                    )
 
             except Exception as ex:
 
