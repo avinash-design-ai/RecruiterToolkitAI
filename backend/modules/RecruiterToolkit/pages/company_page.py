@@ -1376,20 +1376,20 @@ class CompanyPage(BasePage):
                 # Company validation inside the bounded result
                 # context.
                 #
-                # LinkedIn does not always render company text in
-                # the result card. Therefore:
+                # IMPORTANT:
+                # A /in/ link inside <main> is NOT enough to prove
+                # that the profile belongs to the requested company.
                 #
-                #   1. If the bounded container explicitly contains
-                #      the requested company -> ACCEPT.
+                # The currentCompany URL scopes the LinkedIn search,
+                # but LinkedIn can render unrelated /in/ links inside
+                # the same main content area.
                 #
-                #   2. If the bounded container explicitly contains
-                #      another company -> REJECT.
+                # Therefore the candidate must have the requested
+                # company explicitly confirmed in the bounded result
+                # container or in its narrow matching ancestor.
                 #
-                #   3. If the bounded container has no company text
-                #      at all -> retain the candidate because the
-                #      currentCompany search itself is authoritative,
-                #      but only after the result-container boundary
-                #      has been proven.
+                # If company text is not confirmed, REJECT the
+                # candidate. Never invent the requested company.
                 # ------------------------------------------------
 
                 container_text = ""
@@ -1404,58 +1404,28 @@ class CompanyPage(BasePage):
                     container_text = ""
 
                 company_match = False
-                company_mismatch = False
 
-                if requested_company and container_text:
+                if (
+                    requested_company
+                    and requested_company in container_text
+                ):
+                    company_match = True
 
-                    if requested_company in container_text:
-                        company_match = True
-
-                    else:
-                        # ------------------------------------------------
-                        # Try the narrower company-matching ancestor.
-                        #
-                        # This catches cases where the actual company
-                        # text is rendered in a nested ancestor rather
-                        # than the first recognized result container.
-                        # ------------------------------------------------
-
-                        matching_ancestor = (
-                            find_company_matching_ancestor(
-                                link
-                            )
+                if not company_match:
+                    matching_ancestor = (
+                        find_company_matching_ancestor(
+                            link
                         )
-
-                        if matching_ancestor is not None:
-
-                            print(
-                                "Company text matched in bounded "
-                                "ancestor:",
-                                raw_name
-                            )
-
-                            company_match = True
-
-                        else:
-                            # Do not automatically call every missing
-                            # company string a mismatch. LinkedIn can
-                            # omit the company text from legitimate cards.
-                            #
-                            # We only mark an explicit mismatch when a
-                            # bounded ancestor exposes a clear company
-                            # value that is different from the request.
-                            #
-                            # The existing currentCompany URL remains the
-                            # authoritative search constraint.
-                            company_mismatch = False
-
-                if company_mismatch:
-
-                    print(
-                        "REJECT - company mismatch:",
-                        raw_name
                     )
 
+                    if matching_ancestor is not None:
+                        company_match = True
+
+                if not company_match:
+                    print(
+                        "REJECT - company not confirmed in result:",
+                        raw_name
+                    )
                     continue
 
                 # ------------------------------------------------
@@ -1476,20 +1446,10 @@ class CompanyPage(BasePage):
                     }
                 )
 
-                if company_match:
-
-                    print(
-                        "ACCEPT - company-matched employee:",
-                        raw_name
-                    )
-
-                else:
-
-                    print(
-                        "ACCEPT - bounded employee result "
-                        "(company text not rendered):",
-                        raw_name
-                    )
+                print(
+                    "ACCEPT - company-matched employee:",
+                    raw_name
+                )
 
             except Exception as ex:
 
