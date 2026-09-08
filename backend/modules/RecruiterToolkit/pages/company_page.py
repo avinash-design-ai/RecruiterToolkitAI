@@ -983,33 +983,65 @@ class CompanyPage(BasePage):
         seen = set()
 
         # --------------------------------------------------------
-        # Candidate /in/ links
+        # Candidate employee result cards
         # --------------------------------------------------------
-
+        #
         # IMPORTANT:
         # Do NOT scan the entire LinkedIn page for /in/ links.
         #
-        # The employee search page can contain unrelated profile
-        # links in sidebars, suggestions, navigation, etc.
+        # LinkedIn employee-search pages can contain unrelated
+        # profile links in navigation, suggestions, sidebars,
+        # recommendations, etc.
         #
-        # Scope profile extraction to actual LinkedIn employee
-        # result cards only.
+        # We therefore identify the employee result containers first
+        # and extract profile links ONLY from those containers.
+        #
+        # Do NOT require the company name to be rendered inside the
+        # card. LinkedIn does not consistently render the company
+        # text in every employee result.
+        # --------------------------------------------------------
 
+        result_cards = None
+        card_count = 0
+
+        # Primary LinkedIn employee-result container.
         result_cards = self.page.locator(
             "li.reusable-search__result-container:visible"
         )
-
         card_count = result_cards.count()
 
+        # Some LinkedIn layouts use the same class on a div.
         if card_count == 0:
             result_cards = self.page.locator(
                 "div.reusable-search__result-container:visible"
             )
             card_count = result_cards.count()
 
+        # Older/current search-result markup.
         if card_count == 0:
             result_cards = self.page.locator(
                 "li.search-entity-result:visible"
+            )
+            card_count = result_cards.count()
+
+        # Universal-template result cards.
+        if card_count == 0:
+            result_cards = self.page.locator(
+                "li[data-view-name*='search-entity-result']:visible"
+            )
+            card_count = result_cards.count()
+
+        # Generic LinkedIn entity-result list items.
+        if card_count == 0:
+            result_cards = self.page.locator(
+                "li:has(a[href*='/in/']):visible"
+            ).filter(
+                has=self.page.locator(
+                    "[data-view-name*='search-entity-result'], "
+                    ".entity-result, "
+                    ".search-entity-result, "
+                    ".reusable-search"
+                )
             )
             card_count = result_cards.count()
 
@@ -1028,6 +1060,9 @@ class CompanyPage(BasePage):
             )
             return profiles
 
+        # Extract profile links only from the identified result
+        # containers. This prevents sidebar/recommendation profile
+        # links from entering the employee result set.
         links = result_cards.locator(
             "a[href*='/in/']:visible"
         )
