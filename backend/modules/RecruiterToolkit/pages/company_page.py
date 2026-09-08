@@ -574,64 +574,24 @@ class CompanyPage(BasePage):
             self.page.url
         )
 
-        try:
-
-            print(
-                "Returning to authenticated LinkedIn feed..."
-            )
-
-            self.page.goto(
-                "https://www.linkedin.com/feed/",
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            self.page.wait_for_timeout(
-                3000
-            )
-
-            feed_url = self.page.url
-
-            print(
-                "Recovery feed URL:",
-                feed_url
-            )
-
-            if (
-                "/feed" not in feed_url.lower()
-                or "/login" in feed_url.lower()
-                or "/authwall" in feed_url.lower()
-                or "/checkpoint" in feed_url.lower()
-            ):
-
-                print(
-                    "Authenticated feed recovery failed."
-                )
-
-                return False
-
-            print(
-                "Authenticated feed recovered."
-            )
-
-        except Exception as ex:
-
-            print(
-                "Feed recovery failed:",
-                repr(ex)
-            )
-
-            return False
-
         # --------------------------------------------------------
-        # 4. Re-open the SAME company.
+        # CONTROLLED EMPLOYEE NAVIGATION RECOVERY
         #
-        # We intentionally use the existing company URL captured
-        # before employee navigation when possible.
+        # IMPORTANT:
+        # Do not make /feed/ the required recovery checkpoint.
         #
-        # If LinkedIn no longer accepts it, use the existing
-        # company search workflow instead of guessing.
+        # LinkedIn can redirect the employee-search click through
+        # /login/, /ssr-login/ or remember-me-auto-login even when
+        # the original authenticated company page is still usable.
+        #
+        # The selected company URL was captured before navigation.
+        # Recover the SAME company directly and rediscover LinkedIn's
+        # own currentCompany employee link.
         # --------------------------------------------------------
+
+        print("=" * 60)
+        print("DIRECT COMPANY EMPLOYEE NAVIGATION RECOVERY")
+        print("=" * 60)
 
         company_reopened = False
 
@@ -643,7 +603,7 @@ class CompanyPage(BasePage):
             ):
 
                 print(
-                    "Re-opening previously selected company:"
+                    "Re-opening previously selected company directly:"
                 )
 
                 print(
@@ -667,9 +627,18 @@ class CompanyPage(BasePage):
                     reopened_url
                 )
 
-                if "/company/" in reopened_url.lower():
+                if (
+                    "/company/" in reopened_url.lower()
+                    and "/login" not in reopened_url.lower()
+                    and "/authwall" not in reopened_url.lower()
+                    and "/checkpoint" not in reopened_url.lower()
+                ):
 
                     company_reopened = True
+
+                    print(
+                        "Selected company page recovered."
+                    )
 
         except Exception as ex:
 
@@ -677,6 +646,14 @@ class CompanyPage(BasePage):
                 "Direct company recovery failed:",
                 repr(ex)
             )
+
+        # --------------------------------------------------------
+        # If the exact company URL cannot be reopened, use the
+        # existing company-search recovery.
+        #
+        # We deliberately do NOT use generic people search.
+        # --------------------------------------------------------
+
 
         # --------------------------------------------------------
         # 5. If direct company recovery failed, re-run the existing
