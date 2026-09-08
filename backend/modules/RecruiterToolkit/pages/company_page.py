@@ -986,20 +986,56 @@ class CompanyPage(BasePage):
         # Candidate /in/ links
         # --------------------------------------------------------
 
-        links = self.page.locator(
+        # IMPORTANT:
+        # Do NOT scan the entire LinkedIn page for /in/ links.
+        #
+        # The employee search page can contain unrelated profile
+        # links in sidebars, suggestions, navigation, etc.
+        #
+        # Scope profile extraction to actual LinkedIn employee
+        # result cards only.
+
+        result_cards = self.page.locator(
+            "li.reusable-search__result-container:visible"
+        )
+
+        card_count = result_cards.count()
+
+        if card_count == 0:
+            result_cards = self.page.locator(
+                "div.reusable-search__result-container:visible"
+            )
+            card_count = result_cards.count()
+
+        if card_count == 0:
+            result_cards = self.page.locator(
+                "li.search-entity-result:visible"
+            )
+            card_count = result_cards.count()
+
+        print(
+            "LinkedIn employee result cards:",
+            card_count
+        )
+
+        if card_count == 0:
+            print(
+                "ERROR: No structured LinkedIn employee "
+                "result cards found."
+            )
+            print(
+                "Refusing page-wide /in/ scan."
+            )
+            return profiles
+
+        links = result_cards.locator(
             "a[href*='/in/']:visible"
         )
 
-        try:
-
-            count = links.count()
-
-        except Exception:
-
-            count = 0
+        count = links.count()
 
         print(
-            "Visible /in/ links discovered:",
+            "Scoped employee profile links:",
             count
         )
 
