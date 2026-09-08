@@ -1048,7 +1048,7 @@ class CompanyPage(BasePage):
                         "(el) => el.tagName.toLowerCase()"
                     )
                     or ""
-                )
+                ).lower()
 
                 classes = normalize_company(
                     element.get_attribute(
@@ -1078,7 +1078,17 @@ class CompanyPage(BasePage):
                     or ""
                 )
 
-                # Known LinkedIn result patterns.
+                # ------------------------------------------------
+                # LinkedIn result-container detection.
+                #
+                # Keep the known LinkedIn markers, but also allow
+                # the generic list/article structures used by the
+                # authenticated employee-search page.
+                #
+                # The candidate link is already restricted to the
+                # visible <main> search area. Company validation below
+                # will reject an explicitly different company.
+                # ------------------------------------------------
 
                 if (
                     "search-result" in classes
@@ -1100,36 +1110,23 @@ class CompanyPage(BasePage):
 
                     return True
 
-                # ------------------------------------------------
-                # IMPORTANT:
-                #
-                # Do NOT treat generic listitem/option/article roles
-                # as employee result containers.
-                #
-                # LinkedIn uses those roles for many unrelated
-                # profile/recommendation elements inside <main>.
-                #
-                # Only accept a container when it carries an actual
-                # search-result semantic marker.
-                # ------------------------------------------------
+                if (
+                    "search result" in aria
+                    or
+                    "search-result" in aria
+                ):
+
+                    return True
 
                 if (
                     tag == "li"
                     and
                     (
-                        "search-result" in classes
+                        "result" in classes
                         or
-                        "search-entity-result" in classes
+                        "search" in classes
                         or
-                        "reusable-search" in classes
-                        or
-                        "entity-result" in classes
-                        or
-                        (
-                            "result" in classes
-                            and
-                            "search" in classes
-                        )
+                        role == "listitem"
                     )
                 ):
 
@@ -1139,28 +1136,20 @@ class CompanyPage(BasePage):
                     tag == "article"
                     and
                     (
-                        "search-result" in classes
+                        "result" in classes
                         or
-                        "search-entity-result" in classes
+                        "search" in classes
                         or
-                        "reusable-search" in classes
-                        or
-                        "entity-result" in classes
-                        or
-                        (
-                            "result" in classes
-                            and
-                            "search" in classes
-                        )
+                        role == "article"
                     )
                 ):
 
                     return True
 
-                if (
-                    "search result" in aria
-                    or
-                    "search-result" in aria
+                if role in (
+                    "listitem",
+                    "option",
+                    "article"
                 ):
 
                     return True
