@@ -887,29 +887,30 @@ class CompanyPage(BasePage):
         location=""
     ):
         """
-        Extract employee profiles from LinkedIn's people-search
-        result area.
+        Extract employee profiles from LinkedIn's company-scoped
+        people-search result area.
 
-        Company comparison is normalized so punctuation,
-        capitalization and separators do not cause false rejection.
+        IMPORTANT:
+        The employee-search page has already been opened through
+        LinkedIn's own currentCompany people-search link and the
+        requested location has already been applied.
 
-        Examples:
+        Therefore this method does NOT attempt to determine company
+        membership from search-result card text.
 
-            SmartWorks, LLC
-            SmartWorks LLC
-            SMARTWORKS, LLC
-            SmartWorks - LLC
+        The actual profile page is the source of truth for the
+        employee's current company and is handled by the existing
+        LinkedInProfilePageV2 workflow.
 
-        all normalize to:
-
-            smartworks llc
-
-        A candidate is still required to have the requested
-        company inside a bounded result container/ancestor.
+        This method only:
+            1. stays inside the visible LinkedIn main/search area
+            2. finds visible /in/ profile links
+            3. associates them with a LinkedIn result container
+            4. returns unique profile URLs
         """
 
         print("=" * 60)
-        print("EXTRACTING COMPANY-MATCHED PROFILES V4")
+        print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
 
         print(
@@ -922,40 +923,6 @@ class CompanyPage(BasePage):
             location
         )
 
-        # --------------------------------------------------------
-        # Company normalization
-        # --------------------------------------------------------
-
-        def normalize_company(value):
-
-            if not value:
-                return ""
-
-            value = (
-                str(value)
-                .replace("\xa0", " ")
-                .strip()
-                .lower()
-            )
-
-            value = re.sub(
-                r"[^a-z0-9]+",
-                " ",
-                value
-            )
-
-            return " ".join(
-                value.split()
-            )
-
-        requested_company = normalize_company(
-            company
-        )
-
-        requested_location = normalize_company(
-            location
-        )
-
         profiles = []
         seen = set()
 
@@ -963,16 +930,18 @@ class CompanyPage(BasePage):
         # Candidate employee result links
         # --------------------------------------------------------
         #
-        # LinkedIn changes the CSS classes used by search result
-        # containers. Do not depend on a specific result-card class.
+        # The current page has already been constrained by:
         #
-        # The current page is already LinkedIn's people-search page
-        # constrained by currentCompany + location. Use the visible
-        # MAIN content area as the boundary for employee links.
+        #     currentCompany=["<selected company id>"]
         #
-        # This prevents sidebar/navigation/recommendation links from
-        # being collected while avoiding brittle LinkedIn result-card
-        # CSS selectors.
+        # and the requested location has already been applied.
+        #
+        # Therefore do NOT inspect result-card text to determine
+        # company membership here.
+        #
+        # The visible <main> area is used only as the discovery
+        # boundary so we do not collect unrelated navigation,
+        # sidebar or recommendation links.
         # --------------------------------------------------------
 
         main_area = self.page.locator(
@@ -1010,9 +979,11 @@ class CompanyPage(BasePage):
                 print(
                     "ERROR: No bounded employee-search container found."
                 )
+
                 print(
                     "Profiles extracted: 0"
                 )
+
                 return profiles
 
         count = links.count()
@@ -1034,7 +1005,8 @@ class CompanyPage(BasePage):
 
             return profiles
 
-        # Identify result container
+        # --------------------------------------------------------
+        # Identify LinkedIn result container
         # --------------------------------------------------------
 
         def looks_like_result_container(
@@ -1050,44 +1022,36 @@ class CompanyPage(BasePage):
                     or ""
                 ).lower()
 
-                classes = normalize_company(
+                classes = (
                     element.get_attribute(
                         "class"
                     )
                     or ""
-                )
+                ).lower()
 
-                data_view = normalize_company(
+                data_view = (
                     element.get_attribute(
                         "data-view-name"
                     )
                     or ""
-                )
+                ).lower()
 
-                role = normalize_company(
+                role = (
                     element.get_attribute(
                         "role"
                     )
                     or ""
-                )
+                ).lower()
 
-                aria = normalize_company(
+                aria = (
                     element.get_attribute(
                         "aria-label"
                     )
                     or ""
-                )
+                ).lower()
 
                 # ------------------------------------------------
-                # LinkedIn result-container detection.
-                #
-                # Keep the known LinkedIn markers, but also allow
-                # the generic list/article structures used by the
-                # authenticated employee-search page.
-                #
-                # The candidate link is already restricted to the
-                # visible <main> search area. Company validation below
-                # will reject an explicitly different company.
+                # Known LinkedIn result-container markers
                 # ------------------------------------------------
 
                 if (
@@ -1099,7 +1063,6 @@ class CompanyPage(BasePage):
                     or
                     "entity-result" in classes
                 ):
-
                     return True
 
                 if (
@@ -1107,7 +1070,6 @@ class CompanyPage(BasePage):
                     or
                     "universal-template" in data_view
                 ):
-
                     return True
 
                 if (
@@ -1115,7 +1077,6 @@ class CompanyPage(BasePage):
                     or
                     "search-result" in aria
                 ):
-
                     return True
 
                 if (
@@ -1129,7 +1090,6 @@ class CompanyPage(BasePage):
                         role == "listitem"
                     )
                 ):
-
                     return True
 
                 if (
@@ -1143,7 +1103,6 @@ class CompanyPage(BasePage):
                         role == "article"
                     )
                 ):
-
                     return True
 
                 if role in (
@@ -1151,7 +1110,6 @@ class CompanyPage(BasePage):
                     "option",
                     "article"
                 ):
-
                     return True
 
             except Exception:
@@ -1179,13 +1137,11 @@ class CompanyPage(BasePage):
                     )
 
                     if current.count() == 0:
-
                         return None
 
                     if looks_like_result_container(
                         current
                     ):
-
                         return current
 
                 except Exception:
@@ -1195,90 +1151,19 @@ class CompanyPage(BasePage):
             return None
 
         # --------------------------------------------------------
-        # Controlled bounded fallback
-        # --------------------------------------------------------
-
-        def find_company_matching_ancestor(
-            link
-        ):
-
-            current = link
-
-            for depth in range(1, 9):
-
-                try:
-
-                    current = current.locator(
-                        ".."
-                    )
-
-                    if current.count() == 0:
-
-                        return None
-
-                    tag = (
-                        current.evaluate(
-                            "(el) => el.tagName.toLowerCase()"
-                        )
-                        or ""
-                    ).lower()
-
-                    if tag in (
-                        "body",
-                        "html",
-                        "main"
-                    ):
-
-                        return None
-
-                    text = normalize_company(
-                        current.inner_text(
-                            timeout=2000
-                        )
-                    )
-
-                    if not text:
-
-                        continue
-
-                    # Prevent page-level containers.
-
-                    if len(text) > 5000:
-
-                        continue
-
-                    if (
-                        requested_company
-                        and
-                        requested_company in text
-                    ):
-
-                        return current
-
-                except Exception:
-
-                    continue
-
-            return None
-
-        # --------------------------------------------------------
-        # --------------------------------------------------------
         # Process candidates
         # --------------------------------------------------------
         #
         # IMPORTANT:
         #
-        # The visible <main> area is ONLY the discovery boundary.
-        # It is NOT sufficient to prove that a /in/ link belongs to
-        # an employee result.
+        # We do NOT perform company text matching here.
         #
-        # LinkedIn can place unrelated profile links inside <main>.
-        # Therefore every candidate must be associated with an
-        # actual LinkedIn search-result container before acceptance.
+        # LinkedIn already constrained this page using the selected
+        # company's currentCompany filter.
         #
-        # We deliberately use the existing bounded ancestor helpers
-        # below instead of depending on one specific LinkedIn CSS
-        # result-card class.
+        # The result container is used only to distinguish actual
+        # search-result profile links from arbitrary /in/ links that
+        # happen to exist elsewhere on the page.
         # --------------------------------------------------------
 
         for i in range(count):
@@ -1347,10 +1232,12 @@ class CompanyPage(BasePage):
                 )
 
                 # ------------------------------------------------
-                # Find the actual LinkedIn search-result container.
+                # Require the profile link to belong to an actual
+                # LinkedIn search-result container.
                 #
-                # Do NOT accept a /in/ link simply because it is
-                # inside <main>.
+                # This protects against collecting arbitrary /in/
+                # links from the page while NOT trying to infer the
+                # employee's company from result-card text.
                 # ------------------------------------------------
 
                 result_container = find_result_container(
@@ -1373,64 +1260,12 @@ class CompanyPage(BasePage):
                 )
 
                 # ------------------------------------------------
-                # Company validation inside the bounded result
-                # context.
+                # Accept the profile URL.
                 #
-                # IMPORTANT:
-                # A /in/ link inside <main> is NOT enough to prove
-                # that the profile belongs to the requested company.
-                #
-                # The currentCompany URL scopes the LinkedIn search,
-                # but LinkedIn can render unrelated /in/ links inside
-                # the same main content area.
-                #
-                # Therefore the candidate must have the requested
-                # company explicitly confirmed in the bounded result
-                # container or in its narrow matching ancestor.
-                #
-                # If company text is not confirmed, REJECT the
-                # candidate. Never invent the requested company.
-                # ------------------------------------------------
-
-                container_text = ""
-
-                try:
-                    container_text = normalize_company(
-                        result_container.inner_text(
-                            timeout=2000
-                        )
-                    )
-                except Exception:
-                    container_text = ""
-
-                company_match = False
-
-                if (
-                    requested_company
-                    and requested_company in container_text
-                ):
-                    company_match = True
-
-                if not company_match:
-                    matching_ancestor = (
-                        find_company_matching_ancestor(
-                            link
-                        )
-                    )
-
-                    if matching_ancestor is not None:
-                        company_match = True
-
-                if not company_match:
-                    print(
-                        "REJECT - company not confirmed in result:",
-                        raw_name
-                    )
-                    continue
-
-                # ------------------------------------------------
-                # Accept only a profile link that belongs to a
-                # recognized LinkedIn result container.
+                # Company verification is intentionally NOT done
+                # here. The existing LinkedInProfilePageV2 profile
+                # extraction will open the profile and read the
+                # actual current company.
                 # ------------------------------------------------
 
                 seen.add(
@@ -1447,7 +1282,7 @@ class CompanyPage(BasePage):
                 )
 
                 print(
-                    "ACCEPT - company-matched employee:",
+                    "ACCEPT - employee search result:",
                     raw_name
                 )
 
@@ -1465,7 +1300,7 @@ class CompanyPage(BasePage):
         print("=" * 60)
 
         print(
-            "COMPANY-MATCHED PROFILES EXTRACTED:",
+            "EMPLOYEE PROFILES EXTRACTED:",
             len(profiles)
         )
 
