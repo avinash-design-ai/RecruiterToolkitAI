@@ -960,101 +960,72 @@ class CompanyPage(BasePage):
         seen = set()
 
         # --------------------------------------------------------
-        # Candidate employee result cards
+        # Candidate employee result links
         # --------------------------------------------------------
         #
-        # IMPORTANT:
-        # Do NOT scan the entire LinkedIn page for /in/ links.
+        # LinkedIn changes the CSS classes used by search result
+        # containers. Do not depend on a specific result-card class.
         #
-        # LinkedIn employee-search pages can contain unrelated
-        # profile links in navigation, suggestions, sidebars,
-        # recommendations, etc.
+        # The current page is already LinkedIn's people-search page
+        # constrained by currentCompany + location. Use the visible
+        # MAIN content area as the boundary for employee links.
         #
-        # We therefore identify the employee result containers first
-        # and extract profile links ONLY from those containers.
-        #
-        # Do NOT require the company name to be rendered inside the
-        # card. LinkedIn does not consistently render the company
-        # text in every employee result.
+        # This prevents sidebar/navigation/recommendation links from
+        # being collected while avoiding brittle LinkedIn result-card
+        # CSS selectors.
         # --------------------------------------------------------
 
-        result_cards = None
-        card_count = 0
+        main_area = self.page.locator(
+            "main:visible"
+        ).first
 
-        # Primary LinkedIn employee-result container.
-        result_cards = self.page.locator(
-            "li.reusable-search__result-container:visible"
-        )
-        card_count = result_cards.count()
-
-        # Some LinkedIn layouts use the same class on a div.
-        if card_count == 0:
-            result_cards = self.page.locator(
-                "div.reusable-search__result-container:visible"
-            )
-            card_count = result_cards.count()
-
-        # Older/current search-result markup.
-        if card_count == 0:
-            result_cards = self.page.locator(
-                "li.search-entity-result:visible"
-            )
-            card_count = result_cards.count()
-
-        # Universal-template result cards.
-        if card_count == 0:
-            result_cards = self.page.locator(
-                "li[data-view-name*='search-entity-result']:visible"
-            )
-            card_count = result_cards.count()
-
-        # Generic LinkedIn entity-result list items.
-        if card_count == 0:
-            result_cards = self.page.locator(
-                "li:has(a[href*='/in/']):visible"
-            ).filter(
-                has=self.page.locator(
-                    "[data-view-name*='search-entity-result'], "
-                    ".entity-result, "
-                    ".search-entity-result, "
-                    ".reusable-search"
-                )
-            )
-            card_count = result_cards.count()
+        main_count = main_area.count()
 
         print(
-            "LinkedIn employee result cards:",
-            card_count
+            "Visible LinkedIn main containers:",
+            main_count
         )
 
-        if card_count == 0:
-            print(
-                "ERROR: No structured LinkedIn employee "
-                "result cards found."
+        if main_count:
+            links = main_area.locator(
+                "a[href*='/in/']:visible"
             )
+        else:
             print(
-                "Refusing page-wide /in/ scan."
+                "WARNING: LinkedIn main container not found. "
+                "Using bounded search-results container."
             )
-            return profiles
 
-        # Extract profile links only from the identified result
-        # containers. This prevents sidebar/recommendation profile
-        # links from entering the employee result set.
-        links = result_cards.locator(
-            "a[href*='/in/']:visible"
-        )
+            search_results = self.page.locator(
+                "div[class*='search-results']:visible, "
+                "section[class*='search-results']:visible, "
+                "div[role='main']:visible"
+            ).first
+
+            if search_results.count():
+                links = search_results.locator(
+                    "a[href*='/in/']:visible"
+                )
+            else:
+                print(
+                    "ERROR: No bounded employee-search container found."
+                )
+                print(
+                    "Profiles extracted: 0"
+                )
+                return profiles
 
         count = links.count()
 
         print(
-            "Scoped employee profile links:",
+            "Employee-search /in/ links in bounded main:",
             count
         )
 
         if not count:
-
             print(
-                "No visible profile links found."
+                "ERROR: No employee profile links found "
+                "inside bounded LinkedIn content."
             )
 
             print(
@@ -1063,7 +1034,6 @@ class CompanyPage(BasePage):
 
             return profiles
 
-        # --------------------------------------------------------
         # Identify result container
         # --------------------------------------------------------
 
