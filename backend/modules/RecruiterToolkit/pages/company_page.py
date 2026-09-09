@@ -991,58 +991,38 @@ class CompanyPage(BasePage):
 
             return value
 
+        # ------------------------------------------------------------
+        # PROFILE CANDIDATE DISCOVERY
+        #
+        # IMPORTANT:
+        # LinkedIn's rendered DOM does not always expose the profile
+        # result cards using stable entity-result/title selectors.
+        #
+        # The previously working implementation successfully discovered
+        # the visible /in/ profile links from the bounded main search
+        # area. Restore that behavior here.
+        #
+        # We intentionally DO NOT validate company/location here.
+        # SearchWorkflowV2 opens each profile with LinkedInProfilePageV2
+        # and validates the actual profile company + location there.
+        # ------------------------------------------------------------
+
         candidate_links = []
 
-        # Primary: actual LinkedIn result title/name links.
         try:
-            title_links = search_area.locator(
-                "[class*='entity-result__title'] a[href*='/in/']:visible"
+            all_links = search_area.locator(
+                "a[href*='/in/']:visible"
             )
+
+            total_links = all_links.count()
 
             print(
-                "LinkedIn result-title profile links:",
-                title_links.count()
+                "Visible /in/ profile links found in bounded search area:",
+                total_links
             )
 
-            for i in range(title_links.count()):
-                candidate_links.append(
-                    (100, "result-title", title_links.nth(i))
-                )
-
-        except Exception as ex:
-            print("Result-title discovery failed:", repr(ex))
-
-        # Fallback: profile links inside headings.
-        if not candidate_links:
-            try:
-                heading_links = search_area.locator(
-                    "h3 a[href*='/in/']:visible, "
-                    "h2 a[href*='/in/']:visible"
-                )
-
-                print(
-                    "Heading profile links:",
-                    heading_links.count()
-                )
-
-                for i in range(heading_links.count()):
-                    candidate_links.append(
-                        (90, "heading", heading_links.nth(i))
-                    )
-
-            except Exception as ex:
-                print("Heading discovery failed:", repr(ex))
-
-        # Last fallback: score structurally related profile links.
-        if not candidate_links:
-            try:
-                all_links = search_area.locator(
-                    "a[href*='/in/']:visible"
-                )
-
-                scored = []
-
-                for i in range(all_links.count()):
+            for i in range(total_links):
+                try:
                     link = all_links.nth(i)
 
                     href = canonical_profile_url(
@@ -1052,87 +1032,58 @@ class CompanyPage(BasePage):
                     if not href:
                         continue
 
-                    score = 0
-                    text = ""
+                    # Keep the candidate discovery broad enough to preserve
+                    # the previously working LinkedIn result extraction.
+                    candidate_links.append(
+                        (50, "bounded-visible-profile-link", link)
+                    )
 
-                    try:
-                        text = (
-                            link.inner_text(timeout=2000)
-                            .strip()
-                            .replace("\n", " ")
-                        )
-                    except Exception:
-                        pass
+                except Exception as ex:
+                    print(
+                        "Profile-link inspection failed:",
+                        repr(ex)
+                    )
 
-                    words = [
-                        x for x in re.split(r"\s+", text)
-                        if x
-                    ]
+        except Exception as ex:
+            print(
+                "Bounded /in/ profile discovery failed:",
+                repr(ex)
+            )
 
-                    lower = text.lower()
+        # ------------------------------------------------------------
+        # Remove duplicate profile URLs while preserving discovery order.
+        # ------------------------------------------------------------
 
-                    if 2 <= len(words) <= 6 and 3 <= len(text) <= 100:
-                        score += 20
+        if candidate_links:
+            unique_candidates = []
+            candidate_seen = set()
 
-                    if any(
-                        token in lower
-                        for token in (
-                            "mutual",
-                            "people you may know",
-                            "also viewed",
-                            "followers",
-                            "following",
-                        )
-                    ):
-                        score -= 70
+            for score, source, link in candidate_links:
+                try:
+                    href = canonical_profile_url(
+                        link.get_attribute("href")
+                    )
 
-                    try:
-                        if link.locator(
-                            "xpath=ancestor::*"
-                            "[contains(@class,'entity-result__title')][1]"
-                        ).count():
-                            score += 70
-                    except Exception:
-                        pass
+                    if not href or href in candidate_seen:
+                        continue
 
-                    try:
-                        if link.locator(
-                            "xpath=ancestor::h3[1] | ancestor::h2[1]"
-                        ).count():
-                            score += 50
-                    except Exception:
-                        pass
+                    candidate_seen.add(href)
+                    unique_candidates.append(
+                        (score, source, link)
+                    )
 
-                    try:
-                        if link.locator(
-                            "xpath=ancestor::li[1]"
-                        ).count():
-                            score += 15
-                    except Exception:
-                        pass
+                except Exception as ex:
+                    print(
+                        "Candidate de-duplication failed:",
+                        repr(ex)
+                    )
 
-                    if score >= 30:
-                        scored.append(
-                            (score, "scored", link)
-                        )
+            candidate_links = unique_candidates
 
-                scored.sort(
-                    key=lambda x: x[0],
-                    reverse=True
-                )
-
-                candidate_links = scored
-
-                print(
-                    "Scored profile candidates:",
-                    len(candidate_links)
-                )
-
-            except Exception as ex:
-                print(
-                    "Structural fallback failed:",
-                    repr(ex)
-                )
+        print(
+            "Reliable /in/ profile candidates identified:",
+            len(candidate_links)
+        )
 
         if not candidate_links:
             print(
