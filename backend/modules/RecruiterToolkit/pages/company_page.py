@@ -141,8 +141,21 @@ class CompanyPage(BasePage):
                 self.page.url
             )
 
-            if "/company/" in self.page.url.lower():
+            current_url = self.page.url.lower()
+
+            # LinkedIn may take the exact company-result click directly
+            # to the company's employee people-search page.
+            # This is a VALID navigation result and must not be treated
+            # as a failure.
+            if (
+                "/company/" in current_url
+                or (
+                    "/search/results/people/" in current_url
+                    and "currentcompany=" in current_url
+                )
+            ):
                 navigation_succeeded = True
+                print("Valid LinkedIn company/people-search navigation confirmed.")
 
         except Exception as ex:
             print(
@@ -170,8 +183,18 @@ class CompanyPage(BasePage):
                     self.page.url
                 )
 
-                if "/company/" in self.page.url.lower():
+                current_url = self.page.url.lower()
+
+                if (
+                    "/company/" in current_url
+                    or (
+                        "/search/results/people/" in current_url
+                        and "currentcompany=" in current_url
+                    )
+                ):
                     navigation_succeeded = True
+                    print("Valid LinkedIn company/people-search navigation confirmed.")
+
 
             except Exception as ex:
                 print(
@@ -241,6 +264,30 @@ class CompanyPage(BasePage):
 
         print("Current company URL:")
         print(company_page_url)
+
+        # --------------------------------------------------------
+        # IMPORTANT:
+        # The exact company-result click can land directly on the
+        # company's LinkedIn people-search page.
+        #
+        # If that happens, employee navigation is ALREADY complete.
+        # Do not try to rediscover or click another employee link.
+        # --------------------------------------------------------
+
+        current_url_lower = company_page_url.lower()
+
+        if (
+            "/search/results/people/" in current_url_lower
+            and "currentcompany=" in current_url_lower
+        ):
+            print("=" * 60)
+            print("COMPANY PEOPLE-SEARCH PAGE ALREADY OPEN")
+            print("=" * 60)
+            print("Current URL:")
+            print(company_page_url)
+            print("Valid currentCompany people-search URL confirmed.")
+            print("Skipping employee-link discovery.")
+            return True
 
         # --------------------------------------------------------
         # Helper: validate a people-search URL.
