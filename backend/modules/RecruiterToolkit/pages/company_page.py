@@ -895,20 +895,15 @@ class CompanyPage(BasePage):
         location=""
     ):
         """
-        Extract employee profile URLs from LinkedIn's actual people-search
-        result cards.
+        Extract visible LinkedIn employee profile URLs from the
+        authenticated people-search page.
 
-        IMPORTANT:
-        The employee-search page has already been opened through
-        LinkedIn's own currentCompany people-search link and the requested
-        location has already been applied.
+        This method is responsible only for candidate discovery.
 
-        This method intentionally does NOT determine company membership
-        from arbitrary text on the search page.
-
-        Instead, profile discovery is restricted to LinkedIn search-result
-        containers. The actual profile page remains the source of truth
-        for current company and location.
+        Company and location membership are NOT decided here.
+        SearchWorkflowV2 opens the actual LinkedIn profile through
+        LinkedInProfilePageV2 and validates the real company and
+        location extracted from that profile.
         """
 
         print("=" * 60)
@@ -931,106 +926,83 @@ class CompanyPage(BasePage):
         # ------------------------------------------------------------
         # IMPORTANT:
         #
-        # Do NOT collect every /in/ link under <main>.
+        # Do not depend on LinkedIn's result-card CSS classes.
         #
-        # LinkedIn pages can contain profile links outside the actual
-        # people-search result cards.
+        # LinkedIn changes those classes frequently. The previous
+        # implementation required those containers and consequently
+        # returned zero candidates even though valid /in/ links were
+        # present on the authenticated search page.
         #
-        # We therefore target known LinkedIn search-result containers
-        # first and extract the profile link FROM those containers.
+        # Use the visible LinkedIn main/search area instead.
+        # SearchWorkflowV2 performs authoritative validation later.
         # ------------------------------------------------------------
 
-        result_selectors = [
-            "li.reusable-search__result-container:visible",
-            "li.search-result:visible",
-            "li[class*='reusable-search__result-container']:visible",
-            "div[class*='search-entity-result']:visible",
-            "div[class*='entity-result']:visible",
-            "div[data-view-name*='search-entity-result']:visible",
-        ]
+        search_area = None
 
-        result_containers = None
+        try:
 
-        for selector in result_selectors:
-            try:
-                candidate = self.page.locator(selector)
+            main = self.page.locator(
+                "main:visible"
+            ).first
 
-                count = candidate.count()
+            if main.count():
 
-                if count:
-                    print(
-                        "LinkedIn result selector:",
-                        selector
-                    )
-                    print(
-                        "Result containers found:",
-                        count
-                    )
+                search_area = main
 
-                    result_containers = candidate
-                    break
-
-            except Exception as ex:
                 print(
-                    "Result selector inspection failed:",
-                    selector,
-                    repr(ex)
+                    "Visible LinkedIn main search area found."
                 )
 
-        # ------------------------------------------------------------
-        # Controlled fallback:
-        #
-        # If LinkedIn changes the exact class name, use only semantic
-        # result containers. Do NOT fall back to all /in/ links.
-        # ------------------------------------------------------------
-
-        if result_containers is None:
+        except Exception as ex:
 
             print(
-                "Known LinkedIn result selector not found."
+                "Visible main inspection failed:",
+                repr(ex)
             )
 
+        # ------------------------------------------------------------
+        # Controlled fallback if <main> is unavailable.
+        # ------------------------------------------------------------
+
+        if search_area is None:
+
             fallback_selectors = [
-                "main:visible li[role='listitem']:visible",
-                "main:visible article[role='article']:visible",
-                "main:visible li[class*='result']:visible",
-                "main:visible article[class*='result']:visible",
+                "div.scaffold-finite-scroll__content:visible",
+                "div.search-results-container:visible",
+                "div[role='main']:visible",
             ]
 
             for selector in fallback_selectors:
 
                 try:
 
-                    candidate = self.page.locator(selector)
+                    candidate = self.page.locator(
+                        selector
+                    ).first
 
-                    count = candidate.count()
+                    if candidate.count():
 
-                    if count:
+                        search_area = candidate
+
                         print(
-                            "Using controlled semantic result selector:",
+                            "Using bounded search-area fallback:",
                             selector
                         )
 
-                        print(
-                            "Result containers found:",
-                            count
-                        )
-
-                        result_containers = candidate
                         break
 
                 except Exception as ex:
 
                     print(
-                        "Fallback result selector inspection failed:",
+                        "Search-area fallback failed:",
                         selector,
                         repr(ex)
                     )
 
-        if result_containers is None:
+        if search_area is None:
 
             print(
-                "ERROR: No LinkedIn employee result containers found."
+                "ERROR: No bounded LinkedIn search area found."
             )
 
             print(
@@ -1040,134 +1012,64 @@ class CompanyPage(BasePage):
             return profiles
 
         # ------------------------------------------------------------
-        # Process each actual result container.
+        # Extract visible LinkedIn profile links.
         # ------------------------------------------------------------
 
-        container_count = result_containers.count()
+        try:
 
-        print(
-            "Processing LinkedIn employee result containers:",
-            container_count
-        )
+            profile_links = search_area.locator(
+                "a[href*='/in/']:visible"
+            )
 
-        for i in range(container_count):
+            link_count = profile_links.count()
+
+            print(
+                "Visible LinkedIn /in/ links found:",
+                link_count
+            )
+
+        except Exception as ex:
+
+            print(
+                "Profile-link discovery failed:",
+                repr(ex)
+            )
+
+            print(
+                "Profiles extracted: 0"
+            )
+
+            return profiles
+
+        # ------------------------------------------------------------
+        # Process every unique candidate.
+        # ------------------------------------------------------------
+
+        for i in range(link_count):
 
             try:
 
-                container = result_containers.nth(i)
+                link = profile_links.nth(i)
 
-                # ----------------------------------------------------
-                # Extract profile links ONLY from this result card.
-                # ----------------------------------------------------
-
-                profile_links = container.locator(
-                    "a[href*='/in/']:visible"
-                )
-
-                link_count = profile_links.count()
-
-                if not link_count:
-
-                    print(
-                        "Result container has no profile link:",
-                        i
-                    )
-
-                    continue
-
-                selected_link = None
-                raw_name = ""
-
-                # ----------------------------------------------------
-                # Find the first usable profile link in this result
-                # container.
-                # ----------------------------------------------------
-
-                for link_index in range(link_count):
-
-                    try:
-
-                        link = profile_links.nth(link_index)
-
-                        href = link.get_attribute(
-                            "href"
-                        )
-
-                        if not href:
-                            continue
-
-                        clean_url = (
-                            href
-                            .split("?")[0]
-                            .rstrip("/")
-                        )
-
-                        if not clean_url.startswith(
-                            "http"
-                        ):
-                            clean_url = (
-                                "https://www.linkedin.com"
-                                + clean_url
-                            )
-
-                        if "/in/" not in clean_url.lower():
-                            continue
-
-                        raw_name = (
-                            link.inner_text(
-                                timeout=2000
-                            )
-                            .strip()
-                        )
-
-                        # ------------------------------------------------
-                        # LinkedIn sometimes has nested /in/ links where
-                        # the first one is not the actual person's name.
-                        #
-                        # Prefer a short, single-line visible name.
-                        # ------------------------------------------------
-
-                        if (
-                            raw_name
-                            and "\n" not in raw_name
-                            and len(raw_name) <= 150
-                        ):
-                            selected_link = link
-                            break
-
-                    except Exception as ex:
-
-                        print(
-                            "Profile link inspection failed:",
-                            repr(ex)
-                        )
-
-                if selected_link is None:
-
-                    print(
-                        "REJECT - no usable employee profile link "
-                        "inside result container:",
-                        i
-                    )
-
-                    continue
-
-                href = selected_link.get_attribute(
+                href = link.get_attribute(
                     "href"
                 )
 
                 if not href:
                     continue
 
+                # Normalize URL.
                 clean_url = (
                     href
                     .split("?")[0]
+                    .split("#")[0]
                     .rstrip("/")
                 )
 
                 if not clean_url.startswith(
                     "http"
                 ):
+
                     clean_url = (
                         "https://www.linkedin.com"
                         + clean_url
@@ -1176,6 +1078,7 @@ class CompanyPage(BasePage):
                 if "/in/" not in clean_url.lower():
                     continue
 
+                # Deduplicate.
                 if clean_url in seen:
 
                     print(
@@ -1185,9 +1088,35 @@ class CompanyPage(BasePage):
 
                     continue
 
-                # ----------------------------------------------------
-                # Candidate logging
-                # ----------------------------------------------------
+                # Diagnostic name only.
+                raw_name = ""
+
+                try:
+
+                    raw_name = (
+                        link.inner_text(
+                            timeout=2000
+                        )
+                        .strip()
+                        .replace("\n", " ")
+                    )
+
+                except Exception:
+
+                    pass
+
+                seen.add(
+                    clean_url
+                )
+
+                profiles.append(
+                    {
+                        "full_name": raw_name,
+                        "profile_url": clean_url,
+                        "company": company,
+                        "location": location,
+                    }
+                )
 
                 print(
                     "-" * 60
@@ -1204,48 +1133,18 @@ class CompanyPage(BasePage):
                 )
 
                 print(
-                    "Result container index:",
-                    i
-                )
-
-                # ----------------------------------------------------
-                # Accept ONLY because the URL was found inside a
-                # specific LinkedIn search-result container.
-                #
-                # We intentionally do NOT fabricate company/location
-                # information here.
-                #
-                # The existing LinkedInProfilePageV2 extraction later
-                # reads the actual profile page.
-                # ----------------------------------------------------
-
-                seen.add(
-                    clean_url
-                )
-
-                profiles.append(
-                    {
-                        "full_name": raw_name,
-                        "profile_url": clean_url,
-                        "company": company,
-                        "location": location,
-                    }
-                )
-
-                print(
-                    "ACCEPT - LinkedIn search-result profile:",
-                    raw_name
+                    "ACCEPT - visible LinkedIn profile candidate"
                 )
 
             except Exception as ex:
 
                 print(
-                    "Profile result-container processing failed:",
+                    "Profile candidate processing failed:",
                     repr(ex)
                 )
 
         # ------------------------------------------------------------
-        # Final output
+        # Final output.
         # ------------------------------------------------------------
 
         print("=" * 60)
