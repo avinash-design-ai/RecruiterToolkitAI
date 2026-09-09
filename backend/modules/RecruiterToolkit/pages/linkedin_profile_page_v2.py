@@ -740,187 +740,485 @@ class LinkedInProfilePageV2(BasePage):
     # =====================================================
 
     def extract_company(self):
+        """
+        Extract the employee's current/primary company.
+
+        Priority:
+        1. Profile-header company entity.
+        2. Experience company entity.
+        3. Very narrow profile-header text fallback.
+
+        IMPORTANT:
+        - Never treat employment dates such as
+          "Feb 2024 - Present" as a company.
+        - Prefer actual LinkedIn /company/ entities.
+        - Do not scan arbitrary page text for company names.
+        """
+
+        def clean_company(value):
+            if not value:
+                return ""
+
+            value = (
+                value
+                .replace("\n", " ")
+                .replace("\r", " ")
+            )
+
+            value = re.sub(
+                r"\s+",
+                " ",
+                value
+            ).strip()
+
+            if not value:
+                return ""
+
+            if len(value) > 150:
+                return ""
+
+            lower = value.lower()
+
+            # Generic LinkedIn labels.
+            if lower in {
+                "company",
+                "companies",
+                "see company",
+                "current company",
+                "present",
+                "current",
+            }:
+                return ""
+
+            # Employment dates.
+            if re.search(
+                r"\b(?:19|20)\d{2}\b",
+                lower
+            ):
+                return ""
+
+            # Month names / abbreviations.
+            if re.search(
+                r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)"
+                r"(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?\b",
+                lower
+            ):
+                return ""
+
+            # Current employment status.
+            if re.search(
+                r"\b(?:present|current)\b",
+                lower
+            ):
+                return ""
+
+            # Common employment-date formats.
+            if re.search(
+                r"\b\d{1,2}\s*[-–—]\s*(?:present|current)\b",
+                lower
+            ):
+                return ""
+
+            if re.search(
+                r"\b(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)?\d{2}\b",
+                lower
+            ):
+                return ""
+
+            return value
+
+        def company_from_href(href):
+            """
+            Extract a readable company name from a LinkedIn
+            /company/<slug>/ URL when anchor text is unusable.
+
+            This is only a fallback. The href itself is used as
+            the authoritative signal that the element represents
+            a company entity.
+            """
+
+            if not href:
+                return ""
+
+            href = href.strip()
+
+            if "/company/" not in href.lower():
+                return ""
+
+            try:
+                match = re.search(
+                    r"/company/([^/?#]+)",
+                    href,
+                    re.IGNORECASE
+                )
+
+                if not match:
+                    return ""
+
+                slug = match.group(1).strip()
+
+                if not slug:
+                    return ""
+
+                # Convert LinkedIn URL slug to readable text.
+                value = re.sub(
+                    r"[-_]+",
+                    " ",
+                    slug
+                )
+
+                value = re.sub(
+                    r"\s+",
+                    " ",
+                    value
+                ).strip()
+
+                return clean_company(value)
+
+            except Exception:
+                return ""
 
         try:
+            # ========================================================
+            # 1. PROFILE HEADER
+            # ========================================================
+            #
+            # Do NOT scan every /company/ link on the entire page.
+            #
+            # First identify the profile header containing main h2,
+            # then inspect company entities inside that bounded area.
+            # ========================================================
 
-            # ---------------------------------------------
-            # First try the profile header structure.
-            # ---------------------------------------------
+            name = self.page.locator(
+                "main h2"
+            ).first
 
-            paragraphs = self.page.locator(
-                "main p"
-            )
+            if name.count():
 
-            count = paragraphs.count()
+                header_candidates = []
 
-            for i in range(count):
+                # ----------------------------------------------------
+                # Try progressively larger ancestors of the name.
+                #
+                # LinkedIn's exact classes can change, so we avoid
+                # depending on one brittle class name.
+                # ----------------------------------------------------
 
-                try:
+                ancestor_selectors = (
+                    "xpath=ancestor::header[1]",
+                    "xpath=ancestor::*[contains(@class,'pv-top-card')][1]",
+                    "xpath=ancestor::*[contains(@class,'profile-top-card')][1]",
+                    "xpath=ancestor::section[1]",
+                    "xpath=ancestor::div[1]",
+                )
 
-                    value = (
-                        paragraphs
-                        .nth(i)
-                        .inner_text()
-                        .strip()
-                    )
+                for selector in ancestor_selectors:
+                    try:
+                        container = name.locator(
+                            selector
+                        )
 
-                    if not value:
+                        if not container.count():
+                            continue
 
-                        continue
+                        links = container.locator(
+                            "a[href*='/company/']:visible"
+                        )
 
-                    lower = value.lower()
+                        for i in range(links.count()):
+                            link = links.nth(i)
 
-                    # Skip pronouns.
+                            href = (
+                                link.get_attribute("href")
+                                or ""
+                            ).strip()
 
-                    if value in {
-                        "He/Him",
-                        "She/Her",
-                        "They/Them"
-                    }:
+                            if "/company/" not in href.lower():
+                                continue
 
-                        continue
+                            text = ""
 
-                    # Skip location.
+                            try:
+                                text = (
+                                    link.inner_text()
+                                    .strip()
+                                )
+                            except Exception:
+                                pass
 
-                    if "," in value:
+                            company = clean_company(text)
 
-                        continue
-
-                    # Skip obvious unrelated content.
-
-                    if (
-                        "followers" in lower
-                        or "contact info" in lower
-                    ):
-
-                        continue
-
-                    # Current profile format commonly has
-                    # company information such as:
-                    #
-                    # SmartWorks, LLC · Aurora's Scientific
-                    # Technological and Research Academy
-
-                    if " · " in value:
-
-                        parts = [
-                            part.strip()
-                            for part in value.split("·")
-                            if part.strip()
-                        ]
-
-                        if parts:
-
-                            company = parts[0]
-
-                            if (
-                                len(company) <= 150
-                                and len(company) >= 2
-                            ):
-
-                                print(
-                                    "Company:",
-                                    company
+                            # If LinkedIn rendered bad text inside the
+                            # company entity, use its /company/ slug.
+                            if not company:
+                                company = company_from_href(
+                                    href
                                 )
 
-                                return company
+                            if not company:
+                                continue
 
-                except Exception:
+                            header_candidates.append(
+                                (
+                                    selector,
+                                    i,
+                                    company,
+                                    href
+                                )
+                            )
 
-                    continue
+                        # A real header container is preferable to
+                        # progressively broader containers.
+                        if header_candidates:
+                            break
 
-            # ---------------------------------------------
-            # Fallback:
-            #
-            # Search spans in the main profile header.
-            # ---------------------------------------------
+                    except Exception as ex:
+                        print(
+                            "Header company-container inspection failed:",
+                            repr(ex)
+                        )
 
-            spans = self.page.locator(
-                "main span"
-            )
-
-            span_count = spans.count()
-
-            for i in range(span_count):
-
-                try:
-
-                    value = (
-                        spans
-                        .nth(i)
-                        .inner_text()
-                        .strip()
+                if header_candidates:
+                    selector, index, company, href = (
+                        header_candidates[0]
                     )
 
-                    if not value:
+                    print(
+                        "Company:",
+                        company
+                    )
 
-                        continue
+                    print(
+                        "Company source: "
+                        "profile-header LinkedIn /company/ entity"
+                    )
 
-                    if len(value) > 150:
+                    print(
+                        "Company href:",
+                        href
+                    )
 
-                        continue
+                    return company
 
-                    lower = value.lower()
+            # ========================================================
+            # 2. EXPERIENCE SECTION
+            # ========================================================
+            #
+            # If the profile header does not expose a company entity,
+            # use the actual Experience section and its /company/
+            # links.
+            # ========================================================
 
-                    if (
-                        "followers" in lower
-                        or "contact info" in lower
-                    ):
+            try:
+                headings = self.page.locator(
+                    "main h2, main h3"
+                )
 
-                        continue
+                for i in range(headings.count()):
 
-                    # Skip generic UI text.
-
-                    if value in {
-                        "Contact info",
-                        "Follow",
-                        "Message",
-                        "More"
-                    }:
-
-                        continue
-
-                    # Company names often contain corporate
-                    # identifiers, but don't require them.
-
-                    if any(
-                        token in lower
-                        for token in (
-                            "llc",
-                            "inc",
-                            "corp",
-                            "ltd",
-                            "company",
-                            "technologies",
-                            "technology",
-                            "solutions",
-                            "systems"
+                    try:
+                        heading = (
+                            headings.nth(i)
+                            .inner_text()
+                            .strip()
+                            .lower()
                         )
-                    ):
+
+                        if heading not in {
+                            "experience",
+                            "work experience",
+                        }:
+                            continue
+
+                        section = headings.nth(i).locator(
+                            "xpath=ancestor::section[1]"
+                        )
+
+                        if not section.count():
+                            continue
+
+                        links = section.locator(
+                            "a[href*='/company/']:visible"
+                        )
+
+                        for j in range(links.count()):
+
+                            link = links.nth(j)
+
+                            href = (
+                                link.get_attribute("href")
+                                or ""
+                            ).strip()
+
+                            if "/company/" not in href.lower():
+                                continue
+
+                            company = ""
+
+                            try:
+                                company = clean_company(
+                                    link.inner_text()
+                                )
+                            except Exception:
+                                pass
+
+                            if not company:
+                                company = company_from_href(
+                                    href
+                                )
+
+                            if not company:
+                                continue
+
+                            print(
+                                "Company:",
+                                company
+                            )
+
+                            print(
+                                "Company source: "
+                                "Experience LinkedIn /company/ entity"
+                            )
+
+                            print(
+                                "Company href:",
+                                href
+                            )
+
+                            return company
+
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+                print(
+                    "Experience company inspection failed:",
+                    repr(ex)
+                )
+
+            # ========================================================
+            # 3. VERY NARROW PROFILE-HEADER TEXT FALLBACK
+            # ========================================================
+            #
+            # This fallback is deliberately restricted to the first
+            # few header paragraphs and rejects date/status content.
+            #
+            # Example:
+            #     "SmartWorks, LLC · Full-time"
+            #
+            # is acceptable.
+            #
+            # Example:
+            #     "Feb 2024 - Present"
+            #
+            # is rejected.
+            # ========================================================
+
+            try:
+                paragraphs = self.page.locator(
+                    "main p"
+                )
+
+                for i in range(
+                    min(paragraphs.count(), 8)
+                ):
+
+                    try:
+                        value = (
+                            paragraphs
+                            .nth(i)
+                            .inner_text()
+                            .strip()
+                            .replace("\n", " ")
+                        )
+
+                        if not value:
+                            continue
+
+                        if " · " not in value:
+                            continue
+
+                        lower = value.lower()
+
+                        if lower in {
+                            "he/him",
+                            "she/her",
+                            "they/them",
+                        }:
+                            continue
+
+                        if (
+                            "followers" in lower
+                            or "contact info" in lower
+                        ):
+                            continue
+
+                        # Reject years.
+                        if re.search(
+                            r"\b(?:19|20)\d{2}\b",
+                            value
+                        ):
+                            continue
+
+                        # Reject months.
+                        if re.search(
+                            r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+                            lower
+                        ):
+                            continue
+
+                        # Reject Present / Current.
+                        if re.search(
+                            r"\b(?:present|current)\b",
+                            lower
+                        ):
+                            continue
+
+                        company = (
+                            value
+                            .split("·", 1)[0]
+                            .strip()
+                        )
+
+                        company = clean_company(
+                            company
+                        )
+
+                        if not company:
+                            continue
 
                         print(
                             "Company:",
-                            value
+                            company
                         )
 
-                        return value
+                        print(
+                            "Company source: "
+                            "controlled profile-header text"
+                        )
 
-                except Exception:
+                        return company
 
-                    continue
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+                print(
+                    "Header text company fallback failed:",
+                    repr(ex)
+                )
 
         except Exception as ex:
-
             print(
                 "Company extraction failed:",
                 repr(ex)
             )
 
-        return ""
+        print(
+            "Company: [not reliably identified]"
+        )
 
-    # =====================================================
-    # EMAIL
-    # =====================================================
+        return ""
 
     def extract_email_from_visible_content(self):
 
