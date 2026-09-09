@@ -1014,6 +1014,18 @@ class CompanyPage(BasePage):
                 "a[href*='/in/']:visible"
             )
 
+            # LinkedIn may finish rendering employee result links
+            # after the location filter reports completion.
+            # Give the authenticated people-search page time to
+            # expose the visible /in/ links before counting them.
+            try:
+                all_links.first.wait_for(
+                    state="visible",
+                    timeout=10000
+                )
+            except Exception:
+                pass
+
             total_links = all_links.count()
 
             print(
