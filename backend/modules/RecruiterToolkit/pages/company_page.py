@@ -1010,7 +1010,7 @@ class CompanyPage(BasePage):
         candidate_links = []
 
         try:
-            all_links = search_area.locator(
+            all_links = self.page.locator(
                 "a[href*='/in/']:visible"
             )
 
