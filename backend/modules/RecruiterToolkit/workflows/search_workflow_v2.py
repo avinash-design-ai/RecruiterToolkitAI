@@ -63,9 +63,8 @@ class SearchWorkflowV2:
             self.page
         )
 
-        # Separate page for individual profile navigation.
-        # This preserves the existing V2 profile/email extractor.
-        self.profile_page = self.page.context.new_page()
+        # LinkedInProfilePageV2 manages its own temporary profile tab.
+        # Keep the authenticated employee-search page as the original page.
 
     # =====================================================
     # FALLBACK RECORD
@@ -483,7 +482,7 @@ class SearchWorkflowV2:
 
                     profile = (
                         LinkedInProfilePageV2(
-                            self.profile_page
+                            self.page
                         )
                     )
 
