@@ -674,40 +674,36 @@ class CompanyPage(BasePage):
 
             try:
 
-                # The original company name is not stored as an
-                # attribute, so derive it only from the existing
-                # selected company page when possible.
+                # ------------------------------------------------
+                # IMPORTANT:
                 #
-                # We refuse to guess a company name.
+                # search_company() already stores the exact company
+                # requested by the workflow in self._search_company.
                 #
-                # Search for a visible h1 first.
+                # Do NOT attempt to recover the company name from
+                # the current page because LinkedIn may have redirected
+                # the browser to /login/, /authwall/ or another page.
+                #
+                # The stored company name is the authoritative value.
+                # ------------------------------------------------
 
-                company_name = ""
+                company_name = getattr(
+                    self,
+                    "_search_company",
+                    ""
+                )
 
-                try:
-
-                    heading = self.page.locator(
-                        "h1"
-                    ).first
-
-                    if heading.count():
-
-                        text = (
-                            heading.inner_text()
-                            .strip()
-                        )
-
-                        if text:
-
-                            company_name = text
-
-                except Exception:
-                    pass
+                company_name = (
+                    company_name.strip()
+                    if company_name
+                    else ""
+                )
 
                 if not company_name:
 
                     print(
-                        "Could not safely recover company name."
+                        "ERROR: Previously selected company name "
+                        "is not available."
                     )
 
                     print(
@@ -717,9 +713,16 @@ class CompanyPage(BasePage):
                     return False
 
                 print(
-                    "Recovered company name:",
+                    "Recovered company name from workflow state:",
                     company_name
                 )
+
+                # ------------------------------------------------
+                # Re-run the EXISTING company search.
+                #
+                # This preserves the existing exact-company matching
+                # behavior in search_company() + open_company_result().
+                # ------------------------------------------------
 
                 self.search_company(
                     company_name
@@ -740,6 +743,11 @@ class CompanyPage(BasePage):
                     return False
 
                 company_reopened = True
+
+                print(
+                    "Selected company recovered through "
+                    "existing company search."
+                )
 
             except Exception as ex:
 
