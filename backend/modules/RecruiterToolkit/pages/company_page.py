@@ -1028,6 +1028,79 @@ class CompanyPage(BasePage):
 
             total_links = all_links.count()
 
+            print("=" * 60)
+            print("LINKEDIN /in/ DOM DIAGNOSTICS")
+            print("=" * 60)
+            print("Current URL:", self.page.url)
+            print("Visible /in/ links:", total_links)
+
+            for diag_i in range(total_links):
+                try:
+                    diag_link = all_links.nth(diag_i)
+
+                    diag_href = diag_link.get_attribute("href") or ""
+                    diag_text = (
+                        diag_link.inner_text(timeout=2000)
+                        .strip()
+                        .replace("\n", " | ")
+                    )
+
+                    print("-" * 60)
+                    print("LINK", diag_i + 1)
+                    print("HREF:", diag_href)
+                    print("TEXT:", diag_text[:500])
+
+                    parent = diag_link.locator("xpath=..").first
+
+                    parent_tag = parent.evaluate("el => el.tagName")
+                    parent_class = parent.get_attribute("class") or ""
+                    parent_id = parent.get_attribute("id") or ""
+                    parent_text = (
+                        parent.inner_text(timeout=2000)
+                        .strip()
+                        .replace("\n", " | ")
+                    )
+
+                    print("PARENT TAG:", parent_tag)
+                    print("PARENT CLASS:", parent_class[:500])
+                    print("PARENT ID:", parent_id)
+                    print("PARENT TEXT:", parent_text[:1200])
+
+                    grandparent = parent.locator("xpath=..").first
+
+                    grandparent_tag = grandparent.evaluate(
+                        "el => el.tagName"
+                    )
+                    grandparent_class = (
+                        grandparent.get_attribute("class") or ""
+                    )
+                    grandparent_text = (
+                        grandparent.inner_text(timeout=2000)
+                        .strip()
+                        .replace("\n", " | ")
+                    )
+
+                    print("GRANDPARENT TAG:", grandparent_tag)
+                    print(
+                        "GRANDPARENT CLASS:",
+                        grandparent_class[:500]
+                    )
+                    print(
+                        "GRANDPARENT TEXT:",
+                        grandparent_text[:2000]
+                    )
+
+                except Exception as diag_ex:
+                    print(
+                        "DIAGNOSTIC FAILED:",
+                        diag_i + 1,
+                        repr(diag_ex)
+                    )
+
+            print("=" * 60)
+            print("END LINKEDIN /in/ DOM DIAGNOSTICS")
+            print("=" * 60)
+
             print(
                 "Visible /in/ profile links found in bounded search area:",
                 total_links
