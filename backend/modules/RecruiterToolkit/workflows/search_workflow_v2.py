@@ -385,509 +385,150 @@ class SearchWorkflowV2:
                 )
 
             # -------------------------------------------------
-            # Process employees from CompanyPage
+            # Process ALL employees returned from CompanyPage
             # -------------------------------------------------
 
-            for row in page_results:
+            print("Candidates returned by CompanyPage:", len(page_results))
+
+            for candidate_index, row in enumerate(page_results, start=1):
 
                 if should_stop():
-
-                    print(
-                        "STOP requested."
-                    )
-
+                    print("STOP requested.")
                     break
 
-                # -------------------------------------------------
-                # PROFILE-PAGE COMPANY + LOCATION VALIDATION
-                #
-                # IMPORTANT:
-                #
-                # CompanyPage.get_profiles() provides candidate URLs
-                # from LinkedIn's people-search result cards.
-                #
-                # It intentionally does NOT claim that the candidate
-                # actually works for the requested company.
-                #
-                # Therefore the individual LinkedIn profile page is
-                # the authoritative source of truth.
-                #
-                # We MUST:
-                #
-                #   1. Open the actual profile.
-                #   2. Read the actual current company.
-                #   3. Read the actual profile location.
-                #   4. Compare both against the requested filters.
-                #   5. Accept ONLY when both match.
-                #
-                # This prevents unrelated profiles such as:
-                #
-                #   Elias Cobb       -> Quantix, Inc. / Colorado
-                #   Maggie Swanson  -> NTT DATA Services / Florida
-                #
-                # from entering the final CSV even if LinkedIn exposes
-                # their profile links somewhere in the rendered DOM.
-                # -------------------------------------------------
-
-                profile_url = (
-                    row.get(
-                        "profile_url",
-                        ""
-                    )
+                print("=" * 60)
+                print(
+                    f"PROCESSING CANDIDATE {candidate_index} OF {len(page_results)}"
                 )
+                print("=" * 60)
+
+                profile_url = row.get("profile_url", "")
 
                 if not profile_url:
-
-                    print(
-                        "SKIP - candidate has no profile URL."
-                    )
-
+                    print("SKIP - candidate has no profile URL.")
                     continue
 
                 if profile_url in seen_urls:
-
-                    print(
-                        "SKIP - duplicate profile URL:",
-                        profile_url
-                    )
-
+                    print("SKIP - duplicate profile URL:", profile_url)
                     continue
 
-                # Mark the URL as inspected so the same profile cannot
-                # be processed repeatedly across pagination.
-                seen_urls.add(
-                    profile_url
-                )
+                seen_urls.add(profile_url)
 
-                print("=" * 60)
-                print(
-                    "PROCESSING PROFILE"
-                )
-                print("=" * 60)
-
-                print(
-                    "Profile URL:",
-                    profile_url
-                )
-
-                profile_opened = False
+                print("Profile URL:", profile_url)
 
                 try:
+                    # Existing V2 profile / email extraction.
+                    profile = LinkedInProfilePageV2(self.page)
 
-                    # -------------------------------------------------
-                    # EXISTING V2 PROFILE / EMAIL EXTRACTION
-                    #
-                    # DO NOT replace LinkedInProfilePageV2.
-                    # -------------------------------------------------
-
-                    profile = (
-                        LinkedInProfilePageV2(
-                            self.page
-                        )
-                    )
-
-                    profile_opened = (
-                        profile.open_profile(
-                            profile_url
-                        )
-                    )
+                    profile_opened = profile.open_profile(profile_url)
 
                     if not profile_opened:
-
-                        print("=" * 60)
-                        print(
-                            "PROFILE PAGE COULD NOT BE OPENED"
-                        )
-                        print("=" * 60)
-
-                        print(
-                            "REJECT - current company/location "
-                            "cannot be verified."
-                        )
-
-                        print(
-                            "No fallback record will be created."
-                        )
-
+                        print("PROFILE PAGE COULD NOT BE OPENED")
+                        print("REJECT - current company/location cannot be verified.")
+                        print("Continuing to next candidate...")
                         continue
 
-                    # -------------------------------------------------
-                    # Extract the actual profile data.
-                    # -------------------------------------------------
-
-                    data = (
-                        profile.get_profile()
-                    )
-
-                    # -------------------------------------------------
-                    # Safety check:
-                    # LinkedIn may return an unexpected page.
-                    # -------------------------------------------------
+                    data = profile.get_profile()
 
                     if not data.get("full_name"):
-
-                        print(
-                            "REJECT - profile opened but no "
-                            "profile name was extracted."
-                        )
-
+                        print("REJECT - profile opened but no profile name was extracted.")
+                        print("Continuing to next candidate...")
                         continue
 
-                    # -------------------------------------------------
-                    # ACTUAL PROFILE COMPANY
-                    # -------------------------------------------------
+                    actual_company = data.get("company", "")
+                    actual_location = data.get("location", "")
 
-                    actual_company = (
-                        data.get(
-                            "company",
-                            ""
-                        )
-                    )
+                    requested_company_normalized = normalize_company(company)
+                    actual_company_normalized = normalize_company(actual_company)
 
-                    requested_company_normalized = (
-                        normalize_company(
-                            company
-                        )
-                    )
-
-                    actual_company_normalized = (
-                        normalize_company(
-                            actual_company
-                        )
-                    )
-
-                    print(
-                        "PROFILE COMPANY:",
-                        repr(actual_company)
-                    )
-
-                    print(
-                        "REQUESTED COMPANY:",
-                        repr(company)
-                    )
-
-                    print(
-                        "NORMALIZED PROFILE COMPANY:",
-                        repr(actual_company_normalized)
-                    )
-
-                    print(
-                        "NORMALIZED REQUESTED COMPANY:",
-                        repr(requested_company_normalized)
-                    )
+                    requested_location_normalized = normalize_location(location)
+                    actual_location_normalized = normalize_location(actual_location)
 
                     company_matches = (
-                        bool(
-                            actual_company_normalized
-                        )
-                        and
-                        actual_company_normalized
-                        ==
-                        requested_company_normalized
+                        bool(actual_company_normalized)
+                        and actual_company_normalized == requested_company_normalized
                     )
-
-                    # -------------------------------------------------
-                    # ACTUAL PROFILE LOCATION
-                    # -------------------------------------------------
-
-                    actual_location = (
-                        data.get(
-                            "location",
-                            ""
-                        )
-                    )
-
-                    requested_location_normalized = (
-                        normalize_location(
-                            location
-                        )
-                    )
-
-                    actual_location_normalized = (
-                        normalize_location(
-                            actual_location
-                        )
-                    )
-
-                    print(
-                        "PROFILE LOCATION:",
-                        repr(actual_location)
-                    )
-
-                    print(
-                        "REQUESTED LOCATION:",
-                        repr(location)
-                    )
-
-                    print(
-                        "NORMALIZED PROFILE LOCATION:",
-                        repr(actual_location_normalized)
-                    )
-
-                    print(
-                        "NORMALIZED REQUESTED LOCATION:",
-                        repr(requested_location_normalized)
-                    )
-
-                    # -------------------------------------------------
-                    # LOCATION MATCH
-                    #
-                    # Example:
-                    #
-                    # requested:
-                    #     New Jersey
-                    #
-                    # profile:
-                    #     Edison, New Jersey, United States
-                    #
-                    # This should PASS.
-                    #
-                    # Example:
-                    #
-                    # requested:
-                    #     New Jersey
-                    #
-                    # profile:
-                    #     Denver, Colorado, United States
-                    #
-                    # This should FAIL.
-                    # -------------------------------------------------
 
                     location_matches = (
-                        bool(
-                            actual_location_normalized
-                        )
-                        and
-                        bool(
-                            requested_location_normalized
-                        )
-                        and
-                        requested_location_normalized
-                        in
-                        actual_location_normalized
+                        bool(actual_location_normalized)
+                        and bool(requested_location_normalized)
+                        and requested_location_normalized in actual_location_normalized
                     )
 
-                    print(
-                        "COMPANY MATCH:",
-                        company_matches
-                    )
-
-                    print(
-                        "LOCATION MATCH:",
-                        location_matches
-                    )
-
-                    # -------------------------------------------------
-                    # HARD ACCEPTANCE GATE
-                    #
-                    # BOTH company AND location must match.
-                    # -------------------------------------------------
+                    print("PROFILE COMPANY:", repr(actual_company))
+                    print("REQUESTED COMPANY:", repr(company))
+                    print("COMPANY MATCH:", company_matches)
+                    print("PROFILE LOCATION:", repr(actual_location))
+                    print("REQUESTED LOCATION:", repr(location))
+                    print("LOCATION MATCH:", location_matches)
 
                     if not company_matches:
-
-                        print("=" * 60)
-                        print(
-                            "REJECTED - PROFILE COMPANY MISMATCH"
-                        )
-                        print("=" * 60)
-
-                        print(
-                            "Profile:",
-                            data.get(
-                                "full_name",
-                                ""
-                            )
-                        )
-
-                        print(
-                            "Profile company:",
-                            actual_company
-                        )
-
-                        print(
-                            "Requested company:",
-                            company
-                        )
-
-                        print(
-                            "Profile will NOT be added to results."
-                        )
-
+                        print("REJECTED - PROFILE COMPANY MISMATCH")
+                        print("Continuing to next candidate...")
                         continue
 
                     if not location_matches:
-
-                        print("=" * 60)
-                        print(
-                            "REJECTED - PROFILE LOCATION MISMATCH"
-                        )
-                        print("=" * 60)
-
-                        print(
-                            "Profile:",
-                            data.get(
-                                "full_name",
-                                ""
-                            )
-                        )
-
-                        print(
-                            "Profile location:",
-                            actual_location
-                        )
-
-                        print(
-                            "Requested location:",
-                            location
-                        )
-
-                        print(
-                            "Profile will NOT be added to results."
-                        )
-
+                        print("REJECTED - PROFILE LOCATION MISMATCH")
+                        print("Continuing to next candidate...")
                         continue
 
-                    # -------------------------------------------------
-                    # BOTH FILTERS PASSED
-                    # -------------------------------------------------
+                    data["search_company"] = company
+                    data["search_location"] = location
 
-                    print("=" * 60)
-                    print(
-                        "PROFILE VALIDATION PASSED"
-                    )
-                    print("=" * 60)
+                    # Preserve the candidate URL when the profile extractor
+                    # does not return one itself.
+                    if not data.get("profile_url"):
+                        data["profile_url"] = profile_url
 
-                    print(
-                        "Profile:",
-                        data.get(
-                            "full_name",
-                            ""
-                        )
-                    )
+                    results.append(data)
 
-                    print(
-                        "Current company:",
-                        actual_company
-                    )
-
-                    print(
-                        "Current location:",
-                        actual_location
-                    )
-
-                    # -------------------------------------------------
-                    # Preserve the original requested search values.
-                    # -------------------------------------------------
-
-                    data["search_company"] = (
-                        company
-                    )
-
-                    data["search_location"] = (
-                        location
-                    )
-
-                    # -------------------------------------------------
-                    # ONLY NOW add the profile to final results.
-                    # -------------------------------------------------
-
-                    results.append(
-                        data
-                    )
-
-                    print("=" * 60)
-                    print(
-                        "VALID PROFILE COLLECTED"
-                    )
-                    print("=" * 60)
-
-                    for key, value in data.items():
-
-                        print(
-                            f"{key}: {value}"
-                        )
-
-                except Exception as ex:
-
-                    print(
-                        "Profile processing failed:",
-                        repr(ex)
-                    )
-
-                    print(
-                        "REJECT - profile could not be "
-                        "verified safely."
-                    )
-
-                    continue
-
-                # -------------------------------------------------
-                # Autosave after every retained employee
-                # -------------------------------------------------
-
-                if results:
+                    print("PROFILE VALIDATION PASSED")
+                    print("VALID PROFILE COLLECTED")
+                    print("Profiles collected so far:", len(results))
 
                     try:
-
-                        autosave = (
-                            Exporter.export_csv(
-                                results,
-                                f"{company}_{location}_v2_autosave.csv"
-                            )
+                        autosave = Exporter.export_csv(
+                            results,
+                            f"{company}_{location}_v2_autosave.csv"
                         )
-
-                        print(
-                            "Autosave:",
-                            autosave
-                        )
-
+                        print("Autosave:", autosave)
                     except Exception as ex:
+                        print("Autosave failed:", repr(ex))
 
-                        print(
-                            "Autosave failed:",
-                            repr(ex)
-                        )
+                    if len(results) >= max_profiles:
+                        print("Maximum profile limit reached.")
+                        break
 
-                # -------------------------------------------------
-                # Maximum reached
-                # -------------------------------------------------
-
-                if len(results) >= max_profiles:
-
-                    break
+                except Exception as ex:
+                    print("Profile processing failed:", repr(ex))
+                    print("REJECT - profile could not be verified safely.")
+                    print("Continuing to next candidate...")
+                    continue
 
             # -------------------------------------------------
-            # Maximum reached
+            # Maximum reached after exhausting candidates
             # -------------------------------------------------
 
             if len(results) >= max_profiles:
-
                 break
 
             # -------------------------------------------------
-            # Next employee page
+            # Only move to the next LinkedIn employee page after
+            # every candidate on the current page has been processed.
             # -------------------------------------------------
 
-            print(
-                "Trying next employee page..."
-            )
+            print("=" * 60)
+            print("CURRENT EMPLOYEE PAGE EXHAUSTED")
+            print("Profiles collected so far:", len(results))
+            print("Trying next employee page...")
+            print("=" * 60)
 
-            has_next = (
-                self.company_page
-                .next_page()
-            )
+            has_next = self.company_page.next_page()
 
-            print(
-                "Next page:",
-                has_next
-            )
+            print("Next page:", has_next)
 
             if not has_next:
-
-                print(
-                    "No more employee pages."
-                )
-
+                print("No more employee pages.")
                 break
 
             page_no += 1
