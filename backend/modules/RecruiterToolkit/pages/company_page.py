@@ -938,6 +938,77 @@ class CompanyPage(BasePage):
 
     def get_profiles(self, company="", location=""):
         # ----------------------------------------------------
+        # EMPLOYEE SEARCH PAGE SAFETY GUARD
+        #
+        # The employee search was successfully opened earlier
+        # in the workflow, but LinkedIn can sometimes return
+        # the Playwright page to /feed/ after filter actions.
+        #
+        # DO NOT use page.goto() here.
+        # Direct navigation to LinkedIn search redirected the
+        # authenticated GitHub Actions session to /uas/login.
+        #
+        # Instead, recover the already-established employee
+        # search page using browser history.
+        # ----------------------------------------------------
+
+        current_url = self.page.url or ""
+
+        print("=" * 60)
+        print("EMPLOYEE SEARCH PAGE VALIDATION")
+        print("=" * 60)
+        print("Current URL before profile discovery:", current_url)
+
+        if "/search/results/people/" not in current_url:
+
+            print("EMPLOYEE SEARCH PAGE NOT ACTIVE")
+            print("Attempting browser-history recovery...")
+
+            try:
+                previous_url = current_url
+
+                self.page.go_back(
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                self.page.wait_for_timeout(5000)
+
+                recovered_url = self.page.url or ""
+
+                print("Previous URL:", previous_url)
+                print("Recovered URL:", recovered_url)
+
+            except Exception as recovery_ex:
+                print(
+                    "EMPLOYEE SEARCH HISTORY RECOVERY FAILED:",
+                    repr(recovery_ex)
+                )
+                return []
+
+            if "/search/results/people/" not in recovered_url:
+
+                print(
+                    "EMPLOYEE SEARCH HISTORY RECOVERY VALIDATION FAILED"
+                )
+                print("Current URL:", recovered_url)
+
+                return []
+
+            print(
+                "EMPLOYEE SEARCH PAGE RESTORED FROM BROWSER HISTORY"
+            )
+
+        else:
+            print(
+                "EMPLOYEE SEARCH PAGE ALREADY CONFIRMED"
+            )
+
+        print("=" * 60)
+        print("CONTINUING EMPLOYEE PROFILE DISCOVERY")
+        print("=" * 60)
+
+        # ----------------------------------------------------
         # SAFETY GUARD:
         # get_profiles() must never scan /in/ links while the
         # browser is on LinkedIn's feed page.
