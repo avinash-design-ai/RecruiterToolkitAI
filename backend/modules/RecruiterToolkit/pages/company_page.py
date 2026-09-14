@@ -848,6 +848,22 @@ class CompanyPage(BasePage):
         return False
 
     def apply_location(self, location):
+        """
+        Apply LinkedIn's Locations filter.
+
+        IMPORTANT:
+        This intentionally follows the previously working LinkedIn
+        interaction sequence:
+
+            Locations
+            -> location input
+            -> ArrowDown
+            -> click Show results
+
+        We DO NOT press Enter after ArrowDown because the current
+        LinkedIn DOM can interpret Enter as form submission/navigation
+        and leave the people-search page.
+        """
 
         print(
             f"Applying location: {location}"
@@ -857,71 +873,84 @@ class CompanyPage(BasePage):
         print("LOCATION FILTER - START")
         print("=" * 60)
 
-        starting_url = self.page.url or ""
-
         print(
             "URL before location filter:",
-            starting_url
+            self.page.url
         )
 
         # ------------------------------------------------------------
         # SAFETY CHECK
         # ------------------------------------------------------------
 
-        if "/search/results/people/" not in starting_url.lower():
+        before_url = self.page.url.lower()
+
+        if "/search/results/people/" not in before_url:
             print(
-                "ERROR: Location filter started outside "
-                "the people-search page."
+                "ERROR: Location filter started from a non-people-search URL."
             )
             return False
 
-        if "currentcompany=" not in starting_url.lower():
+        if "currentcompany=" not in before_url:
             print(
-                "ERROR: People-search URL does not contain "
-                "currentCompany."
+                "ERROR: Location filter started without currentCompany."
             )
             return False
 
         # ------------------------------------------------------------
-        # IMPORTANT:
+        # OPEN LOCATIONS
         #
-        # Do NOT introduce a new autocomplete-selection mechanism here.
-        #
-        # The known-working LinkedIn flow used:
-        #
-        #     fill(location)
-        #     ArrowDown
-        #     Enter
-        #
-        # This is intentionally restored because the newer DOM-based
-        # [role='option'] approach caused a regression.
+        # Use the same proven text-based interaction that previously
+        # worked with LinkedIn.
         # ------------------------------------------------------------
 
         try:
-
-            self.page.get_by_text(
+            locations = self.page.get_by_text(
                 "Locations",
                 exact=False
-            ).first.click(
-                timeout=30000
             )
 
+            location_count = locations.count()
+
             print(
-                "Locations filter opened."
+                "Locations controls found:",
+                location_count
             )
+
+            clicked_locations = False
+
+            for i in range(location_count - 1, -1, -1):
+                try:
+                    candidate = locations.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    candidate.click(
+                        timeout=15000
+                    )
+
+                    clicked_locations = True
+
+                    print(
+                        "Locations filter opened."
+                    )
+
+                    break
+
+                except Exception:
+                    continue
+
+            if not clicked_locations:
+                print(
+                    "ERROR: Could not open Locations filter."
+                )
+                return False
 
         except Exception as ex:
-
             print(
-                "ERROR: Could not open Locations filter:",
+                "ERROR opening Locations:",
                 repr(ex)
             )
-
-            print(
-                "Current URL:",
-                self.page.url
-            )
-
             return False
 
         self.page.wait_for_timeout(
@@ -929,11 +958,13 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # Find the visible location input.
+        # FIND LOCATION INPUT
+        #
+        # Preserve the previously working "last input" behavior,
+        # but require it to be visible.
         # ------------------------------------------------------------
 
         try:
-
             inputs = self.page.locator(
                 "input:visible"
             )
@@ -946,11 +977,9 @@ class CompanyPage(BasePage):
             )
 
             if input_count == 0:
-
                 print(
                     "ERROR: No visible location input found."
                 )
-
                 return False
 
             location_box = inputs.last
@@ -965,70 +994,101 @@ class CompanyPage(BasePage):
             )
 
         except Exception as ex:
-
             print(
-                "ERROR: Location input failed:",
+                "ERROR entering location:",
                 repr(ex)
             )
-
             return False
 
         # ------------------------------------------------------------
-        # Allow LinkedIn autocomplete to populate.
+        # ALLOW AUTOCOMPLETE TO RENDER
         # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
-            2000
+            2500
         )
 
         # ------------------------------------------------------------
-        # KNOWN-WORKING LOCATION SELECTION
+        # SELECT AUTOCOMPLETE
         #
-        # Do not replace this with a role=option lookup.
+        # CRITICAL:
+        #
+        # ArrowDown selects/highlights LinkedIn's first matching
+        # autocomplete item.
+        #
+        # DO NOT press Enter.
+        #
+        # The latest failure shows that Enter causes LinkedIn to
+        # navigate to https://www.linkedin.com/ before Show results
+        # can be clicked.
         # ------------------------------------------------------------
 
-        try:
+        print(
+            "Selecting LinkedIn location suggestion..."
+        )
 
-            print(
-                "Selecting LinkedIn location suggestion..."
-            )
+        try:
+            location_box.click()
 
             self.page.keyboard.press(
                 "ArrowDown"
             )
 
-            self.page.keyboard.press(
-                "Enter"
+            self.page.wait_for_timeout(
+                1000
             )
 
             print(
-                "Location suggestion selected."
+                "Location suggestion highlighted."
             )
 
         except Exception as ex:
-
             print(
-                "ERROR: Could not select location suggestion:",
+                "ERROR selecting location suggestion:",
                 repr(ex)
             )
-
             return False
 
-        self.page.wait_for_timeout(
-            1000
+        # ------------------------------------------------------------
+        # SAFETY CHECK BEFORE SHOW RESULTS
+        #
+        # If ArrowDown somehow caused navigation, stop immediately.
+        # Never continue on linkedin.com/.
+        # ------------------------------------------------------------
+
+        current_url = self.page.url.lower()
+
+        print(
+            "URL after location selection:",
+            self.page.url
         )
+
+        if "/search/results/people/" not in current_url:
+            print(
+                "ERROR: LinkedIn left the people-search page "
+                "before Show results."
+            )
+            return False
+
+        if "currentcompany=" not in current_url:
+            print(
+                "ERROR: currentCompany disappeared before Show results."
+            )
+            return False
 
         # ------------------------------------------------------------
         # SHOW RESULTS
         #
-        # First use exact visible text, matching the known-good flow.
-        # If LinkedIn exposes the control as a button, use that too.
+        # LinkedIn may expose this as text rather than a normal
+        # button, so use get_by_text exactly like the previously
+        # working implementation.
         # ------------------------------------------------------------
 
-        show_results_clicked = False
+        print(
+            "Looking for Show results..."
+        )
 
         try:
-
             show_results = self.page.get_by_text(
                 "Show results",
                 exact=False
@@ -1037,53 +1097,37 @@ class CompanyPage(BasePage):
             show_count = show_results.count()
 
             print(
-                "Show results text controls found:",
+                "Show results controls found:",
                 show_count
             )
 
-            for i in range(
-                show_count - 1,
-                -1,
-                -1
-            ):
+            clicked_show_results = False
 
+            for i in range(show_count - 1, -1, -1):
                 try:
-
                     candidate = show_results.nth(i)
 
                     if not candidate.is_visible():
                         continue
 
+                    print(
+                        "Clicking Show results..."
+                    )
+
                     candidate.click(
                         timeout=15000
                     )
 
-                    show_results_clicked = True
-
-                    print(
-                        "Clicked Show results."
-                    )
+                    clicked_show_results = True
 
                     break
 
                 except Exception:
                     continue
 
-        except Exception as ex:
+            if not clicked_show_results:
 
-            print(
-                "Show results text lookup failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # Button fallback.
-        # ------------------------------------------------------------
-
-        if not show_results_clicked:
-
-            try:
-
+                # Controlled fallback: inspect visible buttons.
                 buttons = self.page.locator(
                     "button:visible"
                 )
@@ -1095,132 +1139,116 @@ class CompanyPage(BasePage):
                     button_count
                 )
 
-                for i in range(
-                    button_count - 1,
-                    -1,
-                    -1
-                ):
-
+                for i in range(button_count - 1, -1, -1):
                     try:
-
                         button = buttons.nth(i)
 
-                        text = (
+                        button_text = (
                             button.inner_text(
                                 timeout=2000
                             )
                             .strip()
-                            .replace(
-                                "\n",
-                                " "
-                            )
+                            .replace("\n", " ")
                         )
 
                         if (
-                            text.lower()
+                            button_text.lower()
                             == "show results"
                         ):
+                            print(
+                                "Clicking Show results button."
+                            )
 
                             button.click(
                                 timeout=15000
                             )
 
-                            show_results_clicked = True
-
-                            print(
-                                "Clicked visible Show results button."
-                            )
+                            clicked_show_results = True
 
                             break
 
                     except Exception:
                         continue
 
-            except Exception as ex:
-
+            if not clicked_show_results:
                 print(
-                    "Show results button fallback failed:",
-                    repr(ex)
+                    "ERROR: Could not safely click Show results."
                 )
 
-        if not show_results_clicked:
+                print(
+                    "Current URL:",
+                    self.page.url
+                )
 
+                return False
+
+        except Exception as ex:
             print(
-                "ERROR: Could not safely click Show results."
+                "ERROR locating Show results:",
+                repr(ex)
             )
-
-            print(
-                "Current URL:",
-                self.page.url
-            )
-
             return False
 
         # ------------------------------------------------------------
-        # WAIT FOR LINKEDIN TO APPLY THE LOCATION FILTER
+        # WAIT FOR FILTERED RESULTS
         # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
             5000
         )
 
-        final_url = self.page.url or ""
-
-        print("=" * 60)
-        print("LOCATION FILTER NAVIGATION VALIDATION")
-        print("=" * 60)
-
         print(
-            "Show results clicked:",
-            show_results_clicked
-        )
-
-        print(
-            "URL after location filter:",
-            final_url
+            "URL after Show results:",
+            self.page.url
         )
 
         # ------------------------------------------------------------
-        # FINAL SAFETY CHECK
+        # FINAL SAFETY VALIDATION
+        #
+        # This is mandatory.
+        #
+        # A location filter is successful only if LinkedIn returned
+        # to the company-scoped people-search page.
         # ------------------------------------------------------------
 
-        if "/search/results/people/" not in final_url.lower():
+        final_url = self.page.url.lower()
 
+        if "/search/results/people/" not in final_url:
             print(
-                "ERROR: LinkedIn left the people-search page "
-                "after applying location."
+                "ERROR: Show results did not return to "
+                "LinkedIn people-search."
             )
 
             print(
-                "Location filter rejected."
+                "Final URL:",
+                self.page.url
             )
 
             return False
 
-        if "currentcompany=" not in final_url.lower():
-
+        if "currentcompany=" not in final_url:
             print(
-                "ERROR: Location filtering removed currentCompany."
+                "ERROR: currentCompany is missing after "
+                "location filtering."
             )
 
             print(
-                "Location filter rejected."
+                "Final URL:",
+                self.page.url
             )
 
             return False
 
         print(
-            "Location filter successfully applied."
+            "Location filter applied successfully."
         )
 
         print(
-            "Authenticated company people-search page confirmed."
+            "Final filtered URL:",
+            self.page.url
         )
-
-        print("=" * 60)
 
         return True
-
 
     def get_profiles(self, company="", location=""):
 
