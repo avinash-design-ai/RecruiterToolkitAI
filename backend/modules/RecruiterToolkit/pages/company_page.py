@@ -854,21 +854,39 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # Dismiss any LinkedIn dialog blocking the filter controls.
-        # LinkedIn can leave an open dialog over the people-search
-        # page, causing Playwright clicks to be intercepted.
+        # SAFETY CHECK
         #
-        # Keep the original location-selection method unchanged.
+        # Location filtering must start from LinkedIn's people-search
+        # page. Never attempt to apply the filter from /feed/.
+        # ------------------------------------------------------------
+
+        starting_url = self.page.url or ""
+
+        print("=" * 60)
+        print("LOCATION FILTER - START")
+        print("=" * 60)
+        print(
+            "URL before location filter:",
+            starting_url
+        )
+
+        if "/search/results/people/" not in starting_url:
+            print(
+                "ERROR: Location filter started outside "
+                "the people-search page."
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # Dismiss any blocking LinkedIn dialog.
         # ------------------------------------------------------------
 
         try:
-
             dialogs = self.page.locator(
                 "dialog[open], [role='dialog']:visible"
             )
 
             if dialogs.count():
-
                 print(
                     "Open LinkedIn dialog detected. "
                     "Attempting to dismiss it..."
@@ -883,56 +901,330 @@ class CompanyPage(BasePage):
                 )
 
         except Exception:
-
             pass
 
-        self.page.get_by_text(
-            "Locations",
-            exact=False
-        ).first.click()
+        # ------------------------------------------------------------
+        # Open Locations filter.
+        # ------------------------------------------------------------
+
+        try:
+            locations = self.page.get_by_text(
+                "Locations",
+                exact=True
+            ).filter(
+                visible=True
+            )
+
+            if not locations.count():
+                locations = self.page.get_by_text(
+                    "Locations",
+                    exact=False
+                ).filter(
+                    visible=True
+                )
+
+            if not locations.count():
+                print(
+                    "ERROR: Visible Locations filter not found."
+                )
+                return False
+
+            locations.last.click(
+                timeout=15000
+            )
+
+            print(
+                "Locations filter opened."
+            )
+
+        except Exception as ex:
+            print(
+                "Locations filter click failed:",
+                repr(ex)
+            )
+            return False
 
         self.page.wait_for_timeout(
             2000
         )
 
-        location_box = self.page.locator(
-            "input"
-        ).last
+        # ------------------------------------------------------------
+        # Find the location input.
+        # Keep the existing behavior of using the last visible
+        # input because LinkedIn renders several search/filter inputs.
+        # ------------------------------------------------------------
 
-        location_box.fill(
-            location
-        )
+        try:
+            inputs = self.page.locator(
+                "input:visible"
+            )
+
+            input_count = inputs.count()
+
+            print(
+                "Visible inputs after opening Locations:",
+                input_count
+            )
+
+            if input_count == 0:
+                print(
+                    "ERROR: No visible location input found."
+                )
+                return False
+
+            location_box = inputs.last
+
+            location_box.fill(
+                location
+            )
+
+            print(
+                "Location value entered:",
+                location
+            )
+
+        except Exception as ex:
+            print(
+                "Location input failed:",
+                repr(ex)
+            )
+            return False
 
         self.page.wait_for_timeout(
             2000
         )
 
-        self.page.keyboard.press(
-            "ArrowDown"
-        )
+        # ------------------------------------------------------------
+        # Select the LinkedIn location suggestion.
+        # ------------------------------------------------------------
 
-        self.page.keyboard.press(
-            "Enter"
-        )
+        try:
+            self.page.keyboard.press(
+                "ArrowDown"
+            )
+
+            self.page.keyboard.press(
+                "Enter"
+            )
+
+            print(
+                "Location suggestion selected."
+            )
+
+        except Exception as ex:
+            print(
+                "Location suggestion selection failed:",
+                repr(ex)
+            )
+            return False
 
         self.page.wait_for_timeout(
             1000
         )
 
+        # ------------------------------------------------------------
+        # Click the ACTUAL visible Show results button.
+        #
+        # Do not use a page-wide text selector for this.
+        # LinkedIn can expose multiple "Show results" elements.
+        # ------------------------------------------------------------
+
+        show_results_clicked = False
+
         try:
+            dialogs = self.page.locator(
+                "dialog[open]:visible, [role='dialog']:visible"
+            )
 
-            self.page.get_by_text(
-                "Show results",
-                exact=False
-            ).first.click()
+            if dialogs.count():
 
-        except Exception:
+                print(
+                    "Searching active dialog for Show results..."
+                )
 
-            pass
+                for dialog_index in range(
+                    dialogs.count() - 1,
+                    -1,
+                    -1
+                ):
+
+                    dialog = dialogs.nth(
+                        dialog_index
+                    )
+
+                    buttons = dialog.locator(
+                        "button:visible"
+                    )
+
+                    for button_index in range(
+                        buttons.count() - 1,
+                        -1,
+                        -1
+                    ):
+
+                        button = buttons.nth(
+                            button_index
+                        )
+
+                        try:
+                            button_text = (
+                                button.inner_text(
+                                    timeout=2000
+                                )
+                                .strip()
+                                .replace(
+                                    "\n",
+                                    " "
+                                )
+                            )
+
+                            if button_text.lower() == "show results":
+
+                                print(
+                                    "Found Show results button "
+                                    "inside active dialog."
+                                )
+
+                                button.click(
+                                    timeout=15000
+                                )
+
+                                show_results_clicked = True
+
+                                print(
+                                    "Clicked dialog Show results."
+                                )
+
+                                break
+
+                        except Exception:
+                            continue
+
+                    if show_results_clicked:
+                        break
+
+        except Exception as ex:
+            print(
+                "Dialog Show results discovery failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # Controlled fallback:
+        # Search only visible BUTTON elements on the page.
+        # ------------------------------------------------------------
+
+        if not show_results_clicked:
+
+            print(
+                "Dialog button not found. "
+                "Using visible-button fallback."
+            )
+
+            try:
+                buttons = self.page.locator(
+                    "button:visible"
+                )
+
+                for i in range(
+                    buttons.count() - 1,
+                    -1,
+                    -1
+                ):
+
+                    button = buttons.nth(
+                        i
+                    )
+
+                    try:
+                        button_text = (
+                            button.inner_text(
+                                timeout=2000
+                            )
+                            .strip()
+                            .replace(
+                                "\n",
+                                " "
+                            )
+                        )
+
+                        if button_text.lower() == "show results":
+
+                            button.click(
+                                timeout=15000
+                            )
+
+                            show_results_clicked = True
+
+                            print(
+                                "Clicked visible-button "
+                                "Show results."
+                            )
+
+                            break
+
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+                print(
+                    "Visible-button Show results fallback failed:",
+                    repr(ex)
+                )
+
+        if not show_results_clicked:
+
+            print(
+                "ERROR: Could not safely click Show results."
+            )
+
+            return False
+
+        # ------------------------------------------------------------
+        # Give LinkedIn time to update the people-search results.
+        # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
             5000
         )
+
+        # ------------------------------------------------------------
+        # CRITICAL NAVIGATION VALIDATION
+        # ------------------------------------------------------------
+
+        final_url = self.page.url or ""
+
+        print("=" * 60)
+        print("LOCATION FILTER NAVIGATION VALIDATION")
+        print("=" * 60)
+        print(
+            "Show results clicked:",
+            show_results_clicked
+        )
+        print(
+            "URL after location filter:",
+            final_url
+        )
+
+        if "/search/results/people/" not in final_url:
+
+            print(
+                "ERROR: LinkedIn left the employee "
+                "people-search page after location filtering."
+            )
+
+            print(
+                "Location filter rejected."
+            )
+
+            return False
+
+        print(
+            "Location filter remained on employee "
+            "people-search page."
+        )
+
+        print("=" * 60)
 
         return True
 
