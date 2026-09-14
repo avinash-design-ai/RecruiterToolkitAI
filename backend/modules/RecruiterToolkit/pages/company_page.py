@@ -1015,44 +1015,206 @@ class CompanyPage(BasePage):
         # ------------------------------------------------------------
         # SELECT LOCATION SUGGESTION
         #
-        # ArrowDown is intentionally retained because this part is
-        # now proven to leave us on the correct people-search page.
+        # IMPORTANT:
+        # Do NOT use keyboard Enter.
         #
-        # DO NOT press Enter.
+        # In the current authenticated GitHub session, Enter after
+        # ArrowDown redirects LinkedIn to:
+        #
+        #   /ssr-login/remember-me-auto-login
+        #
+        # We must click the actual autocomplete suggestion instead.
         # ------------------------------------------------------------
 
         print(
             "Selecting LinkedIn location suggestion..."
         )
 
+        location_selected = False
+
         try:
 
-            location_box.click()
+            # --------------------------------------------------------
+            # METHOD 1:
+            # Click the exact visible ARIA option supplied by LinkedIn.
+            # --------------------------------------------------------
 
-            self.page.keyboard.press(
-                "ArrowDown"
+            options = self.page.locator(
+                "[role='option']:visible"
             )
 
-            self.page.keyboard.press(
-                "Enter"
-            )
-
-            self.page.wait_for_timeout(
-                1000
-            )
+            option_count = options.count()
 
             print(
-                "Location suggestion selected."
+                "Visible autocomplete options:",
+                option_count
             )
+
+            for i in range(option_count):
+
+                try:
+
+                    option = options.nth(i)
+
+                    option_text = (
+                        option.inner_text(
+                            timeout=2000
+                        )
+                        .strip()
+                    )
+
+                    print(
+                        f"Autocomplete option {i}: "
+                        f"{option_text!r}"
+                    )
+
+                    if (
+                        option_text.lower()
+                        == location.strip().lower()
+                    ):
+
+                        print(
+                            "Clicking exact LinkedIn location "
+                            "autocomplete option:",
+                            option_text
+                        )
+
+                        option.scroll_into_view_if_needed()
+
+                        option.click(
+                            timeout=15000
+                        )
+
+                        location_selected = True
+                        break
+
+                except Exception as ex:
+
+                    print(
+                        f"Autocomplete option {i} "
+                        f"processing failed:",
+                        repr(ex)
+                    )
+
+                    continue
 
         except Exception as ex:
 
             print(
-                "ERROR selecting location suggestion:",
+                "ARIA location-option lookup failed:",
                 repr(ex)
             )
 
+        # ------------------------------------------------------------
+        # METHOD 2:
+        # Controlled text fallback.
+        #
+        # LinkedIn sometimes renders the suggestion without
+        # role='option'. In that case find a visible exact-text
+        # element matching the requested location.
+        #
+        # The input itself is explicitly excluded.
+        # ------------------------------------------------------------
+
+        if not location_selected:
+
+            try:
+
+                print(
+                    "Trying visible exact-text location "
+                    "autocomplete fallback..."
+                )
+
+                text_candidates = self.page.get_by_text(
+                    location,
+                    exact=True
+                )
+
+                candidate_count = text_candidates.count()
+
+                print(
+                    "Exact location text candidates:",
+                    candidate_count
+                )
+
+                for i in range(candidate_count):
+
+                    try:
+
+                        candidate = text_candidates.nth(i)
+
+                        if not candidate.is_visible():
+
+                            continue
+
+                        tag = (
+                            candidate.evaluate(
+                                "(el) => el.tagName.toLowerCase()"
+                            )
+                            or ""
+                        ).lower()
+
+                        if tag == "input":
+
+                            continue
+
+                        print(
+                            "Clicking visible exact location "
+                            "autocomplete text:",
+                            location
+                        )
+
+                        candidate.scroll_into_view_if_needed()
+
+                        candidate.click(
+                            timeout=15000
+                        )
+
+                        location_selected = True
+                        break
+
+                    except Exception as ex:
+
+                        print(
+                            f"Location text candidate {i} "
+                            f"processing failed:",
+                            repr(ex)
+                        )
+
+                        continue
+
+            except Exception as ex:
+
+                print(
+                    "Exact-text location fallback failed:",
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # FAIL CLOSED
+        # ------------------------------------------------------------
+
+        if not location_selected:
+
+            print(
+                "ERROR: Could not click the actual LinkedIn "
+                "location autocomplete option."
+            )
+
+            print(
+                "Requested location:",
+                location
+            )
+
             return False
+
+        print(
+            "Location suggestion selected."
+        )
+
+        self.page.wait_for_timeout(
+            1000
+        )
 
         # ------------------------------------------------------------
         # VERIFY WE ARE STILL ON THE COMPANY PEOPLE SEARCH
