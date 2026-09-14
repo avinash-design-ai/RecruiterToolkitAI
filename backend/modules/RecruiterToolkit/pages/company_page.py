@@ -937,6 +937,79 @@ class CompanyPage(BasePage):
         return True
 
     def get_profiles(self, company="", location=""):
+        # ----------------------------------------------------
+        # SAFETY GUARD:
+        # get_profiles() must never scan /in/ links while the
+        # browser is on LinkedIn's feed page.
+        #
+        # The diagnostic run proved that the page was /feed/
+        # when profile discovery started, which exposed 33
+        # unrelated /in/ links from feed content.
+        # ----------------------------------------------------
+
+        current_url = self.page.url or ""
+
+        print("=" * 60)
+        print("EMPLOYEE SEARCH PAGE VALIDATION")
+        print("=" * 60)
+        print("Current URL before profile discovery:", current_url)
+
+        if "/search/results/people/" not in current_url:
+            print("EMPLOYEE SEARCH PAGE LOST")
+            print("Restoring currentCompany employee search...")
+
+            recovery_url = (
+                "https://www.linkedin.com/search/results/people/"
+                "?origin=FACETED_SEARCH"
+                "&network=%5B%22F%22%5D"
+                "&currentCompany=%5B%22943057%22%5D"
+            )
+
+            print("Recovery URL:", recovery_url)
+
+            try:
+                self.page.goto(
+                    recovery_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                self.page.wait_for_timeout(5000)
+
+                current_url = self.page.url or ""
+
+                print(
+                    "URL after employee-search recovery:",
+                    current_url
+                )
+
+            except Exception as recovery_ex:
+                print(
+                    "EMPLOYEE SEARCH RECOVERY FAILED:",
+                    repr(recovery_ex)
+                )
+                return []
+
+            if "/search/results/people/" not in current_url:
+                print(
+                    "EMPLOYEE SEARCH RECOVERY VALIDATION FAILED"
+                )
+                print("Current URL:", current_url)
+                return []
+
+            print(
+                "EMPLOYEE SEARCH PAGE RESTORED SUCCESSFULLY"
+            )
+
+        else:
+            print(
+                "EMPLOYEE SEARCH PAGE ALREADY CONFIRMED"
+            )
+
+        print("=" * 60)
+        print("CONTINUING EMPLOYEE PROFILE DISCOVERY")
+        print("=" * 60)
+
         """Discover primary employee profile links from LinkedIn people search."""
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
