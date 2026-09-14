@@ -1013,788 +1013,150 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # LOCATION AUTOCOMPLETE DOM DIAGNOSTIC
-        #
-        # TEMPORARY DIAGNOSTIC ONLY.
-        #
-        # At this point "New Jersey" has been entered and LinkedIn
-        # has had time to render its autocomplete UI.
-        #
-        # Previous selectors found:
-        #   role="option" -> 0
-        #   exact text    -> 0
-        #
-        # Therefore do NOT guess another selector.
-        # Inspect the actual rendered DOM first.
-        #
-        # IMPORTANT:
-        # This diagnostic does NOT click, press Enter, or modify the
-        # location selection.
+        # SELECT LOCATION SUGGESTION
         # ------------------------------------------------------------
 
-        print("=" * 60)
-        print("LOCATION AUTOCOMPLETE DOM DIAGNOSTIC")
-        print("=" * 60)
+        location_selected = False
+
+        requested_location = location.strip()
+        expected_location = f"{requested_location}, United States"
 
         print(
-            "Requested location:",
-            location
+            "Selecting LinkedIn location option:",
+            expected_location
         )
 
-        try:
-
-            diagnostic = self.page.locator(
-                "body"
-            ).evaluate(
-                """(body, requested) => {
-
-                    const visible = (el) => {
-
-                        const style = window.getComputedStyle(el);
-                        const rect = el.getBoundingClientRect();
-
-                        return (
-                            style.display !== "none" &&
-                            style.visibility !== "hidden" &&
-                            parseFloat(style.opacity || "1") > 0 &&
-                            rect.width > 0 &&
-                            rect.height > 0
-                        );
-                    };
-
-                    const normalize = (value) => {
-
-                        return (value || "")
-                            .replace(/\\s+/g, " ")
-                            .trim();
-                    };
-
-                    const result = [];
-
-                    const elements = body.querySelectorAll("*");
-
-                    for (const el of elements) {
-
-                        if (!visible(el)) {
-                            continue;
-                        }
-
-                        const text = normalize(
-                            el.innerText ||
-                            el.textContent ||
-                            ""
-                        );
-
-                        const aria = normalize(
-                            el.getAttribute("aria-label") ||
-                            ""
-                        );
-
-                        const placeholder = normalize(
-                            el.getAttribute("placeholder") ||
-                            ""
-                        );
-
-                        const role = normalize(
-                            el.getAttribute("role") ||
-                            ""
-                        );
-
-                        const dataTest = normalize(
-                            el.getAttribute("data-test-id") ||
-                            ""
-                        );
-
-                        const dataControl = normalize(
-                            el.getAttribute("data-control-name") ||
-                            ""
-                        );
-
-                        const className = normalize(
-                            typeof el.className === "string"
-                                ? el.className
-                                : ""
-                        );
-
-                        const tag = (
-                            el.tagName || ""
-                        ).toLowerCase();
-
-                        const lowerText = text.toLowerCase();
-                        const lowerRequested =
-                            String(requested || "").toLowerCase();
-
-                        const relevant =
-                            lowerText.includes(lowerRequested) ||
-                            lowerText.includes("jersey") ||
-                            aria.toLowerCase().includes("jersey") ||
-                            placeholder.toLowerCase().includes("jersey") ||
-                            role.toLowerCase().includes("option") ||
-                            role.toLowerCase().includes("listbox") ||
-                            dataTest.toLowerCase().includes("location") ||
-                            dataControl.toLowerCase().includes("location");
-
-                        if (!relevant) {
-                            continue;
-                        }
-
-                        result.push({
-                            tag: tag,
-                            text: text.slice(0, 500),
-                            aria: aria.slice(0, 300),
-                            placeholder: placeholder.slice(0, 300),
-                            role: role,
-                            dataTest: dataTest,
-                            dataControl: dataControl,
-                            className: className.slice(0, 500)
-                        });
-                    }
-
-                    return result;
-                }""",
-                location
-            )
-
-            print(
-                "Relevant visible DOM elements:",
-                len(diagnostic)
-            )
-
-            for index, item in enumerate(diagnostic):
-
-                print("-" * 60)
-
-                print(
-                    f"DOM ITEM {index}"
-                )
-
-                print(
-                    "TAG:",
-                    item.get("tag", "")
-                )
-
-                print(
-                    "TEXT:",
-                    repr(item.get("text", ""))
-                )
-
-                print(
-                    "ARIA:",
-                    repr(item.get("aria", ""))
-                )
-
-                print(
-                    "PLACEHOLDER:",
-                    repr(item.get("placeholder", ""))
-                )
-
-                print(
-                    "ROLE:",
-                    repr(item.get("role", ""))
-                )
-
-                print(
-                    "DATA-TEST-ID:",
-                    repr(item.get("dataTest", ""))
-                )
-
-                print(
-                    "DATA-CONTROL-NAME:",
-                    repr(item.get("dataControl", ""))
-                )
-
-                print(
-                    "CLASS:",
-                    repr(item.get("className", ""))
-                )
-
-            # --------------------------------------------------------
-            # Additional focused diagnostic:
-            # inspect visible inputs and their surrounding parents.
-            # --------------------------------------------------------
-
-            print("=" * 60)
-            print("VISIBLE INPUT DIAGNOSTIC")
-            print("=" * 60)
-
-            inputs = self.page.locator(
-                "input:visible"
-            )
-
-            input_count = inputs.count()
-
-            print(
-                "Visible inputs:",
-                input_count
-            )
-
-            for i in range(input_count):
-
-                try:
-
-                    inp = inputs.nth(i)
-
-                    info = inp.evaluate(
-                        """el => {
-
-                            const parent = el.parentElement;
-
-                            return {
-                                value: el.value || "",
-                                placeholder:
-                                    el.getAttribute("placeholder") || "",
-                                aria:
-                                    el.getAttribute("aria-label") || "",
-                                role:
-                                    el.getAttribute("role") || "",
-                                className:
-                                    typeof el.className === "string"
-                                        ? el.className
-                                        : "",
-                                parentTag:
-                                    parent
-                                        ? parent.tagName.toLowerCase()
-                                        : "",
-                                parentText:
-                                    parent
-                                        ? (
-                                            parent.innerText ||
-                                            ""
-                                        ).replace(/\\s+/g, " ").trim()
-                                        .slice(0, 500)
-                                        : "",
-                                parentClass:
-                                    parent
-                                        ? (
-                                            typeof parent.className === "string"
-                                                ? parent.className
-                                                : ""
-                                        )
-                                        : ""
-                            };
-                        }"""
-                    )
-
-                    print("-" * 60)
-                    print(
-                        f"INPUT {i}:",
-                        info
-                    )
-
-                except Exception as ex:
-
-                    print(
-                        f"Input {i} diagnostic failed:",
-                        repr(ex)
-                    )
-
-        except Exception as ex:
-
-            print(
-                "LOCATION DOM DIAGNOSTIC FAILED:",
-                repr(ex)
-            )
-
-        print("=" * 60)
-        print(
-            "END LOCATION AUTOCOMPLETE DOM DIAGNOSTIC"
-        )
-        print("=" * 60)
-
-        # ------------------------------------------------------------
-        # SAFE STOP.
+        # LinkedIn's rendered DOM was confirmed to contain:
         #
-        # Do not attempt ArrowDown, Enter, or any guessed click.
-        # We need the GitHub Actions DOM output first.
-        # ------------------------------------------------------------
+        #   role="option"
+        #   text="New Jersey, United States"
+        #
+        # Therefore click the actual autocomplete option.
+        # Do NOT use ArrowDown + Enter.
+        location_option = self.page.get_by_role(
+            "option",
+            name=expected_location,
+            exact=True
+        )
+
+        option_count = location_option.count()
 
         print(
-            "SAFE STOP: Diagnostic run only."
+            "Matching location options found:",
+            option_count
         )
 
-        return False
+        if option_count > 0:
 
-        # ------------------------------------------------------------
-        # SELECT LOCATION SUGGESTION - ARROWDOWN DIAGNOSTIC ONLY
-        #
-        # DO NOT PRESS ENTER.
-        #
-        # We already proved that:
-        #   ArrowDown + Enter
-        #
-        # can redirect LinkedIn to:
-        #   /ssr-login/remember-me-auto-login
-        #
-        # We also proved that immediately after typing the location,
-        # normal visible role=option/text locators find nothing.
-        #
-        # This diagnostic therefore presses ArrowDown ONLY and then
-        # inspects the resulting DOM/focus state.
-        # ------------------------------------------------------------
+            try:
 
-        print(
-            "============================================================"
-        )
-        print(
-            "ARROWDOWN LOCATION AUTOCOMPLETE DIAGNOSTIC"
-        )
-        print(
-            "============================================================"
-        )
+                location_option.first.scroll_into_view_if_needed()
 
-        try:
-            location_input = self.page.locator(
-                "input[placeholder='Add a location']:visible"
-            ).last
-
-            if location_input.count() == 0:
-                print(
-                    "ERROR: Visible Add a location input not found."
+                location_option.first.click(
+                    timeout=15000
                 )
-                return False
 
-            print(
-                "Clicking Add a location input before ArrowDown..."
-            )
-
-            location_input.click(
-                timeout=10000
-            )
-
-            self.page.wait_for_timeout(
-                500
-            )
-
-            print(
-                "Pressing ArrowDown ONLY..."
-            )
-
-            self.page.keyboard.press(
-                "ArrowDown"
-            )
-
-            self.page.wait_for_timeout(
-                1000
-            )
-
-        except Exception as ex:
-            print(
-                "ERROR during ArrowDown diagnostic:",
-                repr(ex)
-            )
-            return False
-
-        # ------------------------------------------------------------
-        # FOCUSED ELEMENT
-        # ------------------------------------------------------------
-
-        try:
-            focused = self.page.locator(
-                ":focus"
-            )
-
-            if focused.count() > 0:
+                location_selected = True
 
                 print(
-                    "------------------------------------------------------------"
-                )
-                print(
-                    "FOCUSED ELEMENT AFTER ARROWDOWN"
-                )
-                print(
-                    "------------------------------------------------------------"
+                    "Location option clicked successfully."
                 )
 
-                focused_info = focused.first.evaluate(
-                    """el => ({
-                        tag: el.tagName,
-                        id: el.id || "",
-                        role: el.getAttribute("role") || "",
-                        ariaExpanded: el.getAttribute("aria-expanded") || "",
-                        ariaControls: el.getAttribute("aria-controls") || "",
-                        ariaActiveDescendant: el.getAttribute("aria-activedescendant") || "",
-                        ariaAutocomplete: el.getAttribute("aria-autocomplete") || "",
-                        placeholder: el.getAttribute("placeholder") || "",
-                        value: el.value || "",
-                        text: (el.innerText || "").trim()
-                    })"""
-                )
+            except Exception as ex:
 
                 print(
-                    "Focused element:",
-                    focused_info
+                    "Location option click failed:",
+                    repr(ex)
                 )
 
-            else:
+        # Controlled fallback against the same confirmed role=option DOM.
+        if not location_selected:
+
+            try:
+
+                visible_options = self.page.locator(
+                    "[role='option']:visible"
+                )
+
+                visible_count = visible_options.count()
+
                 print(
-                    "No :focus element found."
+                    "Visible location options:",
+                    visible_count
                 )
 
-        except Exception as ex:
-            print(
-                "Focused-element diagnostic failed:",
-                repr(ex)
-            )
+                for i in range(visible_count):
 
-        # ------------------------------------------------------------
-        # LOCATION INPUT ARIA STATE
-        # ------------------------------------------------------------
+                    try:
 
-        try:
-            location_inputs = self.page.locator(
-                "input[placeholder='Add a location']:visible"
-            )
+                        option = visible_options.nth(i)
 
-            print(
-                "------------------------------------------------------------"
-            )
-            print(
-                "LOCATION INPUT AFTER ARROWDOWN"
-            )
-            print(
-                "------------------------------------------------------------"
-            )
-
-            input_count = location_inputs.count()
-
-            print(
-                "Visible Add a location inputs:",
-                input_count
-            )
-
-            for i in range(input_count):
-
-                try:
-                    info = location_inputs.nth(i).evaluate(
-                        """el => ({
-                            id: el.id || "",
-                            role: el.getAttribute("role") || "",
-                            ariaExpanded: el.getAttribute("aria-expanded") || "",
-                            ariaControls: el.getAttribute("aria-controls") || "",
-                            ariaActiveDescendant: el.getAttribute("aria-activedescendant") || "",
-                            ariaAutocomplete: el.getAttribute("aria-autocomplete") || "",
-                            value: el.value || ""
-                        })"""
-                    )
-
-                    print(
-                        f"Location input {i}:",
-                        info
-                    )
-
-                except Exception as ex:
-                    print(
-                        f"Location input {i} diagnostic failed:",
-                        repr(ex)
-                    )
-
-        except Exception as ex:
-            print(
-                "Location-input diagnostic failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # POSSIBLE ACTIVE DESCENDANT
-        # ------------------------------------------------------------
-
-        try:
-
-            active_id = self.page.locator(
-                ":focus"
-            ).first.get_attribute(
-                "aria-activedescendant"
-            )
-
-            print(
-                "------------------------------------------------------------"
-            )
-            print(
-                "ACTIVE DESCENDANT"
-            )
-            print(
-                "------------------------------------------------------------"
-            )
-
-            print(
-                "aria-activedescendant:",
-                repr(active_id)
-            )
-
-            if active_id:
-
-                try:
-                    active = self.page.locator(
-                        f"#{active_id}"
-                    )
-
-                    print(
-                        "Active descendant count:",
-                        active.count()
-                    )
-
-                    if active.count() > 0:
-
-                        print(
-                            "Active descendant text:",
-                            repr(
-                                active.first.inner_text(
-                                    timeout=3000
-                                )
+                        option_text = (
+                            option.inner_text(
+                                timeout=2000
                             )
+                            .strip()
                         )
 
                         print(
-                            "Active descendant HTML:",
-                            active.first.evaluate(
-                                "(el) => el.outerHTML"
-                            )
+                            f"Location option {i}:",
+                            repr(option_text)
                         )
 
-                except Exception as ex:
-                    print(
-                        "Active descendant lookup failed:",
-                        repr(ex)
-                    )
-
-        except Exception as ex:
-            print(
-                "Active-descendant diagnostic failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # LISTBOX / OPTION / LIST ITEM DIAGNOSTIC
-        # ------------------------------------------------------------
-
-        try:
-
-            print(
-                "------------------------------------------------------------"
-            )
-            print(
-                "VISIBLE LIST / OPTION ELEMENTS AFTER ARROWDOWN"
-            )
-            print(
-                "------------------------------------------------------------"
-            )
-
-            selectors = [
-                "[role='listbox']:visible",
-                "[role='option']:visible",
-                "[role='listitem']:visible",
-                "li:visible",
-            ]
-
-            for selector in selectors:
-
-                try:
-
-                    elements = self.page.locator(
-                        selector
-                    )
-
-                    count = elements.count()
-
-                    print(
-                        f"Selector {selector!r}: {count}"
-                    )
-
-                    for i in range(
-                        min(count, 30)
-                    ):
-
-                        try:
-
-                            element = elements.nth(i)
-
-                            text_value = (
-                                element.inner_text(
-                                    timeout=2000
-                                )
-                                .strip()
-                            )
-
-                            if (
-                                "jersey" in text_value.lower()
-                                or
-                                "location" in text_value.lower()
-                                or
-                                selector != "[role='option']:visible"
-                            ):
-
-                                print(
-                                    f"  {selector} [{i}] "
-                                    f"text={text_value!r}"
-                                )
-
-                                try:
-                                    print(
-                                        "    HTML:",
-                                        element.evaluate(
-                                            "(el) => el.outerHTML"
-                                        )[:2000]
-                                    )
-                                except Exception:
-                                    pass
-
-                        except Exception as ex:
-                            print(
-                                f"  element {i} failed:",
-                                repr(ex)
-                            )
-
-                except Exception as ex:
-                    print(
-                        f"Selector diagnostic failed for "
-                        f"{selector!r}:",
-                        repr(ex)
-                    )
-
-        except Exception as ex:
-            print(
-                "List/option diagnostic failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # VISIBLE DOM TEXT CONTAINING NEW JERSEY
-        # ------------------------------------------------------------
-
-        try:
-
-            print(
-                "------------------------------------------------------------"
-            )
-            print(
-                "VISIBLE DOM ELEMENTS CONTAINING JERSEY"
-            )
-            print(
-                "------------------------------------------------------------"
-            )
-
-            jersey_elements = self.page.locator(
-                ":visible"
-            )
-
-            count = jersey_elements.count()
-
-            found = 0
-
-            for i in range(
-                min(count, 1000)
-            ):
-
-                try:
-
-                    element = jersey_elements.nth(i)
-
-                    text_value = (
-                        element.inner_text(
-                            timeout=1000
-                        )
-                        .strip()
-                    )
-
-                    if (
-                        "jersey" in text_value.lower()
-                        or
-                        "new jersey" in text_value.lower()
-                    ):
-
-                        tag = element.evaluate(
-                            "(el) => el.tagName.toLowerCase()"
-                        )
-
-                        if tag not in (
-                            "body",
-                            "html",
-                            "script",
-                            "style",
+                        if (
+                            option_text.lower()
+                            == expected_location.lower()
                         ):
 
-                            print(
-                                f"DOM JERSEY ITEM {found}: "
-                                f"<{tag}> "
-                                f"text={text_value[:500]!r}"
+                            option.scroll_into_view_if_needed()
+
+                            option.click(
+                                timeout=15000
                             )
 
-                            try:
-                                print(
-                                    "  HTML:",
-                                    element.evaluate(
-                                        "(el) => el.outerHTML"
-                                    )[:2000]
-                                )
-                            except Exception:
-                                pass
+                            location_selected = True
 
-                            found += 1
+                            print(
+                                "Location option clicked successfully via fallback."
+                            )
 
-                            if found >= 30:
-                                break
+                            break
 
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+
+                print(
+                    "Location option fallback failed:",
+                    repr(ex)
+                )
+
+        if not location_selected:
 
             print(
-                "Jersey-containing visible elements:",
-                found
-            )
-
-        except Exception as ex:
-            print(
-                "Jersey DOM diagnostic failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # SCREENSHOT
-        # ------------------------------------------------------------
-
-        try:
-
-            screenshot_path = (
-                "location_autocomplete_after_arrowdown.png"
-            )
-
-            self.page.screenshot(
-                path=screenshot_path,
-                full_page=False
+                "ERROR: Could not click the LinkedIn location autocomplete option."
             )
 
             print(
-                "SCREENSHOT SAVED:",
-                screenshot_path
+                "Requested location:",
+                requested_location
             )
 
-        except Exception as ex:
-            print(
-                "Screenshot failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # SAFE STOP
-        # ------------------------------------------------------------
+            return False
 
         print(
-            "============================================================"
-        )
-        print(
-            "SAFE STOP: ArrowDown diagnostic only."
-        )
-        print(
-            "NO ENTER WAS PRESSED."
-        )
-        print(
-            "NO SHOW RESULTS CLICKED."
-        )
-        print(
-            "============================================================"
+            "Location suggestion selected successfully."
         )
 
-        return False
+        # IMPORTANT:
+        # Do NOT press Enter.
+        #
+        # The previous GitHub run proved that Enter redirects LinkedIn
+        # to /ssr-login/remember-me-auto-login.
+        self.page.wait_for_timeout(
+            1000
+        )
 
         # ------------------------------------------------------------
         # VERIFY WE ARE STILL ON THE COMPANY PEOPLE SEARCH
