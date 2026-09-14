@@ -1196,71 +1196,60 @@ class CompanyPage(BasePage):
         # ------------------------------------------------------------
         # SHOW RESULTS
         #
-        # IMPORTANT:
+        # Use LinkedIn's visible "Show results" text.
         #
-        # The previous implementation found text "Show results",
-        # but clicking that text locator failed.
-        #
-        # Therefore we now target the actual BUTTON element.
+        # This is the mechanism used by the previously working
+        # implementation. Do not require role="button" because the
+        # current LinkedIn DOM does not expose it that way.
         # ------------------------------------------------------------
 
         print(
-            "Looking for Show results button..."
+            "Looking for Show results..."
         )
-
-        clicked_show_results = False
-
-        # ------------------------------------------------------------
-        # METHOD 1:
-        # Playwright semantic button locator
-        # ------------------------------------------------------------
 
         try:
 
-            show_button = self.page.get_by_role(
-                "button",
-                name=re.compile(
-                    r"^\s*Show\s+results\s*$",
-                    re.IGNORECASE
-                )
+            show_results = self.page.get_by_text(
+                "Show results",
+                exact=False
             )
 
-            count = show_button.count()
+            show_count = show_results.count()
 
             print(
-                "Role=button Show results count:",
-                count
+                "Show results controls found:",
+                show_count
             )
 
+            clicked_show_results = False
+
             for i in range(
-                count - 1,
+                show_count - 1,
                 -1,
                 -1
             ):
 
                 try:
 
-                    button = (
-                        show_button.nth(i)
-                    )
+                    candidate = show_results.nth(i)
 
-                    if not button.is_visible():
+                    if not candidate.is_visible():
                         continue
 
                     print(
-                        "Attempting semantic Show results button click..."
+                        "Clicking Show results..."
                     )
 
-                    button.scroll_into_view_if_needed()
+                    candidate.scroll_into_view_if_needed()
 
-                    button.click(
+                    candidate.click(
                         timeout=15000
                     )
 
                     clicked_show_results = True
 
                     print(
-                        "Show results button clicked successfully."
+                        "Show results clicked successfully."
                     )
 
                     break
@@ -1268,197 +1257,29 @@ class CompanyPage(BasePage):
                 except Exception as ex:
 
                     print(
-                        "Semantic Show results click failed:",
+                        "Show results candidate click failed:",
                         repr(ex)
                     )
+
+            if not clicked_show_results:
+
+                print(
+                    "ERROR: No visible Show results control "
+                    "could be clicked."
+                )
+
+                print(
+                    "Current URL:",
+                    self.page.url
+                )
+
+                return False
 
         except Exception as ex:
 
             print(
-                "Semantic Show results lookup failed:",
+                "ERROR finding Show results:",
                 repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # METHOD 2:
-        # Direct visible button filtering by text
-        # ------------------------------------------------------------
-
-        if not clicked_show_results:
-
-            try:
-
-                buttons = self.page.locator(
-                    "button:visible"
-                )
-
-                button_count = buttons.count()
-
-                print(
-                    "Visible buttons:",
-                    button_count
-                )
-
-                for i in range(
-                    button_count - 1,
-                    -1,
-                    -1
-                ):
-
-                    try:
-
-                        button = (
-                            buttons.nth(i)
-                        )
-
-                        button_text = (
-                            button.inner_text(
-                                timeout=2000
-                            )
-                            .strip()
-                        )
-
-                        normalized_text = (
-                            " ".join(
-                                button_text.split()
-                            )
-                        )
-
-                        print(
-                            f"Visible button {i}: "
-                            f"{normalized_text[:150]!r}"
-                        )
-
-                        if not re.fullmatch(
-                            r"Show\s+results",
-                            normalized_text,
-                            re.IGNORECASE
-                        ):
-                            continue
-
-                        print(
-                            "Found exact Show results button."
-                        )
-
-                        button.scroll_into_view_if_needed()
-
-                        button.click(
-                            timeout=15000
-                        )
-
-                        clicked_show_results = True
-
-                        print(
-                            "Direct Show results button click succeeded."
-                        )
-
-                        break
-
-                    except Exception as ex:
-
-                        print(
-                            f"Button {i} processing failed:",
-                            repr(ex)
-                        )
-
-            except Exception as ex:
-
-                print(
-                    "Visible-button inspection failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # METHOD 3:
-        # DOM button containing Show results
-        #
-        # This handles LinkedIn markup where the visible text is
-        # inside a nested span.
-        # ------------------------------------------------------------
-
-        if not clicked_show_results:
-
-            try:
-
-                nested_button = self.page.locator(
-                    "button:visible"
-                ).filter(
-                    has_text=re.compile(
-                        r"Show\s+results",
-                        re.IGNORECASE
-                    )
-                )
-
-                nested_count = (
-                    nested_button.count()
-                )
-
-                print(
-                    "Nested-text Show results buttons:",
-                    nested_count
-                )
-
-                for i in range(
-                    nested_count - 1,
-                    -1,
-                    -1
-                ):
-
-                    try:
-
-                        button = (
-                            nested_button.nth(i)
-                        )
-
-                        if not button.is_visible():
-                            continue
-
-                        print(
-                            "Attempting nested-text button click..."
-                        )
-
-                        button.scroll_into_view_if_needed()
-
-                        button.click(
-                            timeout=15000
-                        )
-
-                        clicked_show_results = True
-
-                        print(
-                            "Nested-text Show results click succeeded."
-                        )
-
-                        break
-
-                    except Exception as ex:
-
-                        print(
-                            "Nested-text button click failed:",
-                            repr(ex)
-                        )
-
-            except Exception as ex:
-
-                print(
-                    "Nested button lookup failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # FINAL FAILURE
-        # ------------------------------------------------------------
-
-        if not clicked_show_results:
-
-            print(
-                "ERROR: Could not safely click "
-                "the actual Show results button."
-            )
-
-            print(
-                "Current URL:",
-                self.page.url
             )
 
             return False
