@@ -853,108 +853,220 @@ class CompanyPage(BasePage):
             f"Applying location: {location}"
         )
 
-        # ------------------------------------------------------------
-        # SAFETY CHECK
-        #
-        # Location filtering must start from LinkedIn's people-search
-        # page. Never attempt to apply the filter from /feed/.
-        # ------------------------------------------------------------
-
-        starting_url = self.page.url or ""
-
         print("=" * 60)
         print("LOCATION FILTER - START")
         print("=" * 60)
+
+        starting_url = self.page.url or ""
+
         print(
             "URL before location filter:",
             starting_url
         )
 
-        if "/search/results/people/" not in starting_url:
+        # ------------------------------------------------------------
+        # SAFETY CHECK
+        #
+        # Location filtering is only valid from the authenticated
+        # LinkedIn company people-search page.
+        #
+        # Never attempt this operation from /feed/, /login/,
+        # /authwall/ or a generic search page.
+        # ------------------------------------------------------------
+
+        if "/search/results/people/" not in starting_url.lower():
+
             print(
                 "ERROR: Location filter started outside "
                 "the people-search page."
             )
+
+            return False
+
+        if "currentcompany=" not in starting_url.lower():
+
+            print(
+                "ERROR: People-search URL does not contain "
+                "currentCompany."
+            )
+
             return False
 
         # ------------------------------------------------------------
-        # Dismiss any blocking LinkedIn dialog.
+        # Dismiss only an unrelated blocking dialog if one exists.
+        #
+        # IMPORTANT:
+        # Do not blindly press Escape when the location dialog itself
+        # is open.
         # ------------------------------------------------------------
 
         try:
+
             dialogs = self.page.locator(
-                "dialog[open], [role='dialog']:visible"
+                "dialog[open]:visible, [role='dialog']:visible"
             )
 
-            if dialogs.count():
-                print(
-                    "Open LinkedIn dialog detected. "
-                    "Attempting to dismiss it..."
-                )
+            dialog_count = dialogs.count()
 
-                self.page.keyboard.press(
-                    "Escape"
-                )
+            print(
+                "Visible dialogs before Locations:",
+                dialog_count
+            )
 
-                self.page.wait_for_timeout(
-                    1000
-                )
+            for i in range(dialog_count):
 
-        except Exception:
-            pass
+                try:
+
+                    dialog = dialogs.nth(i)
+
+                    dialog_text = (
+                        dialog.inner_text(
+                            timeout=2000
+                        )
+                        .strip()
+                        .replace("\n", " ")
+                    )
+
+                    print(
+                        "Existing dialog:",
+                        dialog_text[:300]
+                    )
+
+                except Exception:
+                    pass
+
+        except Exception as ex:
+
+            print(
+                "Dialog inspection failed:",
+                repr(ex)
+            )
 
         # ------------------------------------------------------------
-        # Open Locations filter.
+        # OPEN LOCATIONS FILTER
+        #
+        # Do not use Locator.filter(visible=True).
+        # Playwright Python does not support that argument.
+        #
+        # Instead, inspect each matching element with is_visible().
         # ------------------------------------------------------------
 
         try:
+
             locations = self.page.get_by_text(
                 "Locations",
                 exact=True
-            ).filter(
-                visible=True
             )
 
-            if not locations.count():
+            location_count = locations.count()
+
+            print(
+                "Locations elements found:",
+                location_count
+            )
+
+            clicked_locations = False
+
+            for i in range(
+                location_count - 1,
+                -1,
+                -1
+            ):
+
+                try:
+
+                    candidate = locations.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    candidate.click(
+                        timeout=15000
+                    )
+
+                    clicked_locations = True
+
+                    print(
+                        "Locations filter opened."
+                    )
+
+                    break
+
+                except Exception as ex:
+
+                    print(
+                        "Locations candidate",
+                        i,
+                        "could not be clicked:",
+                        repr(ex)
+                    )
+
+            if not clicked_locations:
+
+                # Controlled fallback for LinkedIn DOM variants.
                 locations = self.page.get_by_text(
                     "Locations",
                     exact=False
-                ).filter(
-                    visible=True
                 )
 
-            if not locations.count():
+                location_count = locations.count()
+
+                for i in range(
+                    location_count - 1,
+                    -1,
+                    -1
+                ):
+
+                    try:
+
+                        candidate = locations.nth(i)
+
+                        if not candidate.is_visible():
+                            continue
+
+                        candidate.click(
+                            timeout=15000
+                        )
+
+                        clicked_locations = True
+
+                        print(
+                            "Locations filter opened "
+                            "using fallback text match."
+                        )
+
+                        break
+
+                    except Exception:
+                        continue
+
+            if not clicked_locations:
+
                 print(
-                    "ERROR: Visible Locations filter not found."
+                    "ERROR: Could not safely open Locations filter."
                 )
+
                 return False
 
-            locations.last.click(
-                timeout=15000
-            )
-
-            print(
-                "Locations filter opened."
-            )
-
         except Exception as ex:
+
             print(
-                "Locations filter click failed:",
+                "Locations filter discovery failed:",
                 repr(ex)
             )
+
             return False
 
-        self.page.wait_for_timeout(
-            2000
-        )
+        self.page.wait_for_timeout(1500)
 
         # ------------------------------------------------------------
-        # Find the location input.
-        # Keep the existing behavior of using the last visible
-        # input because LinkedIn renders several search/filter inputs.
+        # LOCATION INPUT
+        #
+        # Use only visible inputs.
         # ------------------------------------------------------------
 
         try:
+
             inputs = self.page.locator(
                 "input:visible"
             )
@@ -967,9 +1079,11 @@ class CompanyPage(BasePage):
             )
 
             if input_count == 0:
+
                 print(
                     "ERROR: No visible location input found."
                 )
+
                 return False
 
             location_box = inputs.last
@@ -984,69 +1098,293 @@ class CompanyPage(BasePage):
             )
 
         except Exception as ex:
+
             print(
                 "Location input failed:",
                 repr(ex)
             )
+
             return False
 
-        self.page.wait_for_timeout(
-            2000
-        )
+        # Allow LinkedIn's suggestion list to render.
+        self.page.wait_for_timeout(2500)
 
         # ------------------------------------------------------------
-        # Select the LinkedIn location suggestion.
+        # SELECT LOCATION SUGGESTION
+        #
+        # THIS IS THE CRITICAL FIX.
+        #
+        # Do NOT use:
+        #
+        #     ArrowDown
+        #     Enter
+        #
+        # because Enter can submit/close the LinkedIn filter dialog
+        # before Show results is clicked.
+        #
+        # Instead, click the actual visible suggestion.
         # ------------------------------------------------------------
+
+        suggestion_clicked = False
 
         try:
-            self.page.keyboard.press(
-                "ArrowDown"
+
+            # First try semantic listbox options.
+            options = self.page.locator(
+                "[role='option']:visible"
             )
 
-            self.page.keyboard.press(
-                "Enter"
-            )
+            option_count = options.count()
 
             print(
-                "Location suggestion selected."
+                "Visible location options:",
+                option_count
             )
+
+            requested_location = (
+                location.strip().lower()
+            )
+
+            for i in range(
+                option_count
+            ):
+
+                try:
+
+                    option = options.nth(i)
+
+                    option_text = (
+                        option.inner_text(
+                            timeout=2000
+                        )
+                        .strip()
+                        .replace("\n", " ")
+                    )
+
+                    print(
+                        "Location option:",
+                        option_text[:300]
+                    )
+
+                    if (
+                        option_text.lower()
+                        == requested_location
+                        or requested_location
+                        in option_text.lower()
+                    ):
+
+                        option.click(
+                            timeout=15000
+                        )
+
+                        suggestion_clicked = True
+
+                        print(
+                            "Location suggestion clicked:",
+                            option_text
+                        )
+
+                        break
+
+                except Exception:
+                    continue
 
         except Exception as ex:
+
             print(
-                "Location suggestion selection failed:",
+                "Location option inspection failed:",
                 repr(ex)
             )
-            return False
-
-        self.page.wait_for_timeout(
-            1000
-        )
 
         # ------------------------------------------------------------
-        # Click the ACTUAL visible Show results button.
+        # FALLBACK:
         #
-        # Do not use a page-wide text selector for this.
-        # LinkedIn can expose multiple "Show results" elements.
+        # Search visible exact text inside the active dialog.
+        # We still CLICK the suggestion. We never press Enter.
+        # ------------------------------------------------------------
+
+        if not suggestion_clicked:
+
+            try:
+
+                dialogs = self.page.locator(
+                    "dialog[open]:visible, [role='dialog']:visible"
+                )
+
+                dialog_count = dialogs.count()
+
+                print(
+                    "Visible dialogs while locating "
+                    "location suggestion:",
+                    dialog_count
+                )
+
+                requested_location = (
+                    location.strip().lower()
+                )
+
+                for dialog_index in range(
+                    dialog_count - 1,
+                    -1,
+                    -1
+                ):
+
+                    try:
+
+                        dialog = dialogs.nth(
+                            dialog_index
+                        )
+
+                        matches = dialog.get_by_text(
+                            location,
+                            exact=True
+                        )
+
+                        match_count = matches.count()
+
+                        for i in range(
+                            match_count - 1,
+                            -1,
+                            -1
+                        ):
+
+                            try:
+
+                                match = matches.nth(i)
+
+                                if not match.is_visible():
+                                    continue
+
+                                match.click(
+                                    timeout=15000
+                                )
+
+                                suggestion_clicked = True
+
+                                print(
+                                    "Location suggestion clicked "
+                                    "inside active dialog."
+                                )
+
+                                break
+
+                            except Exception:
+                                continue
+
+                        if suggestion_clicked:
+                            break
+
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+
+                print(
+                    "Dialog location suggestion fallback failed:",
+                    repr(ex)
+                )
+
+        if not suggestion_clicked:
+
+            # Last controlled fallback: visible text anywhere,
+            # but still require an actual click.
+            try:
+
+                matches = self.page.get_by_text(
+                    location,
+                    exact=True
+                )
+
+                match_count = matches.count()
+
+                print(
+                    "Exact location text matches:",
+                    match_count
+                )
+
+                for i in range(
+                    match_count - 1,
+                    -1,
+                    -1
+                ):
+
+                    try:
+
+                        match = matches.nth(i)
+
+                        if not match.is_visible():
+                            continue
+
+                        match.click(
+                            timeout=15000
+                        )
+
+                        suggestion_clicked = True
+
+                        print(
+                            "Location suggestion clicked "
+                            "using exact-text fallback."
+                        )
+
+                        break
+
+                    except Exception:
+                        continue
+
+            except Exception as ex:
+
+                print(
+                    "Exact location fallback failed:",
+                    repr(ex)
+                )
+
+        if not suggestion_clicked:
+
+            print(
+                "ERROR: Could not safely select the "
+                "LinkedIn location suggestion."
+            )
+
+            print(
+                "Current URL:",
+                self.page.url
+            )
+
+            return False
+
+        # IMPORTANT:
+        # Do not press Enter here.
+        self.page.wait_for_timeout(1000)
+
+        # ------------------------------------------------------------
+        # SHOW RESULTS
+        #
+        # Search ONLY the active dialog first.
+        # Match the actual button text exactly.
         # ------------------------------------------------------------
 
         show_results_clicked = False
 
         try:
+
             dialogs = self.page.locator(
                 "dialog[open]:visible, [role='dialog']:visible"
             )
 
-            if dialogs.count():
+            dialog_count = dialogs.count()
 
-                print(
-                    "Searching active dialog for Show results..."
-                )
+            print(
+                "Visible dialogs before Show results:",
+                dialog_count
+            )
 
-                for dialog_index in range(
-                    dialogs.count() - 1,
-                    -1,
-                    -1
-                ):
+            for dialog_index in range(
+                dialog_count - 1,
+                -1,
+                -1
+            ):
+
+                try:
 
                     dialog = dialogs.nth(
                         dialog_index
@@ -1056,32 +1394,35 @@ class CompanyPage(BasePage):
                         "button:visible"
                     )
 
+                    button_count = buttons.count()
+
                     for button_index in range(
-                        buttons.count() - 1,
+                        button_count - 1,
                         -1,
                         -1
                     ):
 
-                        button = buttons.nth(
-                            button_index
-                        )
-
                         try:
+
+                            button = buttons.nth(
+                                button_index
+                            )
+
                             button_text = (
                                 button.inner_text(
                                     timeout=2000
                                 )
                                 .strip()
-                                .replace(
-                                    "\n",
-                                    " "
-                                )
+                                .replace("\n", " ")
                             )
 
-                            if button_text.lower() == "show results":
+                            if (
+                                button_text.lower()
+                                == "show results"
+                            ):
 
                                 print(
-                                    "Found Show results button "
+                                    "Found Show results "
                                     "inside active dialog."
                                 )
 
@@ -1103,52 +1444,62 @@ class CompanyPage(BasePage):
                     if show_results_clicked:
                         break
 
+                except Exception:
+                    continue
+
         except Exception as ex:
+
             print(
-                "Dialog Show results discovery failed:",
+                "Active dialog Show results inspection failed:",
                 repr(ex)
             )
 
         # ------------------------------------------------------------
-        # Controlled fallback:
-        # Search only visible BUTTON elements on the page.
+        # FALLBACK:
+        # Search visible button elements only.
         # ------------------------------------------------------------
 
         if not show_results_clicked:
 
-            print(
-                "Dialog button not found. "
-                "Using visible-button fallback."
-            )
-
             try:
+
                 buttons = self.page.locator(
                     "button:visible"
                 )
 
+                button_count = buttons.count()
+
+                print(
+                    "Visible buttons on page:",
+                    button_count
+                )
+
                 for i in range(
-                    buttons.count() - 1,
+                    button_count - 1,
                     -1,
                     -1
                 ):
 
-                    button = buttons.nth(
-                        i
-                    )
-
                     try:
+
+                        button = buttons.nth(i)
+
                         button_text = (
                             button.inner_text(
                                 timeout=2000
                             )
                             .strip()
-                            .replace(
-                                "\n",
-                                " "
-                            )
+                            .replace("\n", " ")
                         )
 
-                        if button_text.lower() == "show results":
+                        if (
+                            button_text.lower()
+                            == "show results"
+                        ):
+
+                            print(
+                                "Found visible Show results button."
+                            )
 
                             button.click(
                                 timeout=15000
@@ -1157,8 +1508,7 @@ class CompanyPage(BasePage):
                             show_results_clicked = True
 
                             print(
-                                "Clicked visible-button "
-                                "Show results."
+                                "Clicked visible Show results."
                             )
 
                             break
@@ -1167,8 +1517,9 @@ class CompanyPage(BasePage):
                         continue
 
             except Exception as ex:
+
                 print(
-                    "Visible-button Show results fallback failed:",
+                    "Visible Show results fallback failed:",
                     repr(ex)
                 )
 
@@ -1178,35 +1529,45 @@ class CompanyPage(BasePage):
                 "ERROR: Could not safely click Show results."
             )
 
+            print(
+                "Current URL:",
+                self.page.url
+            )
+
             return False
 
         # ------------------------------------------------------------
-        # Give LinkedIn time to update the people-search results.
+        # WAIT FOR LINKEDIN TO UPDATE RESULTS
         # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
             5000
         )
 
-        # ------------------------------------------------------------
-        # CRITICAL NAVIGATION VALIDATION
-        # ------------------------------------------------------------
-
         final_url = self.page.url or ""
 
         print("=" * 60)
         print("LOCATION FILTER NAVIGATION VALIDATION")
         print("=" * 60)
+
         print(
             "Show results clicked:",
             show_results_clicked
         )
+
         print(
             "URL after location filter:",
             final_url
         )
 
-        if "/search/results/people/" not in final_url:
+        # ------------------------------------------------------------
+        # FINAL SAFETY CHECK
+        #
+        # The filter operation is successful ONLY if LinkedIn
+        # remains on the company people-search page.
+        # ------------------------------------------------------------
+
+        if "/search/results/people/" not in final_url.lower():
 
             print(
                 "ERROR: LinkedIn left the employee "
@@ -1219,9 +1580,21 @@ class CompanyPage(BasePage):
 
             return False
 
+        if "currentcompany=" not in final_url.lower():
+
+            print(
+                "ERROR: Location filter removed currentCompany."
+            )
+
+            print(
+                "Location filter rejected."
+            )
+
+            return False
+
         print(
-            "Location filter remained on employee "
-            "people-search page."
+            "Location filter successfully remained on "
+            "the authenticated company people-search page."
         )
 
         print("=" * 60)
@@ -1229,151 +1602,71 @@ class CompanyPage(BasePage):
         return True
 
     def get_profiles(self, company="", location=""):
-        # ----------------------------------------------------
+
+        # ------------------------------------------------------------
         # EMPLOYEE SEARCH PAGE SAFETY GUARD
         #
-        # The employee search was successfully opened earlier
-        # in the workflow, but LinkedIn can sometimes return
-        # the Playwright page to /feed/ after filter actions.
+        # get_profiles() must NEVER attempt to recover the page by:
         #
-        # DO NOT use page.goto() here.
-        # Direct navigation to LinkedIn search redirected the
-        # authenticated GitHub Actions session to /uas/login.
+        #   - browser history
+        #   - page.goto()
+        #   - a hard-coded company ID
+        #   - generic people search
         #
-        # Instead, recover the already-established employee
-        # search page using browser history.
-        # ----------------------------------------------------
+        # The workflow must arrive here with the correct authenticated
+        # company people-search page already active.
+        # ------------------------------------------------------------
 
         current_url = self.page.url or ""
 
         print("=" * 60)
         print("EMPLOYEE SEARCH PAGE VALIDATION")
         print("=" * 60)
-        print("Current URL before profile discovery:", current_url)
+        print(
+            "Current URL before profile discovery:",
+            current_url
+        )
 
-        if "/search/results/people/" not in current_url:
-
-            print("EMPLOYEE SEARCH PAGE NOT ACTIVE")
-            print("Attempting browser-history recovery...")
-
-            try:
-                previous_url = current_url
-
-                self.page.go_back(
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-
-                self.page.wait_for_timeout(5000)
-
-                recovered_url = self.page.url or ""
-
-                print("Previous URL:", previous_url)
-                print("Recovered URL:", recovered_url)
-
-            except Exception as recovery_ex:
-                print(
-                    "EMPLOYEE SEARCH HISTORY RECOVERY FAILED:",
-                    repr(recovery_ex)
-                )
-                return []
-
-            if "/search/results/people/" not in recovered_url:
-
-                print(
-                    "EMPLOYEE SEARCH HISTORY RECOVERY VALIDATION FAILED"
-                )
-                print("Current URL:", recovered_url)
-
-                return []
+        if "/search/results/people/" not in current_url.lower():
 
             print(
-                "EMPLOYEE SEARCH PAGE RESTORED FROM BROWSER HISTORY"
+                "ERROR: EMPLOYEE SEARCH PAGE IS NOT ACTIVE."
             )
 
-        else:
             print(
-                "EMPLOYEE SEARCH PAGE ALREADY CONFIRMED"
+                "Profile discovery stopped safely."
             )
+
+            return []
+
+        if "currentcompany=" not in current_url.lower():
+
+            print(
+                "ERROR: EMPLOYEE SEARCH URL DOES NOT "
+                "CONTAIN currentCompany."
+            )
+
+            print(
+                "Profile discovery stopped safely."
+            )
+
+            return []
+
+        print(
+            "EMPLOYEE SEARCH PAGE CONFIRMED."
+        )
 
         print("=" * 60)
         print("CONTINUING EMPLOYEE PROFILE DISCOVERY")
         print("=" * 60)
 
-        # ----------------------------------------------------
-        # SAFETY GUARD:
-        # get_profiles() must never scan /in/ links while the
-        # browser is on LinkedIn's feed page.
+        # ------------------------------------------------------------
+        # The remainder of the existing profile-discovery logic is
+        # deliberately preserved.
         #
-        # The diagnostic run proved that the page was /feed/
-        # when profile discovery started, which exposed 33
-        # unrelated /in/ links from feed content.
-        # ----------------------------------------------------
+        # Only the unsafe recovery code above has been removed.
+        # ------------------------------------------------------------
 
-        current_url = self.page.url or ""
-
-        print("=" * 60)
-        print("EMPLOYEE SEARCH PAGE VALIDATION")
-        print("=" * 60)
-        print("Current URL before profile discovery:", current_url)
-
-        if "/search/results/people/" not in current_url:
-            print("EMPLOYEE SEARCH PAGE LOST")
-            print("Restoring currentCompany employee search...")
-
-            recovery_url = (
-                "https://www.linkedin.com/search/results/people/"
-                "?origin=FACETED_SEARCH"
-                "&network=%5B%22F%22%5D"
-                "&currentCompany=%5B%22943057%22%5D"
-            )
-
-            print("Recovery URL:", recovery_url)
-
-            try:
-                self.page.goto(
-                    recovery_url,
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-
-                self.page.wait_for_timeout(5000)
-
-                current_url = self.page.url or ""
-
-                print(
-                    "URL after employee-search recovery:",
-                    current_url
-                )
-
-            except Exception as recovery_ex:
-                print(
-                    "EMPLOYEE SEARCH RECOVERY FAILED:",
-                    repr(recovery_ex)
-                )
-                return []
-
-            if "/search/results/people/" not in current_url:
-                print(
-                    "EMPLOYEE SEARCH RECOVERY VALIDATION FAILED"
-                )
-                print("Current URL:", current_url)
-                return []
-
-            print(
-                "EMPLOYEE SEARCH PAGE RESTORED SUCCESSFULLY"
-            )
-
-        else:
-            print(
-                "EMPLOYEE SEARCH PAGE ALREADY CONFIRMED"
-            )
-
-        print("=" * 60)
-        print("CONTINUING EMPLOYEE PROFILE DISCOVERY")
-        print("=" * 60)
-
-        """Discover primary employee profile links from LinkedIn people search."""
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
@@ -1385,42 +1678,87 @@ class CompanyPage(BasePage):
         search_area = None
 
         try:
-            main = self.page.locator("main:visible").first
+
+            main = self.page.locator(
+                "main:visible"
+            ).first
+
             if main.count():
+
                 search_area = main
-                print("Visible LinkedIn main search area found.")
+
+                print(
+                    "Visible LinkedIn main search area found."
+                )
+
         except Exception as ex:
-            print("Visible main inspection failed:", repr(ex))
+
+            print(
+                "Visible main inspection failed:",
+                repr(ex)
+            )
 
         if search_area is None:
+
             for selector in (
                 "div.scaffold-finite-scroll__content:visible",
                 "div.search-results-container:visible",
                 "div[role='main']:visible",
             ):
+
                 try:
-                    candidate = self.page.locator(selector).first
+
+                    candidate = self.page.locator(
+                        selector
+                    ).first
+
                     if candidate.count():
+
                         search_area = candidate
-                        print("Using bounded search-area fallback:", selector)
+
+                        print(
+                            "Using bounded search-area fallback:",
+                            selector
+                        )
+
                         break
+
                 except Exception as ex:
-                    print("Search-area fallback failed:", selector, repr(ex))
+
+                    print(
+                        "Search-area fallback failed:",
+                        selector,
+                        repr(ex)
+                    )
 
         if search_area is None:
-            print("ERROR: No bounded LinkedIn search area found.")
+
+            print(
+                "ERROR: No bounded LinkedIn search area found."
+            )
+
             return profiles
 
         def canonical_profile_url(href):
+
             if not href:
                 return ""
 
             value = href.strip()
 
             if value.startswith("/"):
-                value = "https://www.linkedin.com" + value
 
-            value = value.split("?")[0].split("#")[0].rstrip("/")
+                value = (
+                    "https://www.linkedin.com"
+                    + value
+                )
+
+            value = (
+                value
+                .split("?")[0]
+                .split("#")[0]
+                .rstrip("/")
+            )
 
             if "/in/" not in value.lower():
                 return ""
@@ -1431,119 +1769,43 @@ class CompanyPage(BasePage):
         # PROFILE CANDIDATE DISCOVERY
         #
         # IMPORTANT:
-        # LinkedIn's rendered DOM does not always expose the profile
-        # result cards using stable entity-result/title selectors.
+        # Search ONLY inside the bounded employee-search area.
         #
-        # The previously working implementation successfully discovered
-        # the visible /in/ profile links from the bounded main search
-        # area. Restore that behavior here.
-        #
-        # We intentionally DO NOT validate company/location here.
-        # SearchWorkflowV2 opens each profile with LinkedInProfilePageV2
-        # and validates the actual profile company + location there.
+        # Never scan the entire LinkedIn document while looking for
+        # employee profiles.
         # ------------------------------------------------------------
 
         candidate_links = []
 
         try:
-            all_links = self.page.locator(
+
+            all_links = search_area.locator(
                 "a[href*='/in/']:visible"
             )
 
-            # LinkedIn may finish rendering employee result links
-            # after the location filter reports completion.
-            # Give the authenticated people-search page time to
-            # expose the visible /in/ links before counting them.
             try:
+
                 all_links.first.wait_for(
                     state="visible",
                     timeout=10000
                 )
+
             except Exception:
+
                 pass
 
             total_links = all_links.count()
 
-            print("=" * 60)
-            print("LINKEDIN /in/ DOM DIAGNOSTICS")
-            print("=" * 60)
-            print("Current URL:", self.page.url)
-            print("Visible /in/ links:", total_links)
-
-            for diag_i in range(total_links):
-                try:
-                    diag_link = all_links.nth(diag_i)
-
-                    diag_href = diag_link.get_attribute("href") or ""
-                    diag_text = (
-                        diag_link.inner_text(timeout=2000)
-                        .strip()
-                        .replace("\n", " | ")
-                    )
-
-                    print("-" * 60)
-                    print("LINK", diag_i + 1)
-                    print("HREF:", diag_href)
-                    print("TEXT:", diag_text[:500])
-
-                    parent = diag_link.locator("xpath=..").first
-
-                    parent_tag = parent.evaluate("el => el.tagName")
-                    parent_class = parent.get_attribute("class") or ""
-                    parent_id = parent.get_attribute("id") or ""
-                    parent_text = (
-                        parent.inner_text(timeout=2000)
-                        .strip()
-                        .replace("\n", " | ")
-                    )
-
-                    print("PARENT TAG:", parent_tag)
-                    print("PARENT CLASS:", parent_class[:500])
-                    print("PARENT ID:", parent_id)
-                    print("PARENT TEXT:", parent_text[:1200])
-
-                    grandparent = parent.locator("xpath=..").first
-
-                    grandparent_tag = grandparent.evaluate(
-                        "el => el.tagName"
-                    )
-                    grandparent_class = (
-                        grandparent.get_attribute("class") or ""
-                    )
-                    grandparent_text = (
-                        grandparent.inner_text(timeout=2000)
-                        .strip()
-                        .replace("\n", " | ")
-                    )
-
-                    print("GRANDPARENT TAG:", grandparent_tag)
-                    print(
-                        "GRANDPARENT CLASS:",
-                        grandparent_class[:500]
-                    )
-                    print(
-                        "GRANDPARENT TEXT:",
-                        grandparent_text[:2000]
-                    )
-
-                except Exception as diag_ex:
-                    print(
-                        "DIAGNOSTIC FAILED:",
-                        diag_i + 1,
-                        repr(diag_ex)
-                    )
-
-            print("=" * 60)
-            print("END LINKEDIN /in/ DOM DIAGNOSTICS")
-            print("=" * 60)
-
             print(
-                "Visible /in/ profile links found in bounded search area:",
+                "Visible /in/ links inside bounded "
+                "employee search area:",
                 total_links
             )
 
             for i in range(total_links):
+
                 try:
+
                     link = all_links.nth(i)
 
                     href = canonical_profile_url(
@@ -1553,47 +1815,63 @@ class CompanyPage(BasePage):
                     if not href:
                         continue
 
-                    # Keep the candidate discovery broad enough to preserve
-                    # the previously working LinkedIn result extraction.
                     candidate_links.append(
-                        (50, "bounded-visible-profile-link", link)
+                        (
+                            50,
+                            "bounded-visible-profile-link",
+                            link
+                        )
                     )
 
                 except Exception as ex:
+
                     print(
                         "Profile-link inspection failed:",
                         repr(ex)
                     )
 
         except Exception as ex:
+
             print(
                 "Bounded /in/ profile discovery failed:",
                 repr(ex)
             )
 
         # ------------------------------------------------------------
-        # Remove duplicate profile URLs while preserving discovery order.
+        # Remove duplicate profile URLs while preserving order.
         # ------------------------------------------------------------
 
         if candidate_links:
+
             unique_candidates = []
             candidate_seen = set()
 
             for score, source, link in candidate_links:
+
                 try:
+
                     href = canonical_profile_url(
                         link.get_attribute("href")
                     )
 
-                    if not href or href in candidate_seen:
+                    if (
+                        not href
+                        or href in candidate_seen
+                    ):
                         continue
 
                     candidate_seen.add(href)
+
                     unique_candidates.append(
-                        (score, source, link)
+                        (
+                            score,
+                            source,
+                            link
+                        )
                     )
 
                 except Exception as ex:
+
                     print(
                         "Candidate de-duplication failed:",
                         repr(ex)
@@ -1607,18 +1885,25 @@ class CompanyPage(BasePage):
         )
 
         if not candidate_links:
+
             print(
                 "ERROR: No reliable employee profile links identified."
             )
+
             return profiles
 
         for score, source, link in candidate_links:
+
             try:
+
                 clean_url = canonical_profile_url(
                     link.get_attribute("href")
                 )
 
-                if not clean_url or clean_url in seen:
+                if (
+                    not clean_url
+                    or clean_url in seen
+                ):
                     continue
 
                 seen.add(clean_url)
@@ -1626,12 +1911,17 @@ class CompanyPage(BasePage):
                 raw_name = ""
 
                 try:
+
                     raw_name = (
-                        link.inner_text(timeout=2000)
+                        link.inner_text(
+                            timeout=2000
+                        )
                         .strip()
                         .replace("\n", " ")
                     )
+
                 except Exception:
+
                     pass
 
                 profiles.append(
@@ -1644,12 +1934,25 @@ class CompanyPage(BasePage):
                 )
 
                 print("-" * 60)
-                print("Employee candidate:", raw_name)
-                print("Candidate URL:", clean_url)
-                print("Discovery source:", source)
-                print("Discovery score:", score)
+                print(
+                    "Employee candidate:",
+                    raw_name
+                )
+                print(
+                    "Candidate URL:",
+                    clean_url
+                )
+                print(
+                    "Discovery source:",
+                    source
+                )
+                print(
+                    "Discovery score:",
+                    score
+                )
 
             except Exception as ex:
+
                 print(
                     "Profile candidate processing failed:",
                     repr(ex)
