@@ -857,10 +857,30 @@ class CompanyPage(BasePage):
         print("LOCATION FILTER - START")
         print("=" * 60)
 
+        before_url = self.page.url or ""
+
         print(
             "URL before location filter:",
-            self.page.url
+            before_url
         )
+
+        # ------------------------------------------------------------
+        # SAFETY CHECK
+        # ------------------------------------------------------------
+
+        before_lower = before_url.lower()
+
+        if "/search/results/people/" not in before_lower:
+            print(
+                "ERROR: Location filter did not start on people-search."
+            )
+            return False
+
+        if "currentcompany=" not in before_lower:
+            print(
+                "ERROR: currentCompany missing before location filter."
+            )
+            return False
 
         # ------------------------------------------------------------
         # OPEN LOCATIONS
@@ -919,38 +939,286 @@ class CompanyPage(BasePage):
             return False
 
         # ------------------------------------------------------------
-        # SELECT LOCATION
+        # RESTORE THE PREVIOUSLY WORKING SELECTION MECHANISM
         # ------------------------------------------------------------
 
-        self.page.keyboard.press(
-            "ArrowDown"
+        print(
+            "Selecting location using ArrowDown + Enter..."
         )
 
-        self.page.keyboard.press(
-            "Enter"
+        try:
+
+            self.page.keyboard.press(
+                "ArrowDown"
+            )
+
+            self.page.keyboard.press(
+                "Enter"
+            )
+
+            self.page.wait_for_timeout(
+                1500
+            )
+
+        except Exception as ex:
+
+            print(
+                "ERROR selecting location:",
+                repr(ex)
+            )
+
+            return False
+
+        # ------------------------------------------------------------
+        # LINKEDIN MAY REDIRECT TO /feed/ AFTER ENTER
+        #
+        # The previous implementation incorrectly returned True here.
+        # Recover the SAME currentCompany people-search URL instead.
+        # ------------------------------------------------------------
+
+        after_selection_url = self.page.url or ""
+
+        print(
+            "URL after location selection:",
+            after_selection_url
         )
 
-        self.page.wait_for_timeout(
-            1000
-        )
+        after_lower = after_selection_url.lower()
+
+        if (
+            "/search/results/people/" not in after_lower
+            or "currentcompany=" not in after_lower
+        ):
+
+            print(
+                "WARNING: LinkedIn left the people-search page."
+            )
+
+            print(
+                "Attempting browser-back recovery..."
+            )
+
+            try:
+
+                self.page.go_back(
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
+
+                self.page.wait_for_timeout(
+                    3000
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Browser-back recovery failed:",
+                    repr(ex)
+                )
+
+            recovered_url = self.page.url or ""
+
+            print(
+                "URL after location recovery:",
+                recovered_url
+            )
+
+            recovered_lower = recovered_url.lower()
+
+            if (
+                "/search/results/people/" not in recovered_lower
+                or "currentcompany=" not in recovered_lower
+            ):
+
+                print(
+                    "Browser-back did not restore the company "
+                    "people-search page."
+                )
+
+                print(
+                    "Attempting direct recovery to the exact "
+                    "people-search URL captured before filtering..."
+                )
+
+                try:
+
+                    self.page.goto(
+                        before_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000
+                    )
+
+                    self.page.wait_for_timeout(
+                        3000
+                    )
+
+                except Exception as ex:
+
+                    print(
+                        "People-search URL recovery failed:",
+                        repr(ex)
+                    )
+
+                    return False
+
+                recovered_url = self.page.url or ""
+
+                print(
+                    "URL after direct people-search recovery:",
+                    recovered_url
+                )
+
+                recovered_lower = recovered_url.lower()
+
+                if (
+                    "/search/results/people/" not in recovered_lower
+                    or "currentcompany=" not in recovered_lower
+                ):
+
+                    print(
+                        "ERROR: Could not recover the company "
+                        "people-search page."
+                    )
+
+                    return False
 
         # ------------------------------------------------------------
         # SHOW RESULTS
         # ------------------------------------------------------------
 
+        print(
+            "Looking for Show results..."
+        )
+
         try:
 
-            self.page.get_by_text(
+            show_results = self.page.get_by_text(
                 "Show results",
                 exact=False
-            ).first.click()
+            )
 
-        except Exception:
+            show_count = show_results.count()
 
-            pass
+            print(
+                "Show results controls found:",
+                show_count
+            )
+
+            clicked_show_results = False
+
+            for i in range(show_count - 1, -1, -1):
+
+                try:
+
+                    candidate = show_results.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    print(
+                        "Clicking Show results..."
+                    )
+
+                    candidate.scroll_into_view_if_needed()
+
+                    candidate.click(
+                        timeout=15000
+                    )
+
+                    clicked_show_results = True
+
+                    print(
+                        "Show results clicked successfully."
+                    )
+
+                    break
+
+                except Exception as ex:
+
+                    print(
+                        "Show results candidate click failed:",
+                        repr(ex)
+                    )
+
+            if not clicked_show_results:
+
+                print(
+                    "ERROR: No visible Show results control "
+                    "could be clicked."
+                )
+
+                print(
+                    "Current URL:",
+                    self.page.url
+                )
+
+                return False
+
+        except Exception as ex:
+
+            print(
+                "ERROR finding Show results:",
+                repr(ex)
+            )
+
+            return False
+
+        # ------------------------------------------------------------
+        # WAIT FOR LINKEDIN TO APPLY FILTER
+        # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
             5000
+        )
+
+        print(
+            "URL after Show results:",
+            self.page.url
+        )
+
+        # ------------------------------------------------------------
+        # FINAL VALIDATION
+        # ------------------------------------------------------------
+
+        final_url = (
+            self.page.url or ""
+        ).lower()
+
+        if "/search/results/people/" not in final_url:
+
+            print(
+                "ERROR: Show results did not return "
+                "to people-search."
+            )
+
+            print(
+                "Final URL:",
+                self.page.url
+            )
+
+            return False
+
+        if "currentcompany=" not in final_url:
+
+            print(
+                "ERROR: currentCompany missing after "
+                "Show results."
+            )
+
+            print(
+                "Final URL:",
+                self.page.url
+            )
+
+            return False
+
+        print(
+            "Location filter applied successfully."
+        )
+
+        print(
+            "Final filtered URL:",
+            self.page.url
         )
 
         return True
