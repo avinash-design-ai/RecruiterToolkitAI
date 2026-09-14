@@ -1315,198 +1315,486 @@ class CompanyPage(BasePage):
         return False
 
         # ------------------------------------------------------------
-        # SELECT LOCATION SUGGESTION
+        # SELECT LOCATION SUGGESTION - ARROWDOWN DIAGNOSTIC ONLY
+        #
+        # DO NOT PRESS ENTER.
+        #
+        # We already proved that:
+        #   ArrowDown + Enter
+        #
+        # can redirect LinkedIn to:
+        #   /ssr-login/remember-me-auto-login
+        #
+        # We also proved that immediately after typing the location,
+        # normal visible role=option/text locators find nothing.
+        #
+        # This diagnostic therefore presses ArrowDown ONLY and then
+        # inspects the resulting DOM/focus state.
         # ------------------------------------------------------------
 
         print(
-            "Selecting LinkedIn location suggestion..."
+            "============================================================"
+        )
+        print(
+            "ARROWDOWN LOCATION AUTOCOMPLETE DIAGNOSTIC"
+        )
+        print(
+            "============================================================"
         )
 
-        location_selected = False
-
         try:
+            location_input = self.page.locator(
+                "input[placeholder='Add a location']:visible"
+            ).last
 
-            # --------------------------------------------------------
-            # METHOD 1:
-            # Click the exact visible ARIA option supplied by LinkedIn.
-            # --------------------------------------------------------
-
-            options = self.page.locator(
-                "[role='option']:visible"
-            )
-
-            option_count = options.count()
+            if location_input.count() == 0:
+                print(
+                    "ERROR: Visible Add a location input not found."
+                )
+                return False
 
             print(
-                "Visible autocomplete options:",
-                option_count
+                "Clicking Add a location input before ArrowDown..."
             )
 
-            for i in range(option_count):
+            location_input.click(
+                timeout=10000
+            )
 
-                try:
+            self.page.wait_for_timeout(
+                500
+            )
 
-                    option = options.nth(i)
+            print(
+                "Pressing ArrowDown ONLY..."
+            )
 
-                    option_text = (
-                        option.inner_text(
-                            timeout=2000
-                        )
-                        .strip()
-                    )
+            self.page.keyboard.press(
+                "ArrowDown"
+            )
 
-                    print(
-                        f"Autocomplete option {i}: "
-                        f"{option_text!r}"
-                    )
-
-                    if (
-                        option_text.lower()
-                        == location.strip().lower()
-                    ):
-
-                        print(
-                            "Clicking exact LinkedIn location "
-                            "autocomplete option:",
-                            option_text
-                        )
-
-                        option.scroll_into_view_if_needed()
-
-                        option.click(
-                            timeout=15000
-                        )
-
-                        location_selected = True
-                        break
-
-                except Exception as ex:
-
-                    print(
-                        f"Autocomplete option {i} "
-                        f"processing failed:",
-                        repr(ex)
-                    )
-
-                    continue
+            self.page.wait_for_timeout(
+                1000
+            )
 
         except Exception as ex:
-
             print(
-                "ARIA location-option lookup failed:",
+                "ERROR during ArrowDown diagnostic:",
+                repr(ex)
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # FOCUSED ELEMENT
+        # ------------------------------------------------------------
+
+        try:
+            focused = self.page.locator(
+                ":focus"
+            )
+
+            if focused.count() > 0:
+
+                print(
+                    "------------------------------------------------------------"
+                )
+                print(
+                    "FOCUSED ELEMENT AFTER ARROWDOWN"
+                )
+                print(
+                    "------------------------------------------------------------"
+                )
+
+                focused_info = focused.first.evaluate(
+                    """el => ({
+                        tag: el.tagName,
+                        id: el.id || "",
+                        role: el.getAttribute("role") || "",
+                        ariaExpanded: el.getAttribute("aria-expanded") || "",
+                        ariaControls: el.getAttribute("aria-controls") || "",
+                        ariaActiveDescendant: el.getAttribute("aria-activedescendant") || "",
+                        ariaAutocomplete: el.getAttribute("aria-autocomplete") || "",
+                        placeholder: el.getAttribute("placeholder") || "",
+                        value: el.value || "",
+                        text: (el.innerText || "").trim()
+                    })"""
+                )
+
+                print(
+                    "Focused element:",
+                    focused_info
+                )
+
+            else:
+                print(
+                    "No :focus element found."
+                )
+
+        except Exception as ex:
+            print(
+                "Focused-element diagnostic failed:",
                 repr(ex)
             )
 
         # ------------------------------------------------------------
-        # METHOD 2:
-        # Controlled text fallback.
-        #
-        # LinkedIn sometimes renders the suggestion without
-        # role='option'. In that case find a visible exact-text
-        # element matching the requested location.
-        #
-        # The input itself is explicitly excluded.
+        # LOCATION INPUT ARIA STATE
         # ------------------------------------------------------------
 
-        if not location_selected:
+        try:
+            location_inputs = self.page.locator(
+                "input[placeholder='Add a location']:visible"
+            )
 
-            try:
+            print(
+                "------------------------------------------------------------"
+            )
+            print(
+                "LOCATION INPUT AFTER ARROWDOWN"
+            )
+            print(
+                "------------------------------------------------------------"
+            )
 
-                print(
-                    "Trying visible exact-text location "
-                    "autocomplete fallback..."
-                )
+            input_count = location_inputs.count()
 
-                text_candidates = self.page.get_by_text(
-                    location,
-                    exact=True
-                )
+            print(
+                "Visible Add a location inputs:",
+                input_count
+            )
 
-                candidate_count = text_candidates.count()
+            for i in range(input_count):
 
-                print(
-                    "Exact location text candidates:",
-                    candidate_count
-                )
+                try:
+                    info = location_inputs.nth(i).evaluate(
+                        """el => ({
+                            id: el.id || "",
+                            role: el.getAttribute("role") || "",
+                            ariaExpanded: el.getAttribute("aria-expanded") || "",
+                            ariaControls: el.getAttribute("aria-controls") || "",
+                            ariaActiveDescendant: el.getAttribute("aria-activedescendant") || "",
+                            ariaAutocomplete: el.getAttribute("aria-autocomplete") || "",
+                            value: el.value || ""
+                        })"""
+                    )
 
-                for i in range(candidate_count):
+                    print(
+                        f"Location input {i}:",
+                        info
+                    )
 
-                    try:
+                except Exception as ex:
+                    print(
+                        f"Location input {i} diagnostic failed:",
+                        repr(ex)
+                    )
 
-                        candidate = text_candidates.nth(i)
+        except Exception as ex:
+            print(
+                "Location-input diagnostic failed:",
+                repr(ex)
+            )
 
-                        if not candidate.is_visible():
+        # ------------------------------------------------------------
+        # POSSIBLE ACTIVE DESCENDANT
+        # ------------------------------------------------------------
 
-                            continue
+        try:
 
-                        tag = (
-                            candidate.evaluate(
-                                "(el) => el.tagName.toLowerCase()"
+            active_id = self.page.locator(
+                ":focus"
+            ).first.get_attribute(
+                "aria-activedescendant"
+            )
+
+            print(
+                "------------------------------------------------------------"
+            )
+            print(
+                "ACTIVE DESCENDANT"
+            )
+            print(
+                "------------------------------------------------------------"
+            )
+
+            print(
+                "aria-activedescendant:",
+                repr(active_id)
+            )
+
+            if active_id:
+
+                try:
+                    active = self.page.locator(
+                        f"#{active_id}"
+                    )
+
+                    print(
+                        "Active descendant count:",
+                        active.count()
+                    )
+
+                    if active.count() > 0:
+
+                        print(
+                            "Active descendant text:",
+                            repr(
+                                active.first.inner_text(
+                                    timeout=3000
+                                )
                             )
-                            or ""
-                        ).lower()
-
-                        if tag == "input":
-
-                            continue
+                        )
 
                         print(
-                            "Clicking visible exact location "
-                            "autocomplete text:",
-                            location
+                            "Active descendant HTML:",
+                            active.first.evaluate(
+                                "(el) => el.outerHTML"
+                            )
                         )
 
-                        candidate.scroll_into_view_if_needed()
+                except Exception as ex:
+                    print(
+                        "Active descendant lookup failed:",
+                        repr(ex)
+                    )
 
-                        candidate.click(
-                            timeout=15000
-                        )
-
-                        location_selected = True
-                        break
-
-                    except Exception as ex:
-
-                        print(
-                            f"Location text candidate {i} "
-                            f"processing failed:",
-                            repr(ex)
-                        )
-
-                        continue
-
-            except Exception as ex:
-
-                print(
-                    "Exact-text location fallback failed:",
-                    repr(ex)
-                )
+        except Exception as ex:
+            print(
+                "Active-descendant diagnostic failed:",
+                repr(ex)
+            )
 
         # ------------------------------------------------------------
-        # FAIL CLOSED
+        # LISTBOX / OPTION / LIST ITEM DIAGNOSTIC
         # ------------------------------------------------------------
 
-        if not location_selected:
+        try:
 
             print(
-                "ERROR: Could not click the actual LinkedIn "
-                "location autocomplete option."
+                "------------------------------------------------------------"
+            )
+            print(
+                "VISIBLE LIST / OPTION ELEMENTS AFTER ARROWDOWN"
+            )
+            print(
+                "------------------------------------------------------------"
+            )
+
+            selectors = [
+                "[role='listbox']:visible",
+                "[role='option']:visible",
+                "[role='listitem']:visible",
+                "li:visible",
+            ]
+
+            for selector in selectors:
+
+                try:
+
+                    elements = self.page.locator(
+                        selector
+                    )
+
+                    count = elements.count()
+
+                    print(
+                        f"Selector {selector!r}: {count}"
+                    )
+
+                    for i in range(
+                        min(count, 30)
+                    ):
+
+                        try:
+
+                            element = elements.nth(i)
+
+                            text_value = (
+                                element.inner_text(
+                                    timeout=2000
+                                )
+                                .strip()
+                            )
+
+                            if (
+                                "jersey" in text_value.lower()
+                                or
+                                "location" in text_value.lower()
+                                or
+                                selector != "[role='option']:visible"
+                            ):
+
+                                print(
+                                    f"  {selector} [{i}] "
+                                    f"text={text_value!r}"
+                                )
+
+                                try:
+                                    print(
+                                        "    HTML:",
+                                        element.evaluate(
+                                            "(el) => el.outerHTML"
+                                        )[:2000]
+                                    )
+                                except Exception:
+                                    pass
+
+                        except Exception as ex:
+                            print(
+                                f"  element {i} failed:",
+                                repr(ex)
+                            )
+
+                except Exception as ex:
+                    print(
+                        f"Selector diagnostic failed for "
+                        f"{selector!r}:",
+                        repr(ex)
+                    )
+
+        except Exception as ex:
+            print(
+                "List/option diagnostic failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # VISIBLE DOM TEXT CONTAINING NEW JERSEY
+        # ------------------------------------------------------------
+
+        try:
+
+            print(
+                "------------------------------------------------------------"
+            )
+            print(
+                "VISIBLE DOM ELEMENTS CONTAINING JERSEY"
+            )
+            print(
+                "------------------------------------------------------------"
+            )
+
+            jersey_elements = self.page.locator(
+                ":visible"
+            )
+
+            count = jersey_elements.count()
+
+            found = 0
+
+            for i in range(
+                min(count, 1000)
+            ):
+
+                try:
+
+                    element = jersey_elements.nth(i)
+
+                    text_value = (
+                        element.inner_text(
+                            timeout=1000
+                        )
+                        .strip()
+                    )
+
+                    if (
+                        "jersey" in text_value.lower()
+                        or
+                        "new jersey" in text_value.lower()
+                    ):
+
+                        tag = element.evaluate(
+                            "(el) => el.tagName.toLowerCase()"
+                        )
+
+                        if tag not in (
+                            "body",
+                            "html",
+                            "script",
+                            "style",
+                        ):
+
+                            print(
+                                f"DOM JERSEY ITEM {found}: "
+                                f"<{tag}> "
+                                f"text={text_value[:500]!r}"
+                            )
+
+                            try:
+                                print(
+                                    "  HTML:",
+                                    element.evaluate(
+                                        "(el) => el.outerHTML"
+                                    )[:2000]
+                                )
+                            except Exception:
+                                pass
+
+                            found += 1
+
+                            if found >= 30:
+                                break
+
+                except Exception:
+                    continue
+
+            print(
+                "Jersey-containing visible elements:",
+                found
+            )
+
+        except Exception as ex:
+            print(
+                "Jersey DOM diagnostic failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # SCREENSHOT
+        # ------------------------------------------------------------
+
+        try:
+
+            screenshot_path = (
+                "location_autocomplete_after_arrowdown.png"
+            )
+
+            self.page.screenshot(
+                path=screenshot_path,
+                full_page=False
             )
 
             print(
-                "Requested location:",
-                location
+                "SCREENSHOT SAVED:",
+                screenshot_path
             )
 
-            return False
+        except Exception as ex:
+            print(
+                "Screenshot failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # SAFE STOP
+        # ------------------------------------------------------------
 
         print(
-            "Location suggestion selected."
+            "============================================================"
+        )
+        print(
+            "SAFE STOP: ArrowDown diagnostic only."
+        )
+        print(
+            "NO ENTER WAS PRESSED."
+        )
+        print(
+            "NO SHOW RESULTS CLICKED."
+        )
+        print(
+            "============================================================"
         )
 
-        self.page.wait_for_timeout(
-            1000
-        )
+        return False
 
         # ------------------------------------------------------------
         # VERIFY WE ARE STILL ON THE COMPANY PEOPLE SEARCH
