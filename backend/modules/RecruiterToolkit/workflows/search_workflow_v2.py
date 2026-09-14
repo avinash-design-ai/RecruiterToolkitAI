@@ -65,7 +65,7 @@ class SearchWorkflowV2:
 
         # LinkedInProfilePageV2 manages its own temporary profile tab.
         # Keep the authenticated employee-search page as the original page.
-
+        self.profile_page = self.page.context.new_page()
     # =====================================================
     # FALLBACK RECORD
     # =====================================================
@@ -415,7 +415,10 @@ class SearchWorkflowV2:
 
             print("Candidates returned by CompanyPage:", len(page_results))
 
-            for candidate_index, row in enumerate(page_results, start=1):
+            for candidate_index, row in enumerate(
+                page_results,
+                start=1
+            ):
 
                 if should_stop():
                     print("STOP requested.")
@@ -423,111 +426,401 @@ class SearchWorkflowV2:
 
                 print("=" * 60)
                 print(
-                    f"PROCESSING CANDIDATE {candidate_index} OF {len(page_results)}"
+                    f"PROCESSING CANDIDATE "
+                    f"{candidate_index} "
+                    f"OF {len(page_results)}"
                 )
                 print("=" * 60)
 
-                profile_url = row.get("profile_url", "")
+                # -------------------------------------------------
+                # FREEZE THIS CANDIDATE'S URL.
+                #
+                # This must become a plain string before any
+                # profile navigation occurs.
+                # -------------------------------------------------
 
-                if not profile_url:
-                    print("SKIP - candidate has no profile URL.")
+                candidate_url = str(
+                    row.get(
+                        "profile_url",
+                        ""
+                    )
+                ).strip()
+
+                if not candidate_url:
+                    print(
+                        "SKIP - candidate has no profile URL."
+                    )
                     continue
 
-                if profile_url in seen_urls:
-                    print("SKIP - duplicate profile URL:", profile_url)
+                if candidate_url in seen_urls:
+                    print(
+                        "SKIP - duplicate profile URL:",
+                        candidate_url
+                    )
                     continue
 
-                seen_urls.add(profile_url)
+                seen_urls.add(
+                    candidate_url
+                )
 
-                print("Profile URL:", profile_url)
+                print(
+                    "Candidate profile URL:",
+                    candidate_url
+                )
+
+                # -------------------------------------------------
+                # Immutable handoff value.
+                # -------------------------------------------------
+
+                requested_profile_url = (
+                    candidate_url
+                )
+
+                print(
+                    "Profile URL handed to "
+                    "LinkedInProfilePageV2:",
+                    requested_profile_url
+                )
 
                 try:
-                    # Existing V2 profile / email extraction.
-                    profile = LinkedInProfilePageV2(self.page)
 
-                    profile_opened = profile.open_profile(profile_url)
+                    # -------------------------------------------------
+                    # IMPORTANT:
+                    #
+                    # self.page belongs to the employee-search page.
+                    #
+                    # self.profile_page is the dedicated controller page
+                    # created in SearchWorkflowV2.__init__().
+                    # -------------------------------------------------
+
+                    profile = LinkedInProfilePageV2(
+                        self.profile_page
+                    )
+
+                    print(
+                        "OPEN_PROFILE ARGUMENT:",
+                        requested_profile_url
+                    )
+
+                    profile_opened = (
+                        profile.open_profile(
+                            requested_profile_url
+                        )
+                    )
 
                     if not profile_opened:
-                        print("PROFILE PAGE COULD NOT BE OPENED")
-                        print("REJECT - current company/location cannot be verified.")
-                        print("Continuing to next candidate...")
+
+                        print(
+                            "PROFILE PAGE COULD NOT BE OPENED"
+                        )
+
+                        print(
+                            "REJECT - profile could not "
+                            "be safely verified."
+                        )
+
                         continue
+
+                    # -------------------------------------------------
+                    # Verify that the actual browser page is the SAME
+                    # profile requested for this candidate.
+                    # -------------------------------------------------
+
+                    actual_browser_url = ""
+
+                    try:
+                        actual_browser_url = (
+                            profile.page.url
+                        )
+                    except Exception as ex:
+                        print(
+                            "Could not read actual profile URL:",
+                            repr(ex)
+                        )
+
+                    print(
+                        "REQUESTED PROFILE URL:",
+                        requested_profile_url
+                    )
+
+                    print(
+                        "ACTUAL PROFILE PAGE URL:",
+                        actual_browser_url
+                    )
+
+                    def canonical_profile_url(value):
+
+                        if not value:
+                            return ""
+
+                        value = str(
+                            value
+                        ).strip()
+
+                        if value.startswith("/"):
+                            value = (
+                                "https://www.linkedin.com"
+                                + value
+                            )
+
+                        return (
+                            value
+                            .split("?")[0]
+                            .split("#")[0]
+                            .rstrip("/")
+                            .lower()
+                        )
+
+                    requested_canonical = (
+                        canonical_profile_url(
+                            requested_profile_url
+                        )
+                    )
+
+                    actual_canonical = (
+                        canonical_profile_url(
+                            actual_browser_url
+                        )
+                    )
+
+                    if (
+                        not actual_canonical
+                        or actual_canonical
+                        != requested_canonical
+                    ):
+
+                        print(
+                            "REJECT - opened profile URL "
+                            "does not match requested "
+                            "candidate URL."
+                        )
+
+                        print(
+                            "Requested canonical URL:",
+                            requested_canonical
+                        )
+
+                        print(
+                            "Actual canonical URL:",
+                            actual_canonical
+                        )
+
+                        continue
+
+                    # -------------------------------------------------
+                    # Extract actual profile data.
+                    # -------------------------------------------------
 
                     data = profile.get_profile()
 
-                    if not data.get("full_name"):
-                        print("REJECT - profile opened but no profile name was extracted.")
-                        print("Continuing to next candidate...")
+                    if not data.get(
+                        "full_name"
+                    ):
+
+                        print(
+                            "REJECT - profile opened but "
+                            "no profile name was extracted."
+                        )
+
                         continue
 
-                    actual_company = data.get("company", "")
-                    actual_location = data.get("location", "")
+                    actual_company = (
+                        data.get(
+                            "company",
+                            ""
+                        )
+                    )
 
-                    requested_company_normalized = normalize_company(company)
-                    actual_company_normalized = normalize_company(actual_company)
+                    actual_location = (
+                        data.get(
+                            "location",
+                            ""
+                        )
+                    )
 
-                    requested_location_normalized = normalize_location(location)
-                    actual_location_normalized = normalize_location(actual_location)
+                    requested_company_normalized = (
+                        normalize_company(
+                            company
+                        )
+                    )
+
+                    actual_company_normalized = (
+                        normalize_company(
+                            actual_company
+                        )
+                    )
+
+                    requested_location_normalized = (
+                        normalize_location(
+                            location
+                        )
+                    )
+
+                    actual_location_normalized = (
+                        normalize_location(
+                            actual_location
+                        )
+                    )
 
                     company_matches = (
-                        bool(actual_company_normalized)
-                        and actual_company_normalized == requested_company_normalized
+                        bool(
+                            actual_company_normalized
+                        )
+                        and
+                        actual_company_normalized
+                        ==
+                        requested_company_normalized
                     )
 
                     location_matches = (
-                        bool(actual_location_normalized)
-                        and bool(requested_location_normalized)
-                        and requested_location_normalized in actual_location_normalized
+                        bool(
+                            actual_location_normalized
+                        )
+                        and
+                        bool(
+                            requested_location_normalized
+                        )
+                        and
+                        requested_location_normalized
+                        in
+                        actual_location_normalized
                     )
 
-                    print("PROFILE COMPANY:", repr(actual_company))
-                    print("REQUESTED COMPANY:", repr(company))
-                    print("COMPANY MATCH:", company_matches)
-                    print("PROFILE LOCATION:", repr(actual_location))
-                    print("REQUESTED LOCATION:", repr(location))
-                    print("LOCATION MATCH:", location_matches)
+                    print(
+                        "PROFILE COMPANY:",
+                        repr(actual_company)
+                    )
+
+                    print(
+                        "REQUESTED COMPANY:",
+                        repr(company)
+                    )
+
+                    print(
+                        "COMPANY MATCH:",
+                        company_matches
+                    )
+
+                    print(
+                        "PROFILE LOCATION:",
+                        repr(actual_location)
+                    )
+
+                    print(
+                        "REQUESTED LOCATION:",
+                        repr(location)
+                    )
+
+                    print(
+                        "LOCATION MATCH:",
+                        location_matches
+                    )
+
+                    # -------------------------------------------------
+                    # STRICT ACCEPTANCE
+                    # -------------------------------------------------
 
                     if not company_matches:
-                        print("REJECTED - PROFILE COMPANY MISMATCH")
-                        print("Continuing to next candidate...")
+
+                        print(
+                            "REJECTED - PROFILE COMPANY MISMATCH"
+                        )
+
+                        print(
+                            "Continuing to next candidate..."
+                        )
+
                         continue
 
                     if not location_matches:
-                        print("REJECTED - PROFILE LOCATION MISMATCH")
-                        print("Continuing to next candidate...")
+
+                        print(
+                            "REJECTED - PROFILE LOCATION MISMATCH"
+                        )
+
+                        print(
+                            "Continuing to next candidate..."
+                        )
+
                         continue
 
-                    data["search_company"] = company
-                    data["search_location"] = location
+                    data["search_company"] = (
+                        company
+                    )
 
-                    # Preserve the candidate URL when the profile extractor
-                    # does not return one itself.
-                    if not data.get("profile_url"):
-                        data["profile_url"] = profile_url
+                    data["search_location"] = (
+                        location
+                    )
 
-                    results.append(data)
+                    # Always preserve the exact candidate URL.
+                    data["profile_url"] = (
+                        requested_profile_url
+                    )
 
-                    print("PROFILE VALIDATION PASSED")
-                    print("VALID PROFILE COLLECTED")
-                    print("Profiles collected so far:", len(results))
+                    results.append(
+                        data
+                    )
+
+                    print(
+                        "PROFILE VALIDATION PASSED"
+                    )
+
+                    print(
+                        "VALID PROFILE COLLECTED"
+                    )
+
+                    print(
+                        "Profiles collected so far:",
+                        len(results)
+                    )
 
                     try:
+
                         autosave = Exporter.export_csv(
                             results,
-                            f"{company}_{location}_v2_autosave.csv"
+                            f"{company}_{location}"
+                            f"_v2_autosave.csv"
                         )
-                        print("Autosave:", autosave)
-                    except Exception as ex:
-                        print("Autosave failed:", repr(ex))
 
-                    if len(results) >= max_profiles:
-                        print("Maximum profile limit reached.")
+                        print(
+                            "Autosave:",
+                            autosave
+                        )
+
+                    except Exception as ex:
+
+                        print(
+                            "Autosave failed:",
+                            repr(ex)
+                        )
+
+                    if (
+                        len(results)
+                        >= max_profiles
+                    ):
+
+                        print(
+                            "Maximum profile limit reached."
+                        )
+
                         break
 
                 except Exception as ex:
-                    print("Profile processing failed:", repr(ex))
-                    print("REJECT - profile could not be verified safely.")
-                    print("Continuing to next candidate...")
+
+                    print(
+                        "Profile processing failed:",
+                        repr(ex)
+                    )
+
+                    print(
+                        "REJECT - profile could not "
+                        "be verified safely."
+                    )
+
+                    print(
+                        "Continuing to next candidate..."
+                    )
+
                     continue
 
             # -------------------------------------------------

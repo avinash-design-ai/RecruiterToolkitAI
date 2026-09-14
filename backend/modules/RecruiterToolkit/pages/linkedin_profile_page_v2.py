@@ -75,6 +75,14 @@ class LinkedInProfilePageV2(BasePage):
         requested = canonical(profile_url)
 
         # --------------------------------------------------------
+        # Store the exact requested candidate URL.
+        #
+        # This belongs to this profile-navigation operation.
+        # --------------------------------------------------------
+
+        self.profile_url = profile_url
+
+        # --------------------------------------------------------
         # Restore the original search page if a previous temporary
         # profile tab is still active.
         # --------------------------------------------------------
@@ -242,6 +250,39 @@ class LinkedInProfilePageV2(BasePage):
                         )
 
                         # ------------------------------------------------
+                        # IMPORTANT:
+                        # The opened profile must be the EXACT profile
+                        # requested by the workflow.
+                        # ------------------------------------------------
+
+                        actual = canonical(
+                            profile_page.url
+                        )
+
+                        if actual != requested:
+
+                            print(
+                                "PROFILE URL MISMATCH."
+                            )
+
+                            print(
+                                "Requested:",
+                                requested
+                            )
+
+                            print(
+                                "Opened:",
+                                actual
+                            )
+
+                            try:
+                                profile_page.close()
+                            except Exception:
+                                pass
+
+                            return False
+
+                        # ------------------------------------------------
                         # Reject LinkedIn auth/login/remember-me pages.
                         # ------------------------------------------------
 
@@ -375,6 +416,35 @@ class LinkedInProfilePageV2(BasePage):
 
                 print(
                     "Profile URL is not a LinkedIn /in/ profile."
+                )
+
+                return False
+
+            # --------------------------------------------------------
+            # IMPORTANT:
+            # The direct fallback must still land on the EXACT
+            # candidate profile requested by the workflow.
+            # --------------------------------------------------------
+
+            actual = canonical(
+                self.page.url
+            )
+
+            if actual != requested:
+
+                print(
+                    "PROFILE URL MISMATCH "
+                    "DURING DIRECT NAVIGATION."
+                )
+
+                print(
+                    "Requested:",
+                    requested
+                )
+
+                print(
+                    "Opened:",
+                    actual
                 )
 
                 return False
