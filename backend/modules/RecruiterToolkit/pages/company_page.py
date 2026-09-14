@@ -848,22 +848,6 @@ class CompanyPage(BasePage):
         return False
 
     def apply_location(self, location):
-        """
-        Apply LinkedIn's Locations filter.
-
-        IMPORTANT:
-        This intentionally follows the previously working LinkedIn
-        interaction sequence:
-
-            Locations
-            -> location input
-            -> ArrowDown
-            -> click Show results
-
-        We DO NOT press Enter after ArrowDown because the current
-        LinkedIn DOM can interpret Enter as form submission/navigation
-        and leave the people-search page.
-        """
 
         print(
             f"Applying location: {location}"
@@ -882,28 +866,34 @@ class CompanyPage(BasePage):
         # SAFETY CHECK
         # ------------------------------------------------------------
 
-        before_url = self.page.url.lower()
+        before_url = (
+            self.page.url
+            or ""
+        ).lower()
 
-        if "/search/results/people/" not in before_url:
+        if (
+            "/search/results/people/"
+            not in before_url
+        ):
             print(
-                "ERROR: Location filter started from a non-people-search URL."
+                "ERROR: Location filter started from "
+                "a non-people-search URL."
             )
             return False
 
         if "currentcompany=" not in before_url:
             print(
-                "ERROR: Location filter started without currentCompany."
+                "ERROR: currentCompany missing before "
+                "location filter."
             )
             return False
 
         # ------------------------------------------------------------
         # OPEN LOCATIONS
-        #
-        # Use the same proven text-based interaction that previously
-        # worked with LinkedIn.
         # ------------------------------------------------------------
 
         try:
+
             locations = self.page.get_by_text(
                 "Locations",
                 exact=False
@@ -918,9 +908,17 @@ class CompanyPage(BasePage):
 
             clicked_locations = False
 
-            for i in range(location_count - 1, -1, -1):
+            for i in range(
+                location_count - 1,
+                -1,
+                -1
+            ):
+
                 try:
-                    candidate = locations.nth(i)
+
+                    candidate = (
+                        locations.nth(i)
+                    )
 
                     if not candidate.is_visible():
                         continue
@@ -941,16 +939,20 @@ class CompanyPage(BasePage):
                     continue
 
             if not clicked_locations:
+
                 print(
                     "ERROR: Could not open Locations filter."
                 )
+
                 return False
 
         except Exception as ex:
+
             print(
                 "ERROR opening Locations:",
                 repr(ex)
             )
+
             return False
 
         self.page.wait_for_timeout(
@@ -958,13 +960,11 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # FIND LOCATION INPUT
-        #
-        # Preserve the previously working "last input" behavior,
-        # but require it to be visible.
+        # LOCATION INPUT
         # ------------------------------------------------------------
 
         try:
+
             inputs = self.page.locator(
                 "input:visible"
             )
@@ -977,9 +977,11 @@ class CompanyPage(BasePage):
             )
 
             if input_count == 0:
+
                 print(
                     "ERROR: No visible location input found."
                 )
+
                 return False
 
             location_box = inputs.last
@@ -994,14 +996,16 @@ class CompanyPage(BasePage):
             )
 
         except Exception as ex:
+
             print(
                 "ERROR entering location:",
                 repr(ex)
             )
+
             return False
 
         # ------------------------------------------------------------
-        # ALLOW AUTOCOMPLETE TO RENDER
+        # WAIT FOR AUTOCOMPLETE
         # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
@@ -1009,18 +1013,12 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # SELECT AUTOCOMPLETE
+        # SELECT LOCATION SUGGESTION
         #
-        # CRITICAL:
-        #
-        # ArrowDown selects/highlights LinkedIn's first matching
-        # autocomplete item.
+        # ArrowDown is intentionally retained because this part is
+        # now proven to leave us on the correct people-search page.
         #
         # DO NOT press Enter.
-        #
-        # The latest failure shows that Enter causes LinkedIn to
-        # navigate to https://www.linkedin.com/ before Show results
-        # can be clicked.
         # ------------------------------------------------------------
 
         print(
@@ -1028,6 +1026,7 @@ class CompanyPage(BasePage):
         )
 
         try:
+
             location_box.click()
 
             self.page.keyboard.press(
@@ -1043,91 +1042,144 @@ class CompanyPage(BasePage):
             )
 
         except Exception as ex:
+
             print(
                 "ERROR selecting location suggestion:",
                 repr(ex)
             )
+
             return False
 
         # ------------------------------------------------------------
-        # SAFETY CHECK BEFORE SHOW RESULTS
-        #
-        # If ArrowDown somehow caused navigation, stop immediately.
-        # Never continue on linkedin.com/.
+        # VERIFY WE ARE STILL ON THE COMPANY PEOPLE SEARCH
         # ------------------------------------------------------------
 
-        current_url = self.page.url.lower()
+        current_url = (
+            self.page.url
+            or ""
+        ).lower()
 
         print(
             "URL after location selection:",
             self.page.url
         )
 
-        if "/search/results/people/" not in current_url:
+        if (
+            "/search/results/people/"
+            not in current_url
+        ):
+
             print(
-                "ERROR: LinkedIn left the people-search page "
-                "before Show results."
+                "ERROR: LinkedIn left people-search "
+                "after location selection."
             )
+
             return False
 
         if "currentcompany=" not in current_url:
+
             print(
-                "ERROR: currentCompany disappeared before Show results."
+                "ERROR: currentCompany disappeared "
+                "after location selection."
             )
+
             return False
 
         # ------------------------------------------------------------
         # SHOW RESULTS
         #
-        # LinkedIn may expose this as text rather than a normal
-        # button, so use get_by_text exactly like the previously
-        # working implementation.
+        # IMPORTANT:
+        #
+        # The previous implementation found text "Show results",
+        # but clicking that text locator failed.
+        #
+        # Therefore we now target the actual BUTTON element.
         # ------------------------------------------------------------
 
         print(
-            "Looking for Show results..."
+            "Looking for Show results button..."
         )
 
+        clicked_show_results = False
+
+        # ------------------------------------------------------------
+        # METHOD 1:
+        # Playwright semantic button locator
+        # ------------------------------------------------------------
+
         try:
-            show_results = self.page.get_by_text(
-                "Show results",
-                exact=False
+
+            show_button = self.page.get_by_role(
+                "button",
+                name=re.compile(
+                    r"^\s*Show\s+results\s*$",
+                    re.IGNORECASE
+                )
             )
 
-            show_count = show_results.count()
+            count = show_button.count()
 
             print(
-                "Show results controls found:",
-                show_count
+                "Role=button Show results count:",
+                count
             )
 
-            clicked_show_results = False
+            for i in range(
+                count - 1,
+                -1,
+                -1
+            ):
 
-            for i in range(show_count - 1, -1, -1):
                 try:
-                    candidate = show_results.nth(i)
 
-                    if not candidate.is_visible():
+                    button = (
+                        show_button.nth(i)
+                    )
+
+                    if not button.is_visible():
                         continue
 
                     print(
-                        "Clicking Show results..."
+                        "Attempting semantic Show results button click..."
                     )
 
-                    candidate.click(
+                    button.scroll_into_view_if_needed()
+
+                    button.click(
                         timeout=15000
                     )
 
                     clicked_show_results = True
 
+                    print(
+                        "Show results button clicked successfully."
+                    )
+
                     break
 
-                except Exception:
-                    continue
+                except Exception as ex:
 
-            if not clicked_show_results:
+                    print(
+                        "Semantic Show results click failed:",
+                        repr(ex)
+                    )
 
-                # Controlled fallback: inspect visible buttons.
+        except Exception as ex:
+
+            print(
+                "Semantic Show results lookup failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # METHOD 2:
+        # Direct visible button filtering by text
+        # ------------------------------------------------------------
+
+        if not clicked_show_results:
+
+            try:
+
                 buttons = self.page.locator(
                     "button:visible"
                 )
@@ -1139,58 +1191,172 @@ class CompanyPage(BasePage):
                     button_count
                 )
 
-                for i in range(button_count - 1, -1, -1):
+                for i in range(
+                    button_count - 1,
+                    -1,
+                    -1
+                ):
+
                     try:
-                        button = buttons.nth(i)
+
+                        button = (
+                            buttons.nth(i)
+                        )
 
                         button_text = (
                             button.inner_text(
                                 timeout=2000
                             )
                             .strip()
-                            .replace("\n", " ")
                         )
 
-                        if (
-                            button_text.lower()
-                            == "show results"
+                        normalized_text = (
+                            " ".join(
+                                button_text.split()
+                            )
+                        )
+
+                        print(
+                            f"Visible button {i}: "
+                            f"{normalized_text[:150]!r}"
+                        )
+
+                        if not re.fullmatch(
+                            r"Show\s+results",
+                            normalized_text,
+                            re.IGNORECASE
                         ):
-                            print(
-                                "Clicking Show results button."
-                            )
+                            continue
 
-                            button.click(
-                                timeout=15000
-                            )
+                        print(
+                            "Found exact Show results button."
+                        )
 
-                            clicked_show_results = True
+                        button.scroll_into_view_if_needed()
 
-                            break
+                        button.click(
+                            timeout=15000
+                        )
 
-                    except Exception:
-                        continue
+                        clicked_show_results = True
 
-            if not clicked_show_results:
+                        print(
+                            "Direct Show results button click succeeded."
+                        )
+
+                        break
+
+                    except Exception as ex:
+
+                        print(
+                            f"Button {i} processing failed:",
+                            repr(ex)
+                        )
+
+            except Exception as ex:
+
                 print(
-                    "ERROR: Could not safely click Show results."
+                    "Visible-button inspection failed:",
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # METHOD 3:
+        # DOM button containing Show results
+        #
+        # This handles LinkedIn markup where the visible text is
+        # inside a nested span.
+        # ------------------------------------------------------------
+
+        if not clicked_show_results:
+
+            try:
+
+                nested_button = self.page.locator(
+                    "button:visible"
+                ).filter(
+                    has_text=re.compile(
+                        r"Show\s+results",
+                        re.IGNORECASE
+                    )
+                )
+
+                nested_count = (
+                    nested_button.count()
                 )
 
                 print(
-                    "Current URL:",
-                    self.page.url
+                    "Nested-text Show results buttons:",
+                    nested_count
                 )
 
-                return False
+                for i in range(
+                    nested_count - 1,
+                    -1,
+                    -1
+                ):
 
-        except Exception as ex:
+                    try:
+
+                        button = (
+                            nested_button.nth(i)
+                        )
+
+                        if not button.is_visible():
+                            continue
+
+                        print(
+                            "Attempting nested-text button click..."
+                        )
+
+                        button.scroll_into_view_if_needed()
+
+                        button.click(
+                            timeout=15000
+                        )
+
+                        clicked_show_results = True
+
+                        print(
+                            "Nested-text Show results click succeeded."
+                        )
+
+                        break
+
+                    except Exception as ex:
+
+                        print(
+                            "Nested-text button click failed:",
+                            repr(ex)
+                        )
+
+            except Exception as ex:
+
+                print(
+                    "Nested button lookup failed:",
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # FINAL FAILURE
+        # ------------------------------------------------------------
+
+        if not clicked_show_results:
+
             print(
-                "ERROR locating Show results:",
-                repr(ex)
+                "ERROR: Could not safely click "
+                "the actual Show results button."
             )
+
+            print(
+                "Current URL:",
+                self.page.url
+            )
+
             return False
 
         # ------------------------------------------------------------
-        # WAIT FOR FILTERED RESULTS
+        # WAIT FOR LINKEDIN TO APPLY FILTER
         # ------------------------------------------------------------
 
         self.page.wait_for_timeout(
@@ -1203,20 +1369,22 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # FINAL SAFETY VALIDATION
-        #
-        # This is mandatory.
-        #
-        # A location filter is successful only if LinkedIn returned
-        # to the company-scoped people-search page.
+        # FINAL VALIDATION
         # ------------------------------------------------------------
 
-        final_url = self.page.url.lower()
+        final_url = (
+            self.page.url
+            or ""
+        ).lower()
 
-        if "/search/results/people/" not in final_url:
+        if (
+            "/search/results/people/"
+            not in final_url
+        ):
+
             print(
-                "ERROR: Show results did not return to "
-                "LinkedIn people-search."
+                "ERROR: Show results did not return "
+                "to people-search."
             )
 
             print(
@@ -1227,9 +1395,10 @@ class CompanyPage(BasePage):
             return False
 
         if "currentcompany=" not in final_url:
+
             print(
-                "ERROR: currentCompany is missing after "
-                "location filtering."
+                "ERROR: currentCompany missing after "
+                "Show results."
             )
 
             print(
