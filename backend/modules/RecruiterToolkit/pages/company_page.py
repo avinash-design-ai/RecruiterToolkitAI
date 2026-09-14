@@ -1014,70 +1014,27 @@ class CompanyPage(BasePage):
         #
         # IMPORTANT:
         #
-        # The visible LinkedIn <main> area is our boundary.
+        # LinkedIn does not reliably expose employee result links
+        # inside one fixed CSS container.
         #
-        # We DO NOT scan the whole Playwright page.
+        # We therefore:
         #
-        # LinkedIn changes the CSS classes used by search-result
-        # containers, so we do NOT depend on one specific selector such
-        # as reusable-search__result-container.
+        # 1. Try bounded search containers.
+        # 2. If they expose no /in/ links, use a controlled page-level
+        #    /in/ scan.
+        # 3. NEVER accept an /in/ link by URL alone.
+        # 4. Walk upward from each link and require a recognizable
+        #    LinkedIn search-result ancestor.
         #
-        # Instead:
-        #
-        #   1. Find visible /in/ links inside search_area.
-        #   2. Walk upward from each link.
-        #   3. Recognize a search-result container using multiple
-        #      LinkedIn DOM signals.
-        #
-        # Company/location are NOT validated here.
-        # SearchWorkflowV2 remains authoritative for profile validation.
+        # Company and location remain authoritative on the actual
+        # LinkedIn profile page.
         # ------------------------------------------------------------
 
         try:
 
-            # --------------------------------------------------------
-            # IMPORTANT:
-            #
-            # Use the already-established bounded search area.
-            # --------------------------------------------------------
-
-            all_links = search_area.locator(
-                "a[href*='/in/']:visible"
-            )
-
-            # LinkedIn may finish rendering result links shortly after
-            # the location filter completes.
-            try:
-                all_links.first.wait_for(
-                    state="visible",
-                    timeout=10000
-                )
-            except Exception:
-                pass
-
-            total_links = all_links.count()
-
-            print(
-                "Visible /in/ links inside bounded search area:",
-                total_links
-            )
-
-            if total_links == 0:
-
-                print(
-                    "ERROR: No visible /in/ profile links found "
-                    "inside bounded LinkedIn search area."
-                )
-
-                print(
-                    "Profiles extracted: 0"
-                )
-
-                return profiles
-
-            # --------------------------------------------------------
-            # Normalize DOM metadata.
-            # --------------------------------------------------------
+            # ========================================================
+            # Normalize DOM attributes
+            # ========================================================
 
             def normalize_dom(value):
 
@@ -1091,10 +1048,10 @@ class CompanyPage(BasePage):
                     .lower()
                 )
 
-            # --------------------------------------------------------
-            # Detect LinkedIn result containers without depending on
-            # one exact CSS class.
-            # --------------------------------------------------------
+
+            # ========================================================
+            # Recognize LinkedIn result containers
+            # ========================================================
 
             def looks_like_result_container(element):
 
@@ -1130,10 +1087,7 @@ class CompanyPage(BasePage):
                         ) or ""
                     )
 
-                    # ------------------------------------------------
                     # Known LinkedIn result markers.
-                    # ------------------------------------------------
-
                     if "search-entity-result" in classes:
                         return True
 
@@ -1146,79 +1100,79 @@ class CompanyPage(BasePage):
                     if "reusable-search" in classes:
                         return True
 
-                    # ------------------------------------------------
-                    # LinkedIn data-view markers.
-                    # ------------------------------------------------
-
+                    # data-view-name markers.
                     if "search-entity-result" in data_view:
                         return True
 
                     if "universal-template" in data_view:
                         return True
 
-                    # ------------------------------------------------
                     # Accessibility markers.
-                    # ------------------------------------------------
-
                     if "search result" in aria:
                         return True
 
                     if "search-result" in aria:
                         return True
 
-                    # ------------------------------------------------
-                    # Generic result structures.
-                    # ------------------------------------------------
-
+                    # Generic result/list structures.
                     if tag == "li":
-
                         if (
                             "result" in classes
                             or
                             "search" in classes
-                            or
-                            role == "listitem"
                         ):
                             return True
 
                     if tag == "article":
+                        if (
+                            "result" in classes
+                            or
+                            "search" in classes
+                        ):
+                            return True
 
+                    # Semantic roles only when combined with result/search
+                    # indicators so ordinary sidebar list items are not
+                    # accepted as employee results.
+                    if role == "article":
                         if (
                             "result" in classes
                             or
                             "search" in classes
                             or
-                            role == "article"
+                            "result" in aria
+                            or
+                            "search" in aria
                         ):
                             return True
 
-                    if role in (
-                        "listitem",
-                        "article",
-                        "option",
-                    ):
-                        return True
+                    if role == "listitem":
+                        if (
+                            "result" in classes
+                            or
+                            "search" in classes
+                            or
+                            "result" in aria
+                            or
+                            "search" in aria
+                        ):
+                            return True
 
                 except Exception:
-
                     pass
 
                 return False
 
-            # --------------------------------------------------------
-            # Walk upward from candidate /in/ link.
-            #
-            # Maximum depth prevents reaching page-level containers.
-            # --------------------------------------------------------
+
+            # ========================================================
+            # Walk upward from a candidate profile link
+            # ========================================================
 
             def find_result_container(link):
 
                 current = link
 
-                for depth in range(
-                    1,
-                    9
-                ):
+                for depth in range(1, 10):
 
                     try:
 
@@ -1240,11 +1194,191 @@ class CompanyPage(BasePage):
 
                 return None
 
-            # --------------------------------------------------------
-            # Inspect every visible profile link.
-            # --------------------------------------------------------
+
+            # ========================================================
+            # Collect links from a given DOM root
+            # ========================================================
+
+            def collect_profile_links(
+                root,
+                source_name
+            ):
+
+                try:
+
+                    links = root.locator(
+                        "a[href*='/in/']:visible"
+                    )
+
+                    try:
+                        links.first.wait_for(
+                            state="visible",
+                            timeout=5000
+                        )
+                    except Exception:
+                        pass
+
+                    count = links.count()
+
+                    print(
+                        f"{source_name} /in/ links:",
+                        count
+                    )
+
+                    if count > 0:
+                        return links
+
+                except Exception as ex:
+
+                    print(
+                        f"{source_name} profile-link scan failed:",
+                        repr(ex)
+                    )
+
+                return None
+
+
+            # ========================================================
+            # BOUNDED ROOTS FIRST
+            # ========================================================
+
+            roots = []
+
+            if search_area is not None:
+                roots.append(
+                    (
+                        search_area,
+                        "main-search-area"
+                    )
+                )
+
+
+            for selector in (
+                "div.scaffold-finite-scroll__content:visible",
+                "div.search-results-container:visible",
+                "section[class*='search-results']:visible",
+                "div[class*='search-results']:visible",
+                "div[role='main']:visible",
+                "ul[role='list']:visible",
+            ):
+
+                try:
+
+                    root = self.page.locator(
+                        selector
+                    ).first
+
+                    if root.count():
+
+                        roots.append(
+                            (
+                                root,
+                                selector
+                            )
+                        )
+
+                except Exception:
+                    pass
+
+
+            links = None
+            links_source = ""
+
+
+            for root, source_name in roots:
+
+                scoped_links = collect_profile_links(
+                    root,
+                    source_name
+                )
+
+                if scoped_links is not None:
+
+                    links = scoped_links
+                    links_source = source_name
+
+                    print(
+                        "Using profile-link source:",
+                        source_name
+                    )
+
+                    break
+
+
+            # ========================================================
+            # CONTROLLED PAGE-LEVEL FALLBACK
+            #
+            # This is only discovery. Every candidate still must pass
+            # result-container validation below.
+            # ========================================================
+
+            if links is None:
+
+                print(
+                    "No bounded search container exposed "
+                    "profile links."
+                )
+
+                print(
+                    "Trying controlled page-level /in/ discovery..."
+                )
+
+                links = collect_profile_links(
+                    self.page,
+                    "controlled-page-fallback"
+                )
+
+                links_source = (
+                    "controlled-page-fallback"
+                )
+
+
+            # ========================================================
+            # No links available
+            # ========================================================
+
+            if links is None:
+
+                print(
+                    "ERROR: No visible LinkedIn /in/ profile links "
+                    "were exposed."
+                )
+
+                print(
+                    "Profiles extracted: 0"
+                )
+
+                return profiles
+
+
+            total_links = links.count()
+
+            print(
+                "Candidate /in/ links available for validation:",
+                total_links
+            )
+
+
+            if total_links == 0:
+
+                print(
+                    "ERROR: No visible LinkedIn /in/ profile links "
+                    "were exposed."
+                )
+
+                print(
+                    "Profiles extracted: 0"
+                )
+
+                return profiles
+
+
+            # ========================================================
+            # VALIDATE EVERY LINK AGAINST RESULT CONTAINER
+            # ========================================================
 
             recognized_count = 0
+
 
             for i in range(
                 total_links
@@ -1252,7 +1386,7 @@ class CompanyPage(BasePage):
 
                 try:
 
-                    link = all_links.nth(i)
+                    link = links.nth(i)
 
                     href = canonical_profile_url(
                         link.get_attribute(
@@ -1263,72 +1397,78 @@ class CompanyPage(BasePage):
                     if not href:
                         continue
 
+
                     result_container = (
                         find_result_container(
                             link
                         )
                     )
 
+
                     if result_container is None:
 
                         print(
-                            "REJECT - no recognized employee "
-                            "result container:",
+                            "REJECT - no recognized LinkedIn "
+                            "search-result ancestor:",
                             href
                         )
 
                         continue
+
 
                     recognized_count += 1
 
                     candidate_links.append(
                         (
                             100,
-                            "bounded-result-container",
+                            links_source,
                             link,
                         )
                     )
 
+
                 except Exception as ex:
 
                     print(
-                        "Profile-link inspection failed:",
+                        "Profile candidate inspection failed:",
                         repr(ex)
                     )
 
+
             print(
-                "Recognized employee result-container links:",
+                "Recognized employee result candidates:",
                 recognized_count
             )
 
-            # --------------------------------------------------------
-            # Fail closed.
-            #
-            # NEVER return to a page-wide /in/ scan.
-            # --------------------------------------------------------
+
+            # ========================================================
+            # FAIL CLOSED
+            # ========================================================
 
             if recognized_count == 0:
 
                 print(
-                    "ERROR: No recognized LinkedIn employee "
-                    "result containers found."
+                    "ERROR: Visible /in/ links were found, but "
+                    "none were associated with a recognized "
+                    "LinkedIn search-result container."
                 )
 
                 print(
-                    "SAFE STOP: Refusing page-wide /in/ fallback."
+                    "SAFE STOP: No arbitrary profile links accepted."
                 )
 
                 return profiles
 
+
         except Exception as ex:
 
             print(
-                "Bounded employee-result discovery failed:",
+                "Employee profile candidate discovery failed:",
                 repr(ex)
             )
 
             print(
-                "SAFE STOP: Refusing page-wide /in/ fallback."
+                "SAFE STOP: No arbitrary profile links accepted."
             )
 
             return profiles
