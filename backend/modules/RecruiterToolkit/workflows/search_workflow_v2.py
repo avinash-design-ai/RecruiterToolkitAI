@@ -327,13 +327,38 @@ class SearchWorkflowV2:
         print("D - Applying location")
         print("=" * 60)
 
-        self.company_page.apply_location(
-            location
+        location_applied = (
+            self.company_page.apply_location(
+                location
+            )
         )
 
         print(
-            "Location applied."
+            "Location filter result:",
+            location_applied
         )
+
+        if not location_applied:
+
+            print(
+                "ERROR: Location filter was not successfully applied."
+            )
+
+            print(
+                "SAFE STOP: Refusing to process an "
+                "unfiltered employee search."
+            )
+
+            return self._finish(
+                results,
+                company,
+                location
+            )
+
+        print(
+            "Location applied successfully."
+        )
+
 
         # -------------------------------------------------
         # E - Collect Employees
