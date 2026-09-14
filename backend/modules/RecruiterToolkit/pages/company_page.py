@@ -1013,17 +1013,309 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # SELECT LOCATION SUGGESTION
+        # LOCATION AUTOCOMPLETE DOM DIAGNOSTIC
+        #
+        # TEMPORARY DIAGNOSTIC ONLY.
+        #
+        # At this point "New Jersey" has been entered and LinkedIn
+        # has had time to render its autocomplete UI.
+        #
+        # Previous selectors found:
+        #   role="option" -> 0
+        #   exact text    -> 0
+        #
+        # Therefore do NOT guess another selector.
+        # Inspect the actual rendered DOM first.
         #
         # IMPORTANT:
-        # Do NOT use keyboard Enter.
+        # This diagnostic does NOT click, press Enter, or modify the
+        # location selection.
+        # ------------------------------------------------------------
+
+        print("=" * 60)
+        print("LOCATION AUTOCOMPLETE DOM DIAGNOSTIC")
+        print("=" * 60)
+
+        print(
+            "Requested location:",
+            location
+        )
+
+        try:
+
+            diagnostic = self.page.locator(
+                "body"
+            ).evaluate(
+                """(body, requested) => {
+
+                    const visible = (el) => {
+
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+
+                        return (
+                            style.display !== "none" &&
+                            style.visibility !== "hidden" &&
+                            parseFloat(style.opacity || "1") > 0 &&
+                            rect.width > 0 &&
+                            rect.height > 0
+                        );
+                    };
+
+                    const normalize = (value) => {
+
+                        return (value || "")
+                            .replace(/\\s+/g, " ")
+                            .trim();
+                    };
+
+                    const result = [];
+
+                    const elements = body.querySelectorAll("*");
+
+                    for (const el of elements) {
+
+                        if (!visible(el)) {
+                            continue;
+                        }
+
+                        const text = normalize(
+                            el.innerText ||
+                            el.textContent ||
+                            ""
+                        );
+
+                        const aria = normalize(
+                            el.getAttribute("aria-label") ||
+                            ""
+                        );
+
+                        const placeholder = normalize(
+                            el.getAttribute("placeholder") ||
+                            ""
+                        );
+
+                        const role = normalize(
+                            el.getAttribute("role") ||
+                            ""
+                        );
+
+                        const dataTest = normalize(
+                            el.getAttribute("data-test-id") ||
+                            ""
+                        );
+
+                        const dataControl = normalize(
+                            el.getAttribute("data-control-name") ||
+                            ""
+                        );
+
+                        const className = normalize(
+                            typeof el.className === "string"
+                                ? el.className
+                                : ""
+                        );
+
+                        const tag = (
+                            el.tagName || ""
+                        ).toLowerCase();
+
+                        const lowerText = text.toLowerCase();
+                        const lowerRequested =
+                            String(requested || "").toLowerCase();
+
+                        const relevant =
+                            lowerText.includes(lowerRequested) ||
+                            lowerText.includes("jersey") ||
+                            aria.toLowerCase().includes("jersey") ||
+                            placeholder.toLowerCase().includes("jersey") ||
+                            role.toLowerCase().includes("option") ||
+                            role.toLowerCase().includes("listbox") ||
+                            dataTest.toLowerCase().includes("location") ||
+                            dataControl.toLowerCase().includes("location");
+
+                        if (!relevant) {
+                            continue;
+                        }
+
+                        result.push({
+                            tag: tag,
+                            text: text.slice(0, 500),
+                            aria: aria.slice(0, 300),
+                            placeholder: placeholder.slice(0, 300),
+                            role: role,
+                            dataTest: dataTest,
+                            dataControl: dataControl,
+                            className: className.slice(0, 500)
+                        });
+                    }
+
+                    return result;
+                }""",
+                location
+            )
+
+            print(
+                "Relevant visible DOM elements:",
+                len(diagnostic)
+            )
+
+            for index, item in enumerate(diagnostic):
+
+                print("-" * 60)
+
+                print(
+                    f"DOM ITEM {index}"
+                )
+
+                print(
+                    "TAG:",
+                    item.get("tag", "")
+                )
+
+                print(
+                    "TEXT:",
+                    repr(item.get("text", ""))
+                )
+
+                print(
+                    "ARIA:",
+                    repr(item.get("aria", ""))
+                )
+
+                print(
+                    "PLACEHOLDER:",
+                    repr(item.get("placeholder", ""))
+                )
+
+                print(
+                    "ROLE:",
+                    repr(item.get("role", ""))
+                )
+
+                print(
+                    "DATA-TEST-ID:",
+                    repr(item.get("dataTest", ""))
+                )
+
+                print(
+                    "DATA-CONTROL-NAME:",
+                    repr(item.get("dataControl", ""))
+                )
+
+                print(
+                    "CLASS:",
+                    repr(item.get("className", ""))
+                )
+
+            # --------------------------------------------------------
+            # Additional focused diagnostic:
+            # inspect visible inputs and their surrounding parents.
+            # --------------------------------------------------------
+
+            print("=" * 60)
+            print("VISIBLE INPUT DIAGNOSTIC")
+            print("=" * 60)
+
+            inputs = self.page.locator(
+                "input:visible"
+            )
+
+            input_count = inputs.count()
+
+            print(
+                "Visible inputs:",
+                input_count
+            )
+
+            for i in range(input_count):
+
+                try:
+
+                    inp = inputs.nth(i)
+
+                    info = inp.evaluate(
+                        """el => {
+
+                            const parent = el.parentElement;
+
+                            return {
+                                value: el.value || "",
+                                placeholder:
+                                    el.getAttribute("placeholder") || "",
+                                aria:
+                                    el.getAttribute("aria-label") || "",
+                                role:
+                                    el.getAttribute("role") || "",
+                                className:
+                                    typeof el.className === "string"
+                                        ? el.className
+                                        : "",
+                                parentTag:
+                                    parent
+                                        ? parent.tagName.toLowerCase()
+                                        : "",
+                                parentText:
+                                    parent
+                                        ? (
+                                            parent.innerText ||
+                                            ""
+                                        ).replace(/\\s+/g, " ").trim()
+                                        .slice(0, 500)
+                                        : "",
+                                parentClass:
+                                    parent
+                                        ? (
+                                            typeof parent.className === "string"
+                                                ? parent.className
+                                                : ""
+                                        )
+                                        : ""
+                            };
+                        }"""
+                    )
+
+                    print("-" * 60)
+                    print(
+                        f"INPUT {i}:",
+                        info
+                    )
+
+                except Exception as ex:
+
+                    print(
+                        f"Input {i} diagnostic failed:",
+                        repr(ex)
+                    )
+
+        except Exception as ex:
+
+            print(
+                "LOCATION DOM DIAGNOSTIC FAILED:",
+                repr(ex)
+            )
+
+        print("=" * 60)
+        print(
+            "END LOCATION AUTOCOMPLETE DOM DIAGNOSTIC"
+        )
+        print("=" * 60)
+
+        # ------------------------------------------------------------
+        # SAFE STOP.
         #
-        # In the current authenticated GitHub session, Enter after
-        # ArrowDown redirects LinkedIn to:
-        #
-        #   /ssr-login/remember-me-auto-login
-        #
-        # We must click the actual autocomplete suggestion instead.
+        # Do not attempt ArrowDown, Enter, or any guessed click.
+        # We need the GitHub Actions DOM output first.
+        # ------------------------------------------------------------
+
+        print(
+            "SAFE STOP: Diagnostic run only."
+        )
+
+        return False
+
+        # ------------------------------------------------------------
+        # SELECT LOCATION SUGGESTION
         # ------------------------------------------------------------
 
         print(
