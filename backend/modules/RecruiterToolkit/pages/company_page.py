@@ -1009,21 +1009,110 @@ class CompanyPage(BasePage):
 
         candidate_links = []
 
+        # ------------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Never scan the entire LinkedIn page for /in/ links.
+        #
+        # The employee-search page can contain unrelated profile
+        # links in sidebars, recommendations, widgets, etc.
+        #
+        # We already identified a bounded LinkedIn search area above.
+        # Discover profiles only from actual employee result cards
+        # inside that bounded area.
+        #
+        # IMPORTANT:
+        # We are NOT requiring company text to appear inside the
+        # result card here.
+        #
+        # The individual profile page remains the authoritative
+        # company + location validation source.
+        # ------------------------------------------------------------
+
         try:
-            all_links = self.page.locator(
+
+            result_cards = search_area.locator(
+                "li.reusable-search__result-container:visible"
+            )
+
+            card_count = result_cards.count()
+
+            if card_count == 0:
+
+                result_cards = search_area.locator(
+                    "div.reusable-search__result-container:visible"
+                )
+
+                card_count = result_cards.count()
+
+            if card_count == 0:
+
+                result_cards = search_area.locator(
+                    "li.search-entity-result:visible"
+                )
+
+                card_count = result_cards.count()
+
+            if card_count == 0:
+
+                result_cards = search_area.locator(
+                    "div.entity-result:visible"
+                )
+
+                card_count = result_cards.count()
+
+            print(
+                "LinkedIn employee result cards found:",
+                card_count
+            )
+
+            if card_count == 0:
+
+                print(
+                    "ERROR: No structured LinkedIn employee "
+                    "result cards found."
+                )
+
+                print(
+                    "SAFE STOP: Refusing page-wide /in/ scan."
+                )
+
+                return profiles
+
+            # --------------------------------------------------------
+            # Only profile links inside those result cards.
+            # --------------------------------------------------------
+
+            links = result_cards.locator(
                 "a[href*='/in/']:visible"
             )
 
-            total_links = all_links.count()
+            total_links = links.count()
 
             print(
-                "Visible /in/ profile links found in bounded search area:",
+                "Scoped employee profile links found:",
                 total_links
             )
 
+            if total_links == 0:
+
+                print(
+                    "No visible profile links found "
+                    "inside employee result cards."
+                )
+
+                return profiles
+
+            # --------------------------------------------------------
+            # Keep the same scoring/source structure expected by the
+            # existing de-duplication logic below.
+            # --------------------------------------------------------
+
             for i in range(total_links):
+
                 try:
-                    link = all_links.nth(i)
+
+                    link = links.nth(i)
 
                     href = canonical_profile_url(
                         link.get_attribute("href")
@@ -1032,23 +1121,33 @@ class CompanyPage(BasePage):
                     if not href:
                         continue
 
-                    # Keep the candidate discovery broad enough to preserve
-                    # the previously working LinkedIn result extraction.
                     candidate_links.append(
-                        (50, "bounded-visible-profile-link", link)
+                        (
+                            100,
+                            "bounded-employee-result-card",
+                            link,
+                        )
                     )
 
                 except Exception as ex:
+
                     print(
                         "Profile-link inspection failed:",
                         repr(ex)
                     )
 
         except Exception as ex:
+
             print(
-                "Bounded /in/ profile discovery failed:",
+                "Bounded employee-result discovery failed:",
                 repr(ex)
             )
+
+            print(
+                "SAFE STOP: Refusing page-wide /in/ scan."
+            )
+
+            return profiles
 
         # ------------------------------------------------------------
         # Remove duplicate profile URLs while preserving discovery order.
