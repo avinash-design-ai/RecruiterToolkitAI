@@ -1033,12 +1033,16 @@ class CompanyPage(BasePage):
                 "ArrowDown"
             )
 
+            self.page.keyboard.press(
+                "Enter"
+            )
+
             self.page.wait_for_timeout(
                 1000
             )
 
             print(
-                "Location suggestion highlighted."
+                "Location suggestion selected."
             )
 
         except Exception as ex:
