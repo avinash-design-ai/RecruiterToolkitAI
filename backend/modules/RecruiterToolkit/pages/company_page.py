@@ -1220,22 +1220,138 @@ class CompanyPage(BasePage):
             )
 
             try:
+                # ------------------------------------------------------------
+                # KEYBOARD FALLBACK
+                #
+                # We must select the autocomplete item, not merely highlight it.
+                # Keep focus on the actual location input so Enter applies the
+                # highlighted LinkedIn location suggestion rather than submitting
+                # the surrounding search form.
+                # ------------------------------------------------------------
                 location_box.click()
 
-                self.page.keyboard.press(
-                    "ArrowDown"
-                )
+                self.page.wait_for_timeout(500)
 
-                self.page.wait_for_timeout(
-                    1000
-                )
+                location_box.press("ArrowDown")
+
+                self.page.wait_for_timeout(500)
 
                 print(
-                    "Location suggestion highlighted using keyboard fallback."
+                    "Location suggestion highlighted using input keyboard fallback."
+                )
+
+                location_box.press("Enter")
+
+                self.page.wait_for_timeout(1500)
+
+                # ------------------------------------------------------------
+                # VERIFY THAT THE LOCATION WAS ACTUALLY APPLIED
+                # ------------------------------------------------------------
+                current_url = self.page.url.lower()
+
+                print(
+                    "URL after keyboard location selection:",
+                    self.page.url
+                )
+
+                # Never accept a profile or unrelated LinkedIn page.
+                if "/in/" in current_url:
+                    print(
+                        "[LOCATION ERROR] Keyboard selection opened a profile."
+                    )
+                    return False
+
+                if "/search/results/people/" not in current_url:
+                    print(
+                        "[LOCATION ERROR] Keyboard selection left people-search."
+                    )
+                    return False
+
+                if "currentcompany=" not in current_url:
+                    print(
+                        "[LOCATION ERROR] currentCompany disappeared after "
+                        "keyboard location selection."
+                    )
+                    return False
+
+                # ------------------------------------------------------------
+                # VERIFY THE LOCATION UI STATE.
+                #
+                # After a successful LinkedIn autocomplete selection, the input
+                # is normally cleared/replaced by the selected location chip.
+                # Search the visible page for the requested location.
+                # ------------------------------------------------------------
+                location_applied = False
+
+                try:
+                    visible_location = self.page.get_by_text(
+                        location,
+                        exact=False
+                    )
+
+                    visible_count = visible_location.count()
+
+                    for i in range(visible_count):
+                        try:
+                            candidate = visible_location.nth(i)
+
+                            if not candidate.is_visible():
+                                continue
+
+                            text_value = (
+                                candidate.inner_text(
+                                    timeout=1000
+                                )
+                                .strip()
+                            )
+
+                            normalized_text = " ".join(
+                                text_value
+                                .replace("\xa0", " ")
+                                .split()
+                            ).lower()
+
+                            if normalized_location in normalized_text:
+                                # Do not accept profile-card text as evidence.
+                                profile_ancestor = candidate.locator(
+                                    "xpath=ancestor::a[contains(@href, '/in/')]"
+                                )
+
+                                if profile_ancestor.count():
+                                    continue
+
+                                location_applied = True
+
+                                print(
+                                    "Verified applied location UI:",
+                                    repr(text_value[:300])
+                                )
+
+                                break
+
+                        except Exception:
+                            continue
+
+                except Exception as ex:
+                    print(
+                        "Location UI verification failed:",
+                        repr(ex)
+                    )
+
+                if not location_applied:
+                    print(
+                        "[LOCATION ERROR] Keyboard selection did not produce "
+                        "verifiable applied location."
+                    )
+                    return False
+
+                print(
+                    "Location suggestion selected and verified."
                 )
 
                 selected = True
 
+        # ------------------------------------------------------------
             except Exception as ex:
                 print(
                     "[LOCATION ERROR] Keyboard fallback failed:",
@@ -1243,7 +1359,6 @@ class CompanyPage(BasePage):
                 )
                 return False
 
-        # ------------------------------------------------------------
         # SAFETY CHECK
         #
         # The location click/highlight must never navigate to a
