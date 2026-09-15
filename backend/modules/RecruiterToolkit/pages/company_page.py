@@ -848,94 +848,553 @@ class CompanyPage(BasePage):
         return False
 
     def apply_location(self, location):
+        print("=" * 60)
+        print("APPLYING LOCATION FILTER")
+        print("=" * 60)
 
         print(
-            f"Applying location: {location}"
+            "Requested location:",
+            location
+        )
+
+        before_url = self.page.url
+
+        print(
+            "URL before location filter:",
+            before_url
         )
 
         # ------------------------------------------------------------
-        # Dismiss any LinkedIn dialog blocking the filter controls.
-        # LinkedIn can leave an open dialog over the people-search
-        # page, causing Playwright clicks to be intercepted.
-        #
-        # Keep the original location-selection method unchanged.
+        # Safety: must already be on company-scoped people search.
         # ------------------------------------------------------------
+        before_url_lower = before_url.lower()
 
+        if "/search/results/people/" not in before_url_lower:
+            print(
+                "[LOCATION ERROR] Not on LinkedIn people-search page."
+            )
+            return False
+
+        if "currentcompany=" not in before_url_lower:
+            print(
+                "[LOCATION ERROR] currentCompany filter missing."
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # Open Locations filter.
+        # ------------------------------------------------------------
         try:
-
-            dialogs = self.page.locator(
-                "dialog[open], [role='dialog']:visible"
+            locations = self.page.get_by_text(
+                "Locations",
+                exact=True
             )
 
-            if dialogs.count():
+            location_count = locations.count()
 
+            print(
+                "Exact Locations matches:",
+                location_count
+            )
+
+            clicked = False
+
+            for i in range(location_count):
+                try:
+                    candidate = locations.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    candidate.click(
+                        timeout=15000
+                    )
+
+                    clicked = True
+
+                    print(
+                        f"Clicked Locations match #{i + 1}"
+                    )
+
+                    break
+
+                except Exception:
+                    continue
+
+            if not clicked:
                 print(
-                    "Open LinkedIn dialog detected. "
-                    "Attempting to dismiss it..."
+                    "[LOCATION ERROR] Could not click Locations filter."
                 )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Opening Locations failed:",
+                repr(ex)
+            )
+            return False
+
+        self.page.wait_for_timeout(
+            1500
+        )
+
+        # ------------------------------------------------------------
+        # Find the actual location input.
+        # ------------------------------------------------------------
+        try:
+            inputs = self.page.locator(
+                "input:visible"
+            )
+
+            input_count = inputs.count()
+
+            print(
+                "Visible inputs:",
+                input_count
+            )
+
+            if input_count == 0:
+                print(
+                    "[LOCATION ERROR] No visible inputs."
+                )
+                return False
+
+            location_box = inputs.last
+
+            print(
+                "Location input placeholder:",
+                location_box.get_attribute("placeholder")
+            )
+
+            location_box.fill(
+                location
+            )
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Could not enter location:",
+                repr(ex)
+            )
+            return False
+
+        self.page.wait_for_timeout(
+            2500
+        )
+
+        print(
+            "Entered location:",
+            location
+        )
+
+        print(
+            "URL after entering location:",
+            self.page.url
+        )
+
+        # ------------------------------------------------------------
+        # CRITICAL LOCATION SUGGESTION SELECTION
+        #
+        # Do NOT use:
+        #   [role='listitem']
+        #
+        # LinkedIn profile result cards are also listitems.
+        #
+        # We specifically look for text matching the requested
+        # location and reject anything contained inside an /in/
+        # profile link.
+        # ------------------------------------------------------------
+        print(
+            "Selecting actual location suggestion..."
+        )
+
+        normalized_location = " ".join(
+            str(location)
+            .replace("\xa0", " ")
+            .strip()
+            .split()
+        ).lower()
+
+        selected = False
+
+        # First pass: exact visible text.
+        try:
+            exact_matches = self.page.get_by_text(
+                location,
+                exact=True
+            )
+
+            exact_count = exact_matches.count()
+
+            print(
+                "Exact location-text matches:",
+                exact_count
+            )
+
+            for i in range(exact_count):
+                try:
+                    candidate = exact_matches.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    # Reject candidates that belong to a profile link.
+                    profile_link_ancestor = candidate.locator(
+                        "xpath=ancestor::a[contains(@href, '/in/')]"
+                    )
+
+                    if profile_link_ancestor.count():
+                        print(
+                            f"Skipping exact match #{i + 1}: "
+                            "inside profile link"
+                        )
+                        continue
+
+                    # Reject profile/search result containers.
+                    parent_text = ""
+
+                    try:
+                        parent = candidate.locator(
+                            "xpath=.."
+                        )
+
+                        parent_text = (
+                            parent.inner_text(
+                                timeout=1000
+                            )
+                            .strip()
+                        )
+                    except Exception:
+                        pass
+
+                    if (
+                        parent_text
+                        and normalized_location not in parent_text.lower()
+                    ):
+                        continue
+
+                    print(
+                        "Clicking exact location suggestion:",
+                        candidate.inner_text(
+                            timeout=2000
+                        ).strip()
+                    )
+
+                    candidate.click(
+                        timeout=10000
+                    )
+
+                    selected = True
+
+                    break
+
+                except Exception as ex:
+                    print(
+                        "Exact location candidate skipped:",
+                        repr(ex)
+                    )
+
+        except Exception as ex:
+            print(
+                "Exact location lookup failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # Second pass: visible location-like candidates.
+        #
+        # Look inside common autocomplete elements, but reject
+        # anything that belongs to a profile /in/ link.
+        # ------------------------------------------------------------
+        if not selected:
+
+            print(
+                "Exact location suggestion not selected."
+            )
+
+            selectors = [
+                "li:visible",
+                "[role='option']:visible",
+                "[role='button']:visible",
+                "button:visible",
+            ]
+
+            for selector in selectors:
+
+                try:
+                    candidates = self.page.locator(
+                        selector
+                    )
+
+                    count = candidates.count()
+
+                    print(
+                        f"{selector} count:",
+                        count
+                    )
+
+                    for i in range(count):
+
+                        try:
+                            candidate = candidates.nth(i)
+
+                            if not candidate.is_visible():
+                                continue
+
+                            text_value = (
+                                candidate.inner_text(
+                                    timeout=1000
+                                )
+                                .strip()
+                            )
+
+                            if not text_value:
+                                continue
+
+                            text_normalized = " ".join(
+                                text_value
+                                .replace("\xa0", " ")
+                                .split()
+                            ).lower()
+
+                            # Must contain the requested location.
+                            if normalized_location not in text_normalized:
+                                continue
+
+                            # Never click a profile result.
+                            profile_link_ancestor = candidate.locator(
+                                "xpath=ancestor::a[contains(@href, '/in/')]"
+                            )
+
+                            if profile_link_ancestor.count():
+                                continue
+
+                            # Never click a profile-result container.
+                            if (
+                                "/in/" in text_value.lower()
+                                or
+                                "message" in text_normalized
+                                and "mutual connections" in text_normalized
+                            ):
+                                continue
+
+                            print(
+                                "Candidate location suggestion:",
+                                repr(text_value[:300])
+                            )
+
+                            candidate.click(
+                                timeout=10000
+                            )
+
+                            selected = True
+
+                            print(
+                                "Location suggestion clicked."
+                            )
+
+                            break
+
+                        except Exception:
+                            continue
+
+                    if selected:
+                        break
+
+                except Exception as ex:
+                    print(
+                        f"Location selector scan failed for {selector}:",
+                        repr(ex)
+                    )
+
+        # ------------------------------------------------------------
+        # Keyboard fallback.
+        #
+        # ArrowDown is allowed only as a fallback.
+        # NEVER press Enter here because Enter previously navigated
+        # away from the company people-search page.
+        # ------------------------------------------------------------
+        if not selected:
+
+            print(
+                "DOM location suggestion not found."
+            )
+
+            try:
+                location_box.click()
 
                 self.page.keyboard.press(
-                    "Escape"
+                    "ArrowDown"
                 )
 
                 self.page.wait_for_timeout(
                     1000
                 )
 
-        except Exception:
+                print(
+                    "Location suggestion highlighted using keyboard fallback."
+                )
 
-            pass
+                selected = True
 
-        self.page.get_by_text(
-            "Locations",
-            exact=False
-        ).first.click()
+            except Exception as ex:
+                print(
+                    "[LOCATION ERROR] Keyboard fallback failed:",
+                    repr(ex)
+                )
+                return False
 
-        self.page.wait_for_timeout(
-            2000
+        # ------------------------------------------------------------
+        # SAFETY CHECK
+        #
+        # The location click/highlight must never navigate to a
+        # profile page or generic LinkedIn page.
+        # ------------------------------------------------------------
+        after_selection_url = self.page.url
+
+        print(
+            "URL after location selection:",
+            after_selection_url
         )
 
-        location_box = self.page.locator(
-            "input"
-        ).last
+        after_selection_lower = after_selection_url.lower()
 
-        location_box.fill(
-            location
-        )
+        if "/in/" in after_selection_lower:
+            print(
+                "[LOCATION ERROR] Location selection opened a profile."
+            )
+            return False
 
-        self.page.wait_for_timeout(
-            2000
-        )
+        if "/search/results/people/" not in after_selection_lower:
+            print(
+                "[LOCATION ERROR] Location selection left people-search."
+            )
+            return False
 
-        self.page.keyboard.press(
-            "ArrowDown"
-        )
+        if "currentcompany=" not in after_selection_lower:
+            print(
+                "[LOCATION ERROR] currentCompany disappeared."
+            )
+            return False
 
-        self.page.keyboard.press(
-            "Enter"
-        )
-
-        self.page.wait_for_timeout(
-            1000
+        # ------------------------------------------------------------
+        # Click Show results.
+        # ------------------------------------------------------------
+        print(
+            "Looking for Show results..."
         )
 
         try:
-
-            self.page.get_by_text(
+            show_results = self.page.get_by_text(
                 "Show results",
-                exact=False
-            ).first.click()
+                exact=True
+            )
 
-        except Exception:
+            show_count = show_results.count()
 
-            pass
+            print(
+                "Show results exact matches:",
+                show_count
+            )
+
+            clicked_show_results = False
+
+            for i in range(show_count):
+
+                try:
+                    candidate = show_results.nth(i)
+
+                    if not candidate.is_visible():
+                        continue
+
+                    candidate.click(
+                        timeout=15000
+                    )
+
+                    clicked_show_results = True
+
+                    print(
+                        f"Clicked Show results #{i + 1}"
+                    )
+
+                    break
+
+                except Exception:
+                    continue
+
+            if not clicked_show_results:
+                print(
+                    "[LOCATION ERROR] Could not click Show results."
+                )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Show results failed:",
+                repr(ex)
+            )
+            return False
 
         self.page.wait_for_timeout(
-            5000
+            4000
+        )
+
+        # ------------------------------------------------------------
+        # Final validation.
+        # ------------------------------------------------------------
+        final_url = self.page.url
+
+        print(
+            "Final URL after location filter:",
+            final_url
+        )
+
+        final_url_lower = final_url.lower()
+
+        if "/search/results/people/" not in final_url_lower:
+            print(
+                "[LOCATION ERROR] Final page is not people-search."
+            )
+            return False
+
+        if "currentcompany=" not in final_url_lower:
+            print(
+                "[LOCATION ERROR] Final URL lost currentCompany."
+            )
+            return False
+
+        if "/in/" in final_url_lower:
+            print(
+                "[LOCATION ERROR] Final URL is a profile."
+            )
+            return False
+
+        # Wait for the employee result list.
+        try:
+            self.page.locator(
+                "a[href*='/in/']:visible"
+            ).first.wait_for(
+                state="visible",
+                timeout=30000
+            )
+        except Exception:
+            self.page.wait_for_timeout(
+                5000
+            )
+
+        profile_count = self.page.locator(
+            "a[href*='/in/']:visible"
+        ).count()
+
+        print(
+            "Visible profile links after location filter:",
+            profile_count
+        )
+
+        print(
+            "Location applied successfully."
         )
 
         return True
-
 
     def get_profiles(self, company="", location=""):
         """
