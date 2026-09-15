@@ -847,232 +847,549 @@ class CompanyPage(BasePage):
 
         return False
 
+
     def apply_location(self, location):
 
-        print(
-            f"Applying location: {location}"
-        )
+        print("=" * 60)
+        print("APPLYING LOCATION FILTER")
+        print("=" * 60)
+        print("Requested location:", location)
 
-        # ------------------------------------------------------------
-        # Dismiss any LinkedIn dialog blocking the filter controls.
-        # LinkedIn can leave an open dialog over the people-search
-        # page, causing Playwright clicks to be intercepted.
-        #
-        # Keep the original location-selection method unchanged.
-        # ------------------------------------------------------------
+        before_url = self.page.url
+        print("URL before location filter:", before_url)
 
-        try:
-
-            dialogs = self.page.locator(
-                "dialog[open], [role='dialog']:visible"
+        def valid_people_url(url):
+            if not url:
+                return False
+            lower = url.lower()
+            return (
+                "/search/results/people/" in lower
+                and "currentcompany=" in lower
             )
 
-            if dialogs.count():
+        def bad_navigation(url):
+            if not url:
+                return True
 
+            lower = url.lower()
+
+            if lower.rstrip("/") == "https://www.linkedin.com":
+                return True
+
+            bad = (
+                "/login",
+                "/authwall",
+                "/checkpoint",
+                "/uas/login",
+                "/signup",
+            )
+
+            return any(x in lower for x in bad)
+
+        if not valid_people_url(before_url):
+            print(
+                "[LOCATION ERROR] Current page is not a valid "
+                "company People-search page."
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 1. Open Locations
+        # ------------------------------------------------------------
+        try:
+            locations = self.page.get_by_text(
+                "Locations",
+                exact=True,
+            )
+
+            count = locations.count()
+
+            print("Exact Locations matches:", count)
+
+            clicked = False
+
+            for i in range(count):
+                item = locations.nth(i)
+
+                try:
+                    if not item.is_visible():
+                        continue
+
+                    item.click(timeout=10000)
+                    print(
+                        f"Clicked Locations match #{i + 1}"
+                    )
+                    clicked = True
+                    break
+
+                except Exception as ex:
+                    print(
+                        f"Locations click #{i + 1} failed:",
+                        repr(ex),
+                    )
+
+            if not clicked:
                 print(
-                    "Open LinkedIn dialog detected. "
-                    "Attempting to dismiss it..."
+                    "[LOCATION ERROR] Locations control not found."
                 )
+                return False
 
-                self.page.keyboard.press(
-                    "Escape"
-                )
-
-                self.page.wait_for_timeout(
-                    1000
-                )
-
-        except Exception:
-
-            pass
-
-        self.page.get_by_text(
-            "Locations",
-            exact=False
-        ).first.click()
-
-        self.page.wait_for_timeout(
-            2000
-        )
-
-        location_box = self.page.locator(
-            "input"
-        ).last
-
-        location_box.fill(
-            location
-        )
-
-        self.page.wait_for_timeout(
-            2000
-        )
-
-        self.page.keyboard.press(
-            "ArrowDown"
-        )
-
-        self.page.keyboard.press(
-            "Enter"
-        )
-
-        self.page.wait_for_timeout(
-            1000
-        )
-
-        try:
-
-            self.page.get_by_text(
-                "Show results",
-                exact=False
-            ).first.click()
-
-        except Exception:
-
-            pass
-
-        self.page.wait_for_timeout(
-            5000
-        )
-
-        # ------------------------------------------------------------
-        # POST-LOCATION-FILTER DIAGNOSTICS
-        #
-        # IMPORTANT:
-        # The existing location-filter interaction above is unchanged.
-        # These diagnostics only inspect the resulting page state.
-        # ------------------------------------------------------------
-
-        try:
-            print("=" * 60)
-            print("LOCATION FILTER POST-APPLICATION DIAGNOSTICS")
-            print("=" * 60)
+            self.page.wait_for_timeout(1500)
 
             print(
-                "Requested location:",
+                "URL after opening Locations:",
+                self.page.url,
+            )
+
+            if bad_navigation(self.page.url):
+                print(
+                    "[LOCATION ERROR] Opening Locations caused "
+                    "bad navigation."
+                )
+                return False
+
+            if not valid_people_url(self.page.url):
+                print(
+                    "[LOCATION ERROR] Opening Locations changed "
+                    "the company People-search URL."
+                )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Opening Locations failed:",
+                repr(ex),
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 2. Identify active filter UI
+        # ------------------------------------------------------------
+        try:
+            dialogs = self.page.locator(
+                "[role='dialog']:visible"
+            )
+
+            dialog_count = dialogs.count()
+
+            print(
+                "Visible dialogs:",
+                dialog_count,
+            )
+
+            if dialog_count:
+                panel = dialogs.last
+                print(
+                    "Using active visible dialog."
+                )
+            else:
+                panel = self.page
+                print(
+                    "No dialog detected; using page as fallback scope."
+                )
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Filter panel detection failed:",
+                repr(ex),
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 3. Locate location input
+        # ------------------------------------------------------------
+        try:
+            inputs = panel.locator(
+                "input:visible"
+            )
+
+            input_count = inputs.count()
+
+            print(
+                "Visible inputs in filter scope:",
+                input_count,
+            )
+
+            if not input_count:
+                print(
+                    "[LOCATION ERROR] No visible location input."
+                )
+                return False
+
+            location_box = None
+
+            for i in range(input_count):
+                item = inputs.nth(i)
+
+                try:
+                    placeholder = (
+                        item.get_attribute("placeholder")
+                        or ""
+                    )
+
+                    aria = (
+                        item.get_attribute("aria-label")
+                        or ""
+                    )
+
+                    name = (
+                        item.get_attribute("name")
+                        or ""
+                    )
+
+                    metadata = (
+                        placeholder
+                        + " "
+                        + aria
+                        + " "
+                        + name
+                    )
+
+                    print(
+                        f"Input #{i + 1}:",
+                        repr(metadata),
+                    )
+
+                    if re.search(
+                        r"location|city|state|place",
+                        metadata,
+                        re.IGNORECASE,
+                    ):
+                        location_box = item
+                        break
+
+                except Exception:
+                    pass
+
+            if location_box is None:
+                location_box = inputs.last
+
+                print(
+                    "Using last visible input within filter scope."
+                )
+
+            location_box.click(
+                timeout=10000
+            )
+
+            location_box.fill(
                 location
             )
 
             print(
-                "Current URL after location filter:",
-                self.page.url
+                "Entered location:",
+                location,
             )
 
-            try:
-                print(
-                    "Current page title:",
-                    self.page.title()
-                )
-            except Exception as ex:
-                print(
-                    "Page title inspection failed:",
-                    repr(ex)
-                )
+            self.page.wait_for_timeout(2000)
 
-            # --------------------------------------------------------
-            # Count visible profile links after applying location.
-            # --------------------------------------------------------
-
-            try:
-                profile_links = self.page.locator(
-                    "a[href*='/in/']:visible"
-                )
-
-                profile_link_count = (
-                    profile_links.count()
-                )
-
-                print(
-                    "Visible /in/ links after location filter:",
-                    profile_link_count
-                )
-
-            except Exception as ex:
-                print(
-                    "Profile-link count failed:",
-                    repr(ex)
-                )
-
-            # --------------------------------------------------------
-            # Inspect visible text around location/filter controls.
-            # This is diagnostic only.
-            # --------------------------------------------------------
-
-            try:
-                visible_main = self.page.locator(
-                    "main:visible"
-                ).first
-
-                if visible_main.count():
-
-                    main_text = (
-                        visible_main.inner_text(
-                            timeout=5000
-                        )
-                        .strip()
-                    )
-
-                    # Keep the log bounded.
-                    if len(main_text) > 4000:
-                        main_text = main_text[:4000]
-
-                    print(
-                        "Visible main text snapshot:"
-                    )
-
-                    print(
-                        main_text
-                    )
-
-                else:
-
-                    print(
-                        "Visible main text snapshot: "
-                        "main element not found."
-                    )
-
-            except Exception as ex:
-
-                print(
-                    "Visible main text inspection failed:",
-                    repr(ex)
-                )
-
-            # --------------------------------------------------------
-            # Inspect elements containing the requested location text.
-            # --------------------------------------------------------
-
-            try:
-
-                location_matches = self.page.get_by_text(
-                    location,
-                    exact=False
-                )
-
-                print(
-                    "Visible text matches for requested location:",
-                    location_matches.count()
-                )
-
-            except Exception as ex:
-
-                print(
-                    "Location text inspection failed:",
-                    repr(ex)
-                )
-
-            print("=" * 60)
             print(
-                "LOCATION FILTER DIAGNOSTICS COMPLETE"
+                "URL after entering location:",
+                self.page.url,
             )
-            print("=" * 60)
+
+            if bad_navigation(self.page.url):
+                print(
+                    "[LOCATION ERROR] Typing location caused "
+                    "bad navigation."
+                )
+                return False
+
+            if not valid_people_url(self.page.url):
+                print(
+                    "[LOCATION ERROR] Typing location changed "
+                    "the company People-search URL."
+                )
+                return False
 
         except Exception as ex:
-
-            # Diagnostics must NEVER break the workflow.
             print(
-                "Location diagnostics failed:",
-                repr(ex)
+                "[LOCATION ERROR] Location input failed:",
+                repr(ex),
             )
+            return False
+
+        # ------------------------------------------------------------
+        # 4. Select location suggestion
+        #
+        # DO NOT use ArrowDown + Enter.
+        # ------------------------------------------------------------
+        try:
+            print(
+                "-" * 60
+            )
+            print(
+                "SELECTING LOCATION SUGGESTION"
+            )
+
+            suggestion = None
+
+            options = self.page.locator(
+                "[role='option']:visible"
+            )
+
+            option_count = options.count()
+
+            print(
+                "Visible options:",
+                option_count,
+            )
+
+            for i in range(option_count):
+                item = options.nth(i)
+
+                try:
+                    text = item.inner_text().strip()
+
+                    print(
+                        f"Option #{i + 1}:",
+                        repr(text),
+                    )
+
+                    if text.lower() == location.lower():
+                        suggestion = item
+                        break
+
+                except Exception:
+                    pass
+
+            if suggestion is None:
+                exact = self.page.get_by_text(
+                    location,
+                    exact=True,
+                )
+
+                exact_count = exact.count()
+
+                print(
+                    "Exact location text matches:",
+                    exact_count,
+                )
+
+                for i in range(exact_count):
+                    item = exact.nth(i)
+
+                    try:
+                        if item.is_visible():
+                            suggestion = item
+                            break
+                    except Exception:
+                        pass
+
+            if suggestion is None:
+                print(
+                    "[LOCATION ERROR] Location suggestion not found."
+                )
+                return False
+
+            suggestion.click(
+                timeout=10000
+            )
+
+            print(
+                "Clicked location suggestion:",
+                location,
+            )
+
+            self.page.wait_for_timeout(1200)
+
+            print(
+                "URL after selecting location:",
+                self.page.url,
+            )
+
+            if bad_navigation(self.page.url):
+                print(
+                    "[LOCATION ERROR] Selecting location caused "
+                    "bad navigation."
+                )
+                return False
+
+            if not valid_people_url(self.page.url):
+                print(
+                    "[LOCATION ERROR] Selecting location changed "
+                    "the company People-search URL."
+                )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Location suggestion failed:",
+                repr(ex),
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 5. Click Show results inside active filter UI
+        # ------------------------------------------------------------
+        try:
+            print(
+                "-" * 60
+            )
+            print(
+                "CLICKING SHOW RESULTS"
+            )
+
+            dialogs = self.page.locator(
+                "[role='dialog']:visible"
+            )
+
+            if dialogs.count():
+                panel = dialogs.last
+
+            show_results = None
+
+            buttons = panel.get_by_role(
+                "button",
+                name=re.compile(
+                    r"^\s*show\s+results\s*$",
+                    re.IGNORECASE,
+                ),
+            )
+
+            button_count = buttons.count()
+
+            print(
+                "Scoped Show results buttons:",
+                button_count,
+            )
+
+            for i in range(button_count):
+                item = buttons.nth(i)
+
+                try:
+                    if item.is_visible():
+                        show_results = item
+                        break
+                except Exception:
+                    pass
+
+            if show_results is None:
+                texts = panel.get_by_text(
+                    re.compile(
+                        r"^\s*show\s+results\s*$",
+                        re.IGNORECASE,
+                    ),
+                )
+
+                text_count = texts.count()
+
+                print(
+                    "Scoped Show results text matches:",
+                    text_count,
+                )
+
+                for i in range(text_count):
+                    item = texts.nth(i)
+
+                    try:
+                        if item.is_visible():
+                            show_results = item
+                            break
+                    except Exception:
+                        pass
+
+            if show_results is None:
+                print(
+                    "[LOCATION ERROR] Scoped Show results not found."
+                )
+                return False
+
+            show_results.click(
+                timeout=10000
+            )
+
+            print(
+                "Clicked Show results."
+            )
+
+            self.page.wait_for_timeout(5000)
+
+            print(
+                "URL after Show results:",
+                self.page.url,
+            )
+
+            if bad_navigation(self.page.url):
+                print(
+                    "[LOCATION ERROR] Show results caused "
+                    "root/login/authwall navigation."
+                )
+                return False
+
+            if not valid_people_url(self.page.url):
+                print(
+                    "[LOCATION ERROR] Show results did not leave "
+                    "the selected company's People search."
+                )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Show results failed:",
+                repr(ex),
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 6. Final verification
+        # ------------------------------------------------------------
+        print(
+            "-" * 60
+        )
+        print(
+            "LOCATION FILTER VERIFIED"
+        )
+
+        print(
+            "Final URL:",
+            self.page.url,
+        )
+
+        try:
+            print(
+                "Final title:",
+                self.page.title(),
+            )
+        except Exception:
+            pass
+
+        try:
+            profiles = self.page.locator(
+                "a[href*='/in/']:visible"
+            )
+
+            print(
+                "Visible /in/ links:",
+                profiles.count(),
+            )
+        except Exception as ex:
+            print(
+                "Profile diagnostic failed:",
+                repr(ex),
+            )
+
+        try:
+            matches = self.page.get_by_text(
+                location,
+                exact=False,
+            )
+
+            print(
+                "Requested-location text matches:",
+                matches.count(),
+            )
+        except Exception as ex:
+            print(
+                "Location diagnostic failed:",
+                repr(ex),
+            )
+
+        print("=" * 60)
+        print(
+            "LOCATION FILTER SUCCESS"
+        )
+        print("=" * 60)
 
         return True
 
