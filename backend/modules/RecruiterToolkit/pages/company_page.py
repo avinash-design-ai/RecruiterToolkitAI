@@ -934,6 +934,146 @@ class CompanyPage(BasePage):
             5000
         )
 
+        # ------------------------------------------------------------
+        # POST-LOCATION-FILTER DIAGNOSTICS
+        #
+        # IMPORTANT:
+        # The existing location-filter interaction above is unchanged.
+        # These diagnostics only inspect the resulting page state.
+        # ------------------------------------------------------------
+
+        try:
+            print("=" * 60)
+            print("LOCATION FILTER POST-APPLICATION DIAGNOSTICS")
+            print("=" * 60)
+
+            print(
+                "Requested location:",
+                location
+            )
+
+            print(
+                "Current URL after location filter:",
+                self.page.url
+            )
+
+            try:
+                print(
+                    "Current page title:",
+                    self.page.title()
+                )
+            except Exception as ex:
+                print(
+                    "Page title inspection failed:",
+                    repr(ex)
+                )
+
+            # --------------------------------------------------------
+            # Count visible profile links after applying location.
+            # --------------------------------------------------------
+
+            try:
+                profile_links = self.page.locator(
+                    "a[href*='/in/']:visible"
+                )
+
+                profile_link_count = (
+                    profile_links.count()
+                )
+
+                print(
+                    "Visible /in/ links after location filter:",
+                    profile_link_count
+                )
+
+            except Exception as ex:
+                print(
+                    "Profile-link count failed:",
+                    repr(ex)
+                )
+
+            # --------------------------------------------------------
+            # Inspect visible text around location/filter controls.
+            # This is diagnostic only.
+            # --------------------------------------------------------
+
+            try:
+                visible_main = self.page.locator(
+                    "main:visible"
+                ).first
+
+                if visible_main.count():
+
+                    main_text = (
+                        visible_main.inner_text(
+                            timeout=5000
+                        )
+                        .strip()
+                    )
+
+                    # Keep the log bounded.
+                    if len(main_text) > 4000:
+                        main_text = main_text[:4000]
+
+                    print(
+                        "Visible main text snapshot:"
+                    )
+
+                    print(
+                        main_text
+                    )
+
+                else:
+
+                    print(
+                        "Visible main text snapshot: "
+                        "main element not found."
+                    )
+
+            except Exception as ex:
+
+                print(
+                    "Visible main text inspection failed:",
+                    repr(ex)
+                )
+
+            # --------------------------------------------------------
+            # Inspect elements containing the requested location text.
+            # --------------------------------------------------------
+
+            try:
+
+                location_matches = self.page.get_by_text(
+                    location,
+                    exact=False
+                )
+
+                print(
+                    "Visible text matches for requested location:",
+                    location_matches.count()
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Location text inspection failed:",
+                    repr(ex)
+                )
+
+            print("=" * 60)
+            print(
+                "LOCATION FILTER DIAGNOSTICS COMPLETE"
+            )
+            print("=" * 60)
+
+        except Exception as ex:
+
+            # Diagnostics must NEVER break the workflow.
+            print(
+                "Location diagnostics failed:",
+                repr(ex)
+            )
+
         return True
 
     def get_profiles(self, company="", location=""):
