@@ -63,9 +63,10 @@ class SearchWorkflowV2:
             self.page
         )
 
-        # LinkedInProfilePageV2 manages its own temporary profile tab.
-        # Keep the authenticated employee-search page as the original page.
-        self.profile_page = self.page.context.new_page()
+        # LinkedInProfilePageV2 creates a fresh temporary
+        # profile tab for each candidate.
+        #
+        # Do not keep a reusable profile Page here.
     # =====================================================
     # FALLBACK RECORD
     # =====================================================
@@ -493,8 +494,13 @@ class SearchWorkflowV2:
                     # created in SearchWorkflowV2.__init__().
                     # -------------------------------------------------
 
+                    # Keep self.page as the authoritative
+                    # company + location employee-search page.
+                    #
+                    # LinkedInProfilePageV2 creates a fresh
+                    # temporary profile tab for this candidate.
                     profile = LinkedInProfilePageV2(
-                        self.profile_page
+                        self.page
                     )
 
                     print(

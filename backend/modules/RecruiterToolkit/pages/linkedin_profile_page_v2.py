@@ -368,66 +368,86 @@ class LinkedInProfilePageV2(BasePage):
         # --------------------------------------------------------
         # Controlled fallback.
         #
-        # This preserves the old behavior if LinkedIn changes the
-        # search-page markup and the exact link cannot be found.
+        # CRITICAL:
+        #
+        # Never navigate the authenticated employee-search page
+        # directly to a profile.
+        #
+        # Always create a fresh temporary tab.
         # --------------------------------------------------------
 
         print(
             "Trying controlled direct profile navigation fallback..."
         )
 
+        profile_page = None
+
         try:
 
-            self.page.goto(
+            profile_page = (
+                self.page.context.new_page()
+            )
+
+            profile_page.goto(
                 profile_url,
                 wait_until="domcontentloaded",
                 timeout=60000
             )
 
-            self.page.wait_for_timeout(
+            profile_page.wait_for_timeout(
                 4000
             )
 
             current_url = (
-                self.page.url.lower()
+                profile_page.url.lower()
             )
 
             print(
                 "Profile navigation URL:",
-                self.page.url
+                profile_page.url
             )
 
+            # ----------------------------------------------------
+            # Reject auth/login redirects.
+            # ----------------------------------------------------
             if (
-                "/authwall"
-                in current_url
-                or "/login"
-                in current_url
-                or "/ssr-login/"
-                in current_url
+                "/authwall" in current_url
+                or "/login" in current_url
+                or "/ssr-login/" in current_url
             ):
 
                 print(
                     "AUTHWALL / LOGIN DETECTED."
                 )
 
+                try:
+                    profile_page.close()
+                except Exception:
+                    pass
+
                 return False
 
+            # ----------------------------------------------------
+            # Must be an actual LinkedIn profile.
+            # ----------------------------------------------------
             if "/in/" not in current_url:
 
                 print(
                     "Profile URL is not a LinkedIn /in/ profile."
                 )
 
+                try:
+                    profile_page.close()
+                except Exception:
+                    pass
+
                 return False
 
-            # --------------------------------------------------------
-            # IMPORTANT:
-            # The direct fallback must still land on the EXACT
-            # candidate profile requested by the workflow.
-            # --------------------------------------------------------
-
+            # ----------------------------------------------------
+            # Exact candidate validation.
+            # ----------------------------------------------------
             actual = canonical(
-                self.page.url
+                profile_page.url
             )
 
             if actual != requested:
@@ -447,10 +467,31 @@ class LinkedInProfilePageV2(BasePage):
                     actual
                 )
 
+                try:
+                    profile_page.close()
+                except Exception:
+                    pass
+
                 return False
 
+            # ----------------------------------------------------
+            # Keep the employee-search page untouched.
+            # ----------------------------------------------------
+            self._original_profile_page = (
+                self.page
+            )
+
+            self._temporary_profile_page = (
+                profile_page
+            )
+
+            self.page = (
+                profile_page
+            )
+
             print(
-                "Direct profile navigation succeeded."
+                "Direct profile navigation succeeded "
+                "in temporary tab."
             )
 
             return True
@@ -461,6 +502,14 @@ class LinkedInProfilePageV2(BasePage):
                 "Profile navigation failed:",
                 repr(ex)
             )
+
+            if profile_page is not None:
+
+                try:
+                    if not profile_page.is_closed():
+                        profile_page.close()
+                except Exception:
+                    pass
 
             return False
 
