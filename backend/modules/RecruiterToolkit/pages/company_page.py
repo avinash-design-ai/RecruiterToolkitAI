@@ -994,370 +994,194 @@ class CompanyPage(BasePage):
         # ------------------------------------------------------------
         # CRITICAL LOCATION SUGGESTION SELECTION
         #
+        # LinkedIn does NOT normally expose the requested location
+        # exactly as typed.
+        #
+        # Example:
+        #   Requested: New Jersey
+        #   LinkedIn:  New Jersey, United States
+        #
+        # Therefore we must target LinkedIn's actual autocomplete
+        # option using the normalized country-qualified value.
+        #
         # Do NOT use:
+        #   get_by_text("New Jersey", exact=True)
         #   [role='listitem']
+        #   ArrowDown + Enter
         #
-        # LinkedIn profile result cards are also listitems.
-        #
-        # We specifically look for text matching the requested
-        # location and reject anything contained inside an /in/
-        # profile link.
+        # [role='listitem'] may match employee profile cards.
         # ------------------------------------------------------------
-        print(
-            "Selecting actual location suggestion..."
+
+        requested_location = str(
+            location
+        ).strip()
+
+        expected_location = (
+            f"{requested_location}, United States"
         )
 
-        normalized_location = " ".join(
-            str(location)
-            .replace("\xa0", " ")
-            .strip()
-            .split()
-        ).lower()
+        print(
+            "Selecting LinkedIn location option:",
+            expected_location
+        )
 
-        selected = False
+        location_selected = False
 
-        # First pass: exact visible text.
+        # ------------------------------------------------------------
+        # PRIMARY METHOD
+        #
+        # LinkedIn's autocomplete option was previously confirmed to
+        # render as:
+        #
+        #   role="option"
+        #   text="New Jersey, United States"
+        #
+        # Select that exact option.
+        # ------------------------------------------------------------
+
         try:
-            exact_matches = self.page.get_by_text(
-                location,
+            location_option = self.page.get_by_role(
+                "option",
+                name=expected_location,
                 exact=True
             )
 
-            exact_count = exact_matches.count()
+            option_count = location_option.count()
 
             print(
-                "Exact location-text matches:",
-                exact_count
+                "Matching location options found:",
+                option_count
             )
 
-            for i in range(exact_count):
+            if option_count > 0:
                 try:
-                    candidate = exact_matches.nth(i)
+                    location_option.first.scroll_into_view_if_needed()
 
-                    if not candidate.is_visible():
-                        continue
-
-                    # Reject candidates that belong to a profile link.
-                    profile_link_ancestor = candidate.locator(
-                        "xpath=ancestor::a[contains(@href, '/in/')]"
+                    location_option.first.click(
+                        timeout=15000
                     )
 
-                    if profile_link_ancestor.count():
-                        print(
-                            f"Skipping exact match #{i + 1}: "
-                            "inside profile link"
-                        )
-                        continue
-
-                    # Reject profile/search result containers.
-                    parent_text = ""
-
-                    try:
-                        parent = candidate.locator(
-                            "xpath=.."
-                        )
-
-                        parent_text = (
-                            parent.inner_text(
-                                timeout=1000
-                            )
-                            .strip()
-                        )
-                    except Exception:
-                        pass
-
-                    if (
-                        parent_text
-                        and normalized_location not in parent_text.lower()
-                    ):
-                        continue
+                    location_selected = True
 
                     print(
-                        "Clicking exact location suggestion:",
-                        candidate.inner_text(
-                            timeout=2000
-                        ).strip()
+                        "Location option clicked successfully."
                     )
-
-                    candidate.click(
-                        timeout=10000
-                    )
-
-                    selected = True
-
-                    break
 
                 except Exception as ex:
                     print(
-                        "Exact location candidate skipped:",
+                        "Location option click failed:",
                         repr(ex)
                     )
 
         except Exception as ex:
             print(
-                "Exact location lookup failed:",
+                "Location option lookup failed:",
                 repr(ex)
             )
 
         # ------------------------------------------------------------
-        # Second pass: visible location-like candidates.
+        # CONTROLLED FALLBACK
         #
-        # Look inside common autocomplete elements, but reject
-        # anything that belongs to a profile /in/ link.
+        # Same confirmed role=option DOM.
+        # We inspect every visible option and compare its complete
+        # rendered text to the country-qualified location.
         # ------------------------------------------------------------
-        if not selected:
 
-            print(
-                "Exact location suggestion not selected."
-            )
+        if not location_selected:
 
-            selectors = [
-                "li:visible",
-                "[role='option']:visible",
-                "[role='button']:visible",
-                "button:visible",
-            ]
+            try:
+                visible_options = self.page.locator(
+                    "[role='option']:visible"
+                )
 
-            for selector in selectors:
+                visible_count = visible_options.count()
 
-                try:
-                    candidates = self.page.locator(
-                        selector
-                    )
+                print(
+                    "Visible location options:",
+                    visible_count
+                )
 
-                    count = candidates.count()
+                for i in range(visible_count):
 
-                    print(
-                        f"{selector} count:",
-                        count
-                    )
+                    try:
+                        option = visible_options.nth(i)
 
-                    for i in range(count):
+                        option_text = (
+                            option.inner_text(
+                                timeout=2000
+                            )
+                            .strip()
+                        )
 
-                        try:
-                            candidate = candidates.nth(i)
+                        print(
+                            f"Location option {i}:",
+                            repr(option_text)
+                        )
 
-                            if not candidate.is_visible():
-                                continue
+                        if (
+                            option_text.lower()
+                            == expected_location.lower()
+                        ):
 
-                            text_value = (
-                                candidate.inner_text(
-                                    timeout=1000
-                                )
-                                .strip()
+                            option.scroll_into_view_if_needed()
+
+                            option.click(
+                                timeout=15000
                             )
 
-                            if not text_value:
-                                continue
-
-                            text_normalized = " ".join(
-                                text_value
-                                .replace("\xa0", " ")
-                                .split()
-                            ).lower()
-
-                            # Must contain the requested location.
-                            if normalized_location not in text_normalized:
-                                continue
-
-                            # Never click a profile result.
-                            profile_link_ancestor = candidate.locator(
-                                "xpath=ancestor::a[contains(@href, '/in/')]"
-                            )
-
-                            if profile_link_ancestor.count():
-                                continue
-
-                            # Never click a profile-result container.
-                            if (
-                                "/in/" in text_value.lower()
-                                or
-                                "message" in text_normalized
-                                and "mutual connections" in text_normalized
-                            ):
-                                continue
+                            location_selected = True
 
                             print(
-                                "Candidate location suggestion:",
-                                repr(text_value[:300])
-                            )
-
-                            candidate.click(
-                                timeout=10000
-                            )
-
-                            selected = True
-
-                            print(
-                                "Location suggestion clicked."
+                                "Location option clicked "
+                                "successfully via fallback."
                             )
 
                             break
 
-                        except Exception:
-                            continue
+                    except Exception:
+                        continue
 
-                    if selected:
-                        break
-
-                except Exception as ex:
-                    print(
-                        f"Location selector scan failed for {selector}:",
-                        repr(ex)
-                    )
-
-        # ------------------------------------------------------------
-        # Keyboard fallback.
-        #
-        # ArrowDown is allowed only as a fallback.
-        # NEVER press Enter here because Enter previously navigated
-        # away from the company people-search page.
-        # ------------------------------------------------------------
-        if not selected:
-
-            print(
-                "DOM location suggestion not found."
-            )
-
-            try:
-                # ------------------------------------------------------------
-                # KEYBOARD FALLBACK
-                #
-                # We must select the autocomplete item, not merely highlight it.
-                # Keep focus on the actual location input so Enter applies the
-                # highlighted LinkedIn location suggestion rather than submitting
-                # the surrounding search form.
-                # ------------------------------------------------------------
-                location_box.click()
-
-                self.page.wait_for_timeout(500)
-
-                location_box.press("ArrowDown")
-
-                self.page.wait_for_timeout(500)
-
-                print(
-                    "Location suggestion highlighted using input keyboard fallback."
-                )
-
-                location_box.press("Enter")
-
-                self.page.wait_for_timeout(1500)
-
-                # ------------------------------------------------------------
-                # VERIFY THAT THE LOCATION WAS ACTUALLY APPLIED
-                # ------------------------------------------------------------
-                current_url = self.page.url.lower()
-
-                print(
-                    "URL after keyboard location selection:",
-                    self.page.url
-                )
-
-                # Never accept a profile or unrelated LinkedIn page.
-                if "/in/" in current_url:
-                    print(
-                        "[LOCATION ERROR] Keyboard selection opened a profile."
-                    )
-                    return False
-
-                if "/search/results/people/" not in current_url:
-                    print(
-                        "[LOCATION ERROR] Keyboard selection left people-search."
-                    )
-                    return False
-
-                if "currentcompany=" not in current_url:
-                    print(
-                        "[LOCATION ERROR] currentCompany disappeared after "
-                        "keyboard location selection."
-                    )
-                    return False
-
-                # ------------------------------------------------------------
-                # VERIFY THE LOCATION UI STATE.
-                #
-                # After a successful LinkedIn autocomplete selection, the input
-                # is normally cleared/replaced by the selected location chip.
-                # Search the visible page for the requested location.
-                # ------------------------------------------------------------
-                location_applied = False
-
-                try:
-                    visible_location = self.page.get_by_text(
-                        location,
-                        exact=False
-                    )
-
-                    visible_count = visible_location.count()
-
-                    for i in range(visible_count):
-                        try:
-                            candidate = visible_location.nth(i)
-
-                            if not candidate.is_visible():
-                                continue
-
-                            text_value = (
-                                candidate.inner_text(
-                                    timeout=1000
-                                )
-                                .strip()
-                            )
-
-                            normalized_text = " ".join(
-                                text_value
-                                .replace("\xa0", " ")
-                                .split()
-                            ).lower()
-
-                            if normalized_location in normalized_text:
-                                # Do not accept profile-card text as evidence.
-                                profile_ancestor = candidate.locator(
-                                    "xpath=ancestor::a[contains(@href, '/in/')]"
-                                )
-
-                                if profile_ancestor.count():
-                                    continue
-
-                                location_applied = True
-
-                                print(
-                                    "Verified applied location UI:",
-                                    repr(text_value[:300])
-                                )
-
-                                break
-
-                        except Exception:
-                            continue
-
-                except Exception as ex:
-                    print(
-                        "Location UI verification failed:",
-                        repr(ex)
-                    )
-
-                if not location_applied:
-                    print(
-                        "[LOCATION ERROR] Keyboard selection did not produce "
-                        "verifiable applied location."
-                    )
-                    return False
-
-                print(
-                    "Location suggestion selected and verified."
-                )
-
-                selected = True
-
-        # ------------------------------------------------------------
             except Exception as ex:
                 print(
-                    "[LOCATION ERROR] Keyboard fallback failed:",
+                    "Location option fallback failed:",
                     repr(ex)
                 )
-                return False
+
+        # ------------------------------------------------------------
+        # HARD FAILURE
+        # ------------------------------------------------------------
+
+        if not location_selected:
+
+            print(
+                "ERROR: Could not click the LinkedIn "
+                "location autocomplete option."
+            )
+
+            print(
+                "Requested location:",
+                requested_location
+            )
+
+            print(
+                "Expected LinkedIn location:",
+                expected_location
+            )
+
+            return False
+
+        print(
+            "Location suggestion selected successfully."
+        )
+
+        # IMPORTANT:
+        # Do NOT press Enter.
+        #
+        # The previous implementation showed that Enter can cause
+        # LinkedIn to leave the authenticated people-search page.
+        self.page.wait_for_timeout(
+            1000
+        )
 
         # SAFETY CHECK
         #
