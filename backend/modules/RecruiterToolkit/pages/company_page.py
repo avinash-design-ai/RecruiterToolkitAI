@@ -1396,26 +1396,34 @@ class CompanyPage(BasePage):
 
         return True
 
+
+
     def get_profiles(self, company="", location=""):
         """
-        Discover ONLY the primary employee profile from each LinkedIn
-        employee result card.
+        Discover primary employee profile links from the authenticated
+        LinkedIn company + location people-search results.
 
         IMPORTANT:
-        A LinkedIn employee result card can contain additional /in/
-        links for mutual connections or other people.
 
-        We must NEVER treat those nested links as separate employees.
+        LinkedIn may expose several /in/ links for a single employee
+        result. The primary employee link normally contains the richer
+        result-card text, such as:
 
-        Correct structure:
+            Name
+            Job title / headline
+            Location
+            Company
+            Connect / Message
+            Mutual connections
 
-            result card
-                -> primary employee /in/ link
-                -> mutual connection /in/ links
-                -> other nested /in/ links
+        Mutual-connection profile links normally contain only the person's
+        name.
 
-        Therefore this method processes result cards first and selects
-        only the FIRST visible /in/ link inside each card.
+        Therefore we score the rendered /in/ links and keep the richest
+        link for each unique profile URL.
+
+        This intentionally does NOT rely on brittle LinkedIn result-card
+        CSS classes.
         """
 
         print("=" * 60)
@@ -1425,10 +1433,9 @@ class CompanyPage(BasePage):
         print("Requested location:", location)
 
         profiles = []
-        seen = set()
 
         # ------------------------------------------------------------
-        # 1. Find the bounded employee search area.
+        # Locate the bounded LinkedIn employee-search area.
         # ------------------------------------------------------------
 
         search_area = None
@@ -1442,7 +1449,10 @@ class CompanyPage(BasePage):
             try:
                 candidate = self.page.locator(selector).first
 
-                if candidate.count() and candidate.is_visible():
+                if (
+                    candidate.count()
+                    and candidate.is_visible()
+                ):
                     search_area = candidate
 
                     print(
@@ -1466,7 +1476,7 @@ class CompanyPage(BasePage):
             return profiles
 
         # ------------------------------------------------------------
-        # 2. Canonical profile URL helper.
+        # Canonical profile URL.
         # ------------------------------------------------------------
 
         def canonical_profile_url(href):
@@ -1494,353 +1504,467 @@ class CompanyPage(BasePage):
             return value.lower()
 
         # ------------------------------------------------------------
-        # 3. Locate actual LinkedIn employee result cards.
-        #
-        # Prefer LinkedIn's result-card containers.
+        # Text normalization.
         # ------------------------------------------------------------
 
-        card_selectors = (
-            "li.reusable-search__result-container:visible",
-            "li.search-result:visible",
-            "li.entity-result:visible",
-            "div.entity-result:visible",
-            "div.search-result:visible",
+        def normalize_text(value):
+            if not value:
+                return ""
+
+            value = (
+                str(value)
+                .replace("\xa0", " ")
+                .replace("\n", " ")
+                .replace("\r", " ")
+            )
+
+            value = re.sub(
+                r"\s+",
+                " ",
+                value
+            )
+
+            return value.strip().lower()
+
+        requested_company_normalized = normalize_text(
+            company
         )
 
-        cards = None
+        requested_location_normalized = normalize_text(
+            location
+        )
 
-        for selector in card_selectors:
+        # ------------------------------------------------------------
+        # Location tokens.
+        #
+        # Example:
+        # "New Jersey"
+        # -> ["new", "jersey"]
+        # ------------------------------------------------------------
+
+        location_tokens = [
+            token
+            for token in re.findall(
+                r"[a-z0-9]+",
+                requested_location_normalized
+            )
+            if len(token) >= 3
+        ]
+
+        # ------------------------------------------------------------
+        # Company tokens.
+        #
+        # Example:
+        # "SmartWorks, LLC"
+        # -> ["smartworks", "llc"]
+        #
+        # We use the meaningful token(s) as supporting evidence only.
+        # ------------------------------------------------------------
+
+        company_tokens = [
+            token
+            for token in re.findall(
+                r"[a-z0-9]+",
+                requested_company_normalized
+            )
+            if len(token) >= 3
+        ]
+
+        # ------------------------------------------------------------
+        # Collect all visible /in/ links.
+        #
+        # This preserves the DOM behavior that previously worked.
+        # ------------------------------------------------------------
+
+        try:
+            links = search_area.locator(
+                "a[href*='/in/']:visible"
+            )
+
+            total_links = links.count()
+
+        except Exception as ex:
+            print(
+                "Visible profile-link lookup failed:",
+                repr(ex)
+            )
+            return profiles
+
+        print(
+            "Visible /in/ links available:",
+            total_links
+        )
+
+        if total_links == 0:
+            print(
+                "ERROR: No visible LinkedIn profile links found."
+            )
+            return profiles
+
+        # ------------------------------------------------------------
+        # best_by_url:
+        #
+        # One employee can have multiple /in/ anchors.
+        #
+        # Keep only the richest/highest-confidence representation for
+        # that profile URL.
+        # ------------------------------------------------------------
+
+        best_by_url = {}
+
+        for index in range(total_links):
+
             try:
-                candidate_cards = search_area.locator(selector)
-                count = candidate_cards.count()
+                link = links.nth(index)
 
-                if count:
-                    cards = candidate_cards
-
-                    print(
-                        "Employee result cards found:",
-                        count
-                    )
-
-                    print(
-                        "Result-card selector:",
-                        selector
-                    )
-
-                    break
-
-            except Exception as ex:
-                print(
-                    "Result-card lookup failed:",
-                    selector,
-                    repr(ex)
+                href = canonical_profile_url(
+                    link.get_attribute("href")
                 )
 
-        # ------------------------------------------------------------
-        # 4. Primary discovery:
-        #    one employee per result card.
-        # ------------------------------------------------------------
+                if not href:
+                    continue
 
-        candidate_rows = []
-
-        if cards is not None:
-            card_count = cards.count()
-
-            for card_index in range(card_count):
+                raw_text = ""
 
                 try:
-                    card = cards.nth(card_index)
-
-                    if not card.is_visible():
-                        continue
-
-                    profile_links = card.locator(
-                        "a[href*='/in/']:visible"
-                    )
-
-                    link_count = profile_links.count()
-
-                    if not link_count:
-                        continue
-
-                    # IMPORTANT:
-                    # The FIRST /in/ link in the actual result card
-                    # is the primary employee link.
-                    #
-                    # Later /in/ links are commonly mutual connections
-                    # or other nested people.
-                    primary_link = profile_links.first
-
-                    href = canonical_profile_url(
-                        primary_link.get_attribute("href")
-                    )
-
-                    if not href:
-                        continue
-
-                    raw_name = ""
-
-                    try:
-                        raw_name = (
-                            primary_link.inner_text(
-                                timeout=2000
-                            )
-                            .strip()
-                            .replace("\n", " ")
+                    raw_text = (
+                        link.inner_text(
+                            timeout=2000
                         )
-                    except Exception:
-                        pass
-
-                    # ------------------------------------------------
-                    # Optional card text for diagnostics only.
-                    # Do NOT use this as the profile URL source.
-                    # ------------------------------------------------
-
-                    card_text = ""
-
-                    try:
-                        card_text = (
-                            card.inner_text(
-                                timeout=2000
-                            )
-                            .strip()
-                            .replace("\n", " ")
-                        )
-                    except Exception:
-                        pass
-
-                    print("-" * 60)
-                    print(
-                        "EMPLOYEE RESULT CARD:",
-                        card_index + 1
+                        .strip()
                     )
+                except Exception:
+                    pass
 
-                    print(
-                        "Primary employee:",
-                        raw_name
-                    )
-
-                    print(
-                        "Primary profile URL:",
-                        href
-                    )
-
-                    if card_text:
-                        print(
-                            "Card text:",
-                            card_text[:500]
-                        )
-
-                    candidate_rows.append(
-                        {
-                            "full_name": raw_name,
-                            "profile_url": href,
-                            "company": company,
-                            "location": location,
-                            "discovery_source": (
-                                "primary-result-card-profile-link"
-                            ),
-                        }
-                    )
-
-                except Exception as ex:
-                    print(
-                        "Result-card candidate inspection failed:",
-                        repr(ex)
-                    )
-
-        # ------------------------------------------------------------
-        # 5. Controlled fallback only when result-card selectors
-        #    are not exposed by LinkedIn.
-        #
-        # We DO NOT fall back to:
-        #
-        #     search_area -> every /in/ link
-        #
-        # because that recreates the mutual-connection bug.
-        #
-        # Instead, for each visible /in/ link we locate its nearest
-        # result-card ancestor and resolve that card's FIRST /in/ link.
-        # ------------------------------------------------------------
-
-        if not candidate_rows:
-
-            print(
-                "No standard result-card containers found."
-            )
-
-            print(
-                "Trying controlled nearest-card fallback..."
-            )
-
-            try:
-                all_links = search_area.locator(
-                    "a[href*='/in/']:visible"
+                text = normalize_text(
+                    raw_text
                 )
 
-                total_links = all_links.count()
-
-                print(
-                    "Visible /in/ links in fallback:",
-                    total_links
-                )
-
-                fallback_seen_cards = set()
-
-                for i in range(total_links):
-
-                    try:
-                        link = all_links.nth(i)
-
-                        card = None
-
-                        for ancestor_selector in (
-                            "xpath=ancestor::li[contains(@class,'reusable-search__result-container')][1]",
-                            "xpath=ancestor::li[contains(@class,'entity-result')][1]",
-                            "xpath=ancestor::li[contains(@class,'search-result')][1]",
-                            "xpath=ancestor::div[contains(@class,'entity-result')][1]",
-                            "xpath=ancestor::div[contains(@class,'search-result')][1]",
-                            "xpath=ancestor::li[1]",
-                        ):
-                            try:
-                                possible_card = link.locator(
-                                    ancestor_selector
-                                )
-
-                                if possible_card.count():
-                                    card = possible_card
-                                    break
-
-                            except Exception:
-                                continue
-
-                        if card is None:
-                            continue
-
-                        card_key = id(
-                            card
-                        )
-
-                        if card_key in fallback_seen_cards:
-                            continue
-
-                        fallback_seen_cards.add(
-                            card_key
-                        )
-
-                        primary_links = card.locator(
-                            "a[href*='/in/']:visible"
-                        )
-
-                        if not primary_links.count():
-                            continue
-
-                        primary_link = primary_links.first
-
-                        href = canonical_profile_url(
-                            primary_link.get_attribute("href")
-                        )
-
-                        if not href:
-                            continue
-
-                        raw_name = ""
-
-                        try:
-                            raw_name = (
-                                primary_link.inner_text(
-                                    timeout=2000
-                                )
-                                .strip()
-                                .replace("\n", " ")
-                            )
-                        except Exception:
-                            pass
-
-                        candidate_rows.append(
-                            {
-                                "full_name": raw_name,
-                                "profile_url": href,
-                                "company": company,
-                                "location": location,
-                                "discovery_source": (
-                                    "controlled-primary-card-fallback"
-                                ),
-                            }
-                        )
-
-                    except Exception as ex:
-                        print(
-                            "Controlled fallback candidate failed:",
-                            repr(ex)
-                        )
-
-            except Exception as ex:
-                print(
-                    "Controlled primary-card fallback failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # 6. Final URL de-duplication.
-        # ------------------------------------------------------------
-
-        for row in candidate_rows:
-
-            try:
-                clean_url = canonical_profile_url(
-                    row.get("profile_url", "")
-                )
-
-                if not clean_url:
+                if not text:
                     continue
 
-                if clean_url in seen:
-                    print(
-                        "SKIP duplicate primary employee:",
-                        clean_url
+                score = 0
+                reasons = []
+
+                # ----------------------------------------------------
+                # Strongest signal:
+                #
+                # The employee result anchor can contain "mutual
+                # connections" because the complete employee result is
+                # rendered inside that anchor.
+                # ----------------------------------------------------
+
+                if "mutual connections" in text:
+                    score += 100
+                    reasons.append(
+                        "contains mutual-connections result text"
                     )
-                    continue
 
-                seen.add(
-                    clean_url
+                # ----------------------------------------------------
+                # Requested location is a very strong signal.
+                #
+                # Mutual connections generally do not contain the
+                # employee's geographic result location.
+                # ----------------------------------------------------
+
+                if (
+                    requested_location_normalized
+                    and requested_location_normalized in text
+                ):
+                    score += 80
+                    reasons.append(
+                        "contains requested location"
+                    )
+
+                elif location_tokens:
+                    matched_location_tokens = sum(
+                        1
+                        for token in location_tokens
+                        if token in text
+                    )
+
+                    if matched_location_tokens:
+                        score += (
+                            25
+                            * matched_location_tokens
+                        )
+
+                        reasons.append(
+                            "contains location tokens"
+                        )
+
+                # ----------------------------------------------------
+                # Requested company is another strong signal.
+                # ----------------------------------------------------
+
+                if (
+                    requested_company_normalized
+                    and requested_company_normalized in text
+                ):
+                    score += 70
+                    reasons.append(
+                        "contains requested company"
+                    )
+
+                else:
+                    matched_company_tokens = sum(
+                        1
+                        for token in company_tokens
+                        if token in text
+                    )
+
+                    if matched_company_tokens:
+                        score += (
+                            20
+                            * matched_company_tokens
+                        )
+
+                        reasons.append(
+                            "contains company tokens"
+                        )
+
+                # ----------------------------------------------------
+                # Employee result action signals.
+                # ----------------------------------------------------
+
+                if "connect" in text:
+                    score += 15
+                    reasons.append(
+                        "contains Connect"
+                    )
+
+                if "message" in text:
+                    score += 15
+                    reasons.append(
+                        "contains Message"
+                    )
+
+                if "follow" in text:
+                    score += 10
+                    reasons.append(
+                        "contains Follow"
+                    )
+
+                # ----------------------------------------------------
+                # Richer text is useful because mutual-connection
+                # anchors are normally just a person's name.
+                # ----------------------------------------------------
+
+                text_length = len(
+                    text
                 )
 
-                row["profile_url"] = clean_url
+                if text_length >= 150:
+                    score += 35
+                    reasons.append(
+                        "rich result text"
+                    )
 
-                profiles.append(
-                    row
+                elif text_length >= 100:
+                    score += 25
+                    reasons.append(
+                        "rich result text"
+                    )
+
+                elif text_length >= 60:
+                    score += 15
+                    reasons.append(
+                        "extended result text"
+                    )
+
+                elif text_length <= 60:
+                    score -= 20
+                    reasons.append(
+                        "short profile-link text"
+                    )
+
+                # ----------------------------------------------------
+                # Very short name-only links with no location/company
+                # evidence are treated as likely nested people.
+                # ----------------------------------------------------
+
+                if (
+                    text_length <= 60
+                    and requested_location_normalized
+                    not in text
+                    and not (
+                        requested_company_normalized
+                        and requested_company_normalized in text
+                    )
+                    and "mutual connections" not in text
+                ):
+                    score -= 50
+                    reasons.append(
+                        "likely nested/mutual profile"
+                    )
+
+                existing = best_by_url.get(
+                    href
                 )
+
+                candidate = {
+                    "url": href,
+                    "text": raw_text.replace(
+                        "\n",
+                        " "
+                    ).strip(),
+                    "normalized_text": text,
+                    "score": score,
+                    "reasons": reasons,
+                    "dom_index": index,
+                }
+
+                # Keep the strongest representation of the same URL.
+                if (
+                    existing is None
+                    or score > existing["score"]
+                ):
+                    best_by_url[href] = candidate
 
                 print("-" * 60)
                 print(
-                    "PRIMARY EMPLOYEE CANDIDATE:"
-                )
-                print(
-                    "Name:",
-                    row.get("full_name", "")
+                    "PROFILE LINK:",
+                    index + 1
                 )
                 print(
                     "URL:",
-                    clean_url
+                    href
                 )
                 print(
-                    "Source:",
-                    row.get(
-                        "discovery_source",
-                        ""
-                    )
+                    "Text:",
+                    raw_text.replace(
+                        "\n",
+                        " "
+                    ).strip()[:500]
+                )
+                print(
+                    "Score:",
+                    score
+                )
+                print(
+                    "Reasons:",
+                    ", ".join(reasons)
                 )
 
             except Exception as ex:
                 print(
-                    "Final candidate processing failed:",
+                    "Profile-link scoring failed:",
                     repr(ex)
                 )
 
+        # ------------------------------------------------------------
+        # Sort strongest primary employee links first.
+        #
+        # Preserve DOM order when scores are equal.
+        # ------------------------------------------------------------
+
+        ranked = sorted(
+            best_by_url.values(),
+            key=lambda item: (
+                -item["score"],
+                item["dom_index"],
+            )
+        )
+
         print("=" * 60)
         print(
-            "PRIMARY EMPLOYEE PROFILES EXTRACTED:",
+            "UNIQUE PROFILE URLs AFTER DEDUP:",
+            len(ranked)
+        )
+        print("=" * 60)
+
+        # ------------------------------------------------------------
+        # Do not blindly accept extremely weak name-only links.
+        #
+        # A primary employee result should normally have at least one
+        # meaningful result signal:
+        #
+        #   location
+        #   company
+        #   mutual-connections result text
+        #   Connect/Message/Follow
+        #   rich result text
+        #
+        # Workflow-level profile validation remains authoritative.
+        # ------------------------------------------------------------
+
+        reliable = []
+
+        for item in ranked:
+
+            text = item["normalized_text"]
+
+            strong_signal = (
+                "mutual connections" in text
+                or (
+                    requested_location_normalized
+                    and requested_location_normalized in text
+                )
+                or (
+                    requested_company_normalized
+                    and requested_company_normalized in text
+                )
+                or "connect" in text
+                or "message" in text
+                or "follow" in text
+                or len(text) >= 100
+            )
+
+            if not strong_signal:
+                print(
+                    "SKIP weak/naked /in/ link:",
+                    item["url"],
+                    "|",
+                    item["text"]
+                )
+                continue
+
+            reliable.append(
+                item
+            )
+
+        print(
+            "Reliable primary employee candidates:",
+            len(reliable)
+        )
+
+        # ------------------------------------------------------------
+        # Build result records.
+        # ------------------------------------------------------------
+
+        for item in reliable:
+
+            profile_url = item["url"]
+
+            profiles.append(
+                {
+                    "full_name": item["text"],
+                    "profile_url": profile_url,
+                    "company": company,
+                    "location": location,
+                }
+            )
+
+            print("-" * 60)
+            print(
+                "PRIMARY EMPLOYEE CANDIDATE:"
+            )
+            print(
+                "Name/Text:",
+                item["text"]
+            )
+            print(
+                "URL:",
+                profile_url
+            )
+            print(
+                "Score:",
+                item["score"]
+            )
+
+        print("=" * 60)
+        print(
+            "EMPLOYEE PROFILES EXTRACTED:",
             len(profiles)
         )
         print("=" * 60)
