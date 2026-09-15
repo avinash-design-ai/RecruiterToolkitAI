@@ -10,32 +10,253 @@ class CompanyPage(BasePage):
 
     def search_company(self, company):
 
-        # Store the exact requested company so get_profiles() can validate every result card.
+        # Store the exact requested company so downstream validation
+        # continues to use the user's original company request.
         self._search_company = company
 
+        print("=" * 60)
+        print("SEARCHING LINKEDIN COMPANY")
+        print("=" * 60)
+        print("Requested company:", company)
+        print("Current URL:", self.page.url)
 
-        search_box = self.page.locator(
-            "input[placeholder*='looking']"
-        ).first
+        # ------------------------------------------------------------
+        # LinkedIn's global search box is dynamic.
+        #
+        # Do NOT depend on one placeholder string such as:
+        #     input[placeholder*='looking']
+        #
+        # Try LinkedIn's common search input representations in a
+        # deterministic order.
+        # ------------------------------------------------------------
 
-        search_box.click()
-        search_box.fill(company)
-        search_box.press("Enter")
+        search_box = None
+
+        selectors = (
+            "input[placeholder*='Search' i]",
+            "input[aria-label*='Search' i]",
+            "input[placeholder*='looking' i]",
+            "input[role='combobox']",
+        )
+
+        for selector in selectors:
+
+            try:
+                candidate = self.page.locator(selector).first
+
+                if candidate.count() == 0:
+                    continue
+
+                candidate.wait_for(
+                    state="visible",
+                    timeout=5000,
+                )
+
+                search_box = candidate
+
+                print(
+                    "LinkedIn search box found using selector:",
+                    selector,
+                )
+
+                break
+
+            except Exception as ex:
+
+                print(
+                    "Search selector unavailable:",
+                    selector,
+                    repr(ex),
+                )
+
+        # ------------------------------------------------------------
+        # Accessibility fallback.
+        # ------------------------------------------------------------
+        if search_box is None:
+
+            try:
+                candidate = self.page.get_by_role(
+                    "combobox"
+                ).first
+
+                if candidate.count():
+                    candidate.wait_for(
+                        state="visible",
+                        timeout=5000,
+                    )
+
+                    search_box = candidate
+
+                    print(
+                        "LinkedIn search box found using role=combobox."
+                    )
+
+            except Exception as ex:
+
+                print(
+                    "Combobox fallback failed:",
+                    repr(ex),
+                )
+
+        # ------------------------------------------------------------
+        # Last controlled fallback:
+        # inspect visible inputs and choose the one whose attributes
+        # identify it as a search field.
+        # ------------------------------------------------------------
+        if search_box is None:
+
+            try:
+
+                visible_inputs = self.page.locator(
+                    "input:visible"
+                )
+
+                count = visible_inputs.count()
+
+                print(
+                    "Visible input count:",
+                    count,
+                )
+
+                for i in range(count):
+
+                    candidate = visible_inputs.nth(i)
+
+                    try:
+
+                        placeholder = (
+                            candidate.get_attribute("placeholder")
+                            or ""
+                        )
+
+                        aria_label = (
+                            candidate.get_attribute("aria-label")
+                            or ""
+                        )
+
+                        name = (
+                            candidate.get_attribute("name")
+                            or ""
+                        )
+
+                        attributes = (
+                            f"{placeholder} "
+                            f"{aria_label} "
+                            f"{name}"
+                        )
+
+                        print(
+                            f"Visible input #{i + 1}:",
+                            repr(attributes),
+                        )
+
+                        if re.search(
+                            r"search|looking for",
+                            attributes,
+                            re.IGNORECASE,
+                        ):
+
+                            search_box = candidate
+
+                            print(
+                                f"Selected visible input #{i + 1} "
+                                "as LinkedIn search box."
+                            )
+
+                            break
+
+                    except Exception:
+                        pass
+
+            except Exception as ex:
+
+                print(
+                    "Visible-input fallback failed:",
+                    repr(ex),
+                )
+
+        # ------------------------------------------------------------
+        # Fail explicitly rather than hanging on an invalid selector.
+        # ------------------------------------------------------------
+        if search_box is None:
+
+            print("=" * 60)
+            print(
+                "ERROR: LINKEDIN GLOBAL SEARCH BOX NOT FOUND"
+            )
+            print("=" * 60)
+            print(
+                "Current URL:",
+                self.page.url,
+            )
+
+            try:
+                print(
+                    "Current title:",
+                    self.page.title(),
+                )
+            except Exception:
+                pass
+
+            raise RuntimeError(
+                "LinkedIn global search box was not found."
+            )
+
+        # ------------------------------------------------------------
+        # Perform the existing company-search action.
+        # ------------------------------------------------------------
+        print(
+            "Entering company into LinkedIn search:",
+            company,
+        )
+
+        search_box.click(
+            timeout=10000
+        )
+
+        search_box.fill(
+            company
+        )
+
+        search_box.press(
+            "Enter"
+        )
+
+        print(
+            "Company search submitted."
+        )
 
         print("=" * 60)
         print("CHECKING PAGE BEFORE WAIT")
         print("=" * 60)
 
         try:
-            print("URL:", self.page.url)
-            print("TITLE:", self.page.title())
+            print(
+                "URL:",
+                self.page.url,
+            )
+
+            print(
+                "TITLE:",
+                self.page.title(),
+            )
+
         except Exception as ex:
-            print("PAGE ALREADY CRASHED:", repr(ex))
+
+            print(
+                "PAGE ALREADY CRASHED:",
+                repr(ex),
+            )
+
             raise
 
-        self.page.wait_for_timeout(5000)
+        self.page.wait_for_timeout(
+            5000
+        )
 
-        print("PAGE SURVIVED WAIT")
+        print(
+            "PAGE SURVIVED WAIT"
+        )
 
     def open_company_result(self, company):
 
