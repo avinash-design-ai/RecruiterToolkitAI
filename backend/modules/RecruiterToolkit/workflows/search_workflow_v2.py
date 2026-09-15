@@ -108,7 +108,7 @@ class SearchWorkflowV2:
         self,
         company,
         location,
-        max_profiles=1
+        max_profiles=5
     ):
 
         print("=" * 70)

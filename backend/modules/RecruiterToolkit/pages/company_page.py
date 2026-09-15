@@ -10,253 +10,32 @@ class CompanyPage(BasePage):
 
     def search_company(self, company):
 
-        # Store the exact requested company so downstream validation
-        # continues to use the user's original company request.
+        # Store the exact requested company so get_profiles() can validate every result card.
         self._search_company = company
 
-        print("=" * 60)
-        print("SEARCHING LINKEDIN COMPANY")
-        print("=" * 60)
-        print("Requested company:", company)
-        print("Current URL:", self.page.url)
 
-        # ------------------------------------------------------------
-        # LinkedIn's global search box is dynamic.
-        #
-        # Do NOT depend on one placeholder string such as:
-        #     input[placeholder*='looking']
-        #
-        # Try LinkedIn's common search input representations in a
-        # deterministic order.
-        # ------------------------------------------------------------
+        search_box = self.page.locator(
+            "input[placeholder*='looking']"
+        ).first
 
-        search_box = None
-
-        selectors = (
-            "input[placeholder*='Search' i]",
-            "input[aria-label*='Search' i]",
-            "input[placeholder*='looking' i]",
-            "input[role='combobox']",
-        )
-
-        for selector in selectors:
-
-            try:
-                candidate = self.page.locator(selector).first
-
-                if candidate.count() == 0:
-                    continue
-
-                candidate.wait_for(
-                    state="visible",
-                    timeout=5000,
-                )
-
-                search_box = candidate
-
-                print(
-                    "LinkedIn search box found using selector:",
-                    selector,
-                )
-
-                break
-
-            except Exception as ex:
-
-                print(
-                    "Search selector unavailable:",
-                    selector,
-                    repr(ex),
-                )
-
-        # ------------------------------------------------------------
-        # Accessibility fallback.
-        # ------------------------------------------------------------
-        if search_box is None:
-
-            try:
-                candidate = self.page.get_by_role(
-                    "combobox"
-                ).first
-
-                if candidate.count():
-                    candidate.wait_for(
-                        state="visible",
-                        timeout=5000,
-                    )
-
-                    search_box = candidate
-
-                    print(
-                        "LinkedIn search box found using role=combobox."
-                    )
-
-            except Exception as ex:
-
-                print(
-                    "Combobox fallback failed:",
-                    repr(ex),
-                )
-
-        # ------------------------------------------------------------
-        # Last controlled fallback:
-        # inspect visible inputs and choose the one whose attributes
-        # identify it as a search field.
-        # ------------------------------------------------------------
-        if search_box is None:
-
-            try:
-
-                visible_inputs = self.page.locator(
-                    "input:visible"
-                )
-
-                count = visible_inputs.count()
-
-                print(
-                    "Visible input count:",
-                    count,
-                )
-
-                for i in range(count):
-
-                    candidate = visible_inputs.nth(i)
-
-                    try:
-
-                        placeholder = (
-                            candidate.get_attribute("placeholder")
-                            or ""
-                        )
-
-                        aria_label = (
-                            candidate.get_attribute("aria-label")
-                            or ""
-                        )
-
-                        name = (
-                            candidate.get_attribute("name")
-                            or ""
-                        )
-
-                        attributes = (
-                            f"{placeholder} "
-                            f"{aria_label} "
-                            f"{name}"
-                        )
-
-                        print(
-                            f"Visible input #{i + 1}:",
-                            repr(attributes),
-                        )
-
-                        if re.search(
-                            r"search|looking for",
-                            attributes,
-                            re.IGNORECASE,
-                        ):
-
-                            search_box = candidate
-
-                            print(
-                                f"Selected visible input #{i + 1} "
-                                "as LinkedIn search box."
-                            )
-
-                            break
-
-                    except Exception:
-                        pass
-
-            except Exception as ex:
-
-                print(
-                    "Visible-input fallback failed:",
-                    repr(ex),
-                )
-
-        # ------------------------------------------------------------
-        # Fail explicitly rather than hanging on an invalid selector.
-        # ------------------------------------------------------------
-        if search_box is None:
-
-            print("=" * 60)
-            print(
-                "ERROR: LINKEDIN GLOBAL SEARCH BOX NOT FOUND"
-            )
-            print("=" * 60)
-            print(
-                "Current URL:",
-                self.page.url,
-            )
-
-            try:
-                print(
-                    "Current title:",
-                    self.page.title(),
-                )
-            except Exception:
-                pass
-
-            raise RuntimeError(
-                "LinkedIn global search box was not found."
-            )
-
-        # ------------------------------------------------------------
-        # Perform the existing company-search action.
-        # ------------------------------------------------------------
-        print(
-            "Entering company into LinkedIn search:",
-            company,
-        )
-
-        search_box.click(
-            timeout=10000
-        )
-
-        search_box.fill(
-            company
-        )
-
-        search_box.press(
-            "Enter"
-        )
-
-        print(
-            "Company search submitted."
-        )
+        search_box.click()
+        search_box.fill(company)
+        search_box.press("Enter")
 
         print("=" * 60)
         print("CHECKING PAGE BEFORE WAIT")
         print("=" * 60)
 
         try:
-            print(
-                "URL:",
-                self.page.url,
-            )
-
-            print(
-                "TITLE:",
-                self.page.title(),
-            )
-
+            print("URL:", self.page.url)
+            print("TITLE:", self.page.title())
         except Exception as ex:
-
-            print(
-                "PAGE ALREADY CRASHED:",
-                repr(ex),
-            )
-
+            print("PAGE ALREADY CRASHED:", repr(ex))
             raise
 
-        self.page.wait_for_timeout(
-            5000
-        )
+        self.page.wait_for_timeout(5000)
 
-        print(
-            "PAGE SURVIVED WAIT"
-        )
+        print("PAGE SURVIVED WAIT")
 
     def open_company_result(self, company):
 
@@ -1068,690 +847,176 @@ class CompanyPage(BasePage):
 
         return False
 
-
     def apply_location(self, location):
-        print("=" * 60)
-        print("APPLYING LOCATION FILTER")
-        print("=" * 60)
 
         print(
-            "Requested location:",
-            location
-        )
-
-        before_url = self.page.url
-
-        print(
-            "URL before location filter:",
-            before_url
+            f"Applying location: {location}"
         )
 
         # ------------------------------------------------------------
-        # Safety: must already be on company-scoped people search.
+        # Dismiss any LinkedIn dialog blocking the filter controls.
+        # LinkedIn can leave an open dialog over the people-search
+        # page, causing Playwright clicks to be intercepted.
+        #
+        # Keep the original location-selection method unchanged.
         # ------------------------------------------------------------
-        before_url_lower = before_url.lower()
 
-        if "/search/results/people/" not in before_url_lower:
-            print(
-                "[LOCATION ERROR] Not on LinkedIn people-search page."
-            )
-            return False
-
-        if "currentcompany=" not in before_url_lower:
-            print(
-                "[LOCATION ERROR] currentCompany filter missing."
-            )
-            return False
-
-        # ------------------------------------------------------------
-        # Open Locations filter.
-        # ------------------------------------------------------------
         try:
-            locations = self.page.get_by_text(
-                "Locations",
-                exact=True
+
+            dialogs = self.page.locator(
+                "dialog[open], [role='dialog']:visible"
             )
 
-            location_count = locations.count()
+            if dialogs.count():
 
-            print(
-                "Exact Locations matches:",
-                location_count
-            )
-
-            clicked = False
-
-            for i in range(location_count):
-                try:
-                    candidate = locations.nth(i)
-
-                    if not candidate.is_visible():
-                        continue
-
-                    candidate.click(
-                        timeout=15000
-                    )
-
-                    clicked = True
-
-                    print(
-                        f"Clicked Locations match #{i + 1}"
-                    )
-
-                    break
-
-                except Exception:
-                    continue
-
-            if not clicked:
                 print(
-                    "[LOCATION ERROR] Could not click Locations filter."
+                    "Open LinkedIn dialog detected. "
+                    "Attempting to dismiss it..."
                 )
-                return False
-
-        except Exception as ex:
-            print(
-                "[LOCATION ERROR] Opening Locations failed:",
-                repr(ex)
-            )
-            return False
-
-        self.page.wait_for_timeout(
-            1500
-        )
-
-        # ------------------------------------------------------------
-        # Find the actual location input.
-        # ------------------------------------------------------------
-        try:
-            inputs = self.page.locator(
-                "input:visible"
-            )
-
-            input_count = inputs.count()
-
-            print(
-                "Visible inputs:",
-                input_count
-            )
-
-            if input_count == 0:
-                print(
-                    "[LOCATION ERROR] No visible inputs."
-                )
-                return False
-
-            location_box = inputs.last
-
-            print(
-                "Location input placeholder:",
-                location_box.get_attribute("placeholder")
-            )
-
-            location_box.fill(
-                location
-            )
-
-        except Exception as ex:
-            print(
-                "[LOCATION ERROR] Could not enter location:",
-                repr(ex)
-            )
-            return False
-
-        self.page.wait_for_timeout(
-            2500
-        )
-
-        print(
-            "Entered location:",
-            location
-        )
-
-        print(
-            "URL after entering location:",
-            self.page.url
-        )
-
-        # ------------------------------------------------------------
-        # CRITICAL LOCATION SUGGESTION SELECTION
-        #
-        # Do NOT use:
-        #   [role='listitem']
-        #
-        # LinkedIn profile result cards are also listitems.
-        #
-        # We specifically look for text matching the requested
-        # location and reject anything contained inside an /in/
-        # profile link.
-        # ------------------------------------------------------------
-        print(
-            "Selecting actual location suggestion..."
-        )
-
-        normalized_location = " ".join(
-            str(location)
-            .replace("\xa0", " ")
-            .strip()
-            .split()
-        ).lower()
-
-        selected = False
-
-        # First pass: exact visible text.
-        try:
-            exact_matches = self.page.get_by_text(
-                location,
-                exact=True
-            )
-
-            exact_count = exact_matches.count()
-
-            print(
-                "Exact location-text matches:",
-                exact_count
-            )
-
-            for i in range(exact_count):
-                try:
-                    candidate = exact_matches.nth(i)
-
-                    if not candidate.is_visible():
-                        continue
-
-                    # Reject candidates that belong to a profile link.
-                    profile_link_ancestor = candidate.locator(
-                        "xpath=ancestor::a[contains(@href, '/in/')]"
-                    )
-
-                    if profile_link_ancestor.count():
-                        print(
-                            f"Skipping exact match #{i + 1}: "
-                            "inside profile link"
-                        )
-                        continue
-
-                    # Reject profile/search result containers.
-                    parent_text = ""
-
-                    try:
-                        parent = candidate.locator(
-                            "xpath=.."
-                        )
-
-                        parent_text = (
-                            parent.inner_text(
-                                timeout=1000
-                            )
-                            .strip()
-                        )
-                    except Exception:
-                        pass
-
-                    if (
-                        parent_text
-                        and normalized_location not in parent_text.lower()
-                    ):
-                        continue
-
-                    print(
-                        "Clicking exact location suggestion:",
-                        candidate.inner_text(
-                            timeout=2000
-                        ).strip()
-                    )
-
-                    candidate.click(
-                        timeout=10000
-                    )
-
-                    selected = True
-
-                    break
-
-                except Exception as ex:
-                    print(
-                        "Exact location candidate skipped:",
-                        repr(ex)
-                    )
-
-        except Exception as ex:
-            print(
-                "Exact location lookup failed:",
-                repr(ex)
-            )
-
-        # ------------------------------------------------------------
-        # Second pass: visible location-like candidates.
-        #
-        # Look inside common autocomplete elements, but reject
-        # anything that belongs to a profile /in/ link.
-        # ------------------------------------------------------------
-        if not selected:
-
-            print(
-                "Exact location suggestion not selected."
-            )
-
-            selectors = [
-                "li:visible",
-                "[role='option']:visible",
-                "[role='button']:visible",
-                "button:visible",
-            ]
-
-            for selector in selectors:
-
-                try:
-                    candidates = self.page.locator(
-                        selector
-                    )
-
-                    count = candidates.count()
-
-                    print(
-                        f"{selector} count:",
-                        count
-                    )
-
-                    for i in range(count):
-
-                        try:
-                            candidate = candidates.nth(i)
-
-                            if not candidate.is_visible():
-                                continue
-
-                            text_value = (
-                                candidate.inner_text(
-                                    timeout=1000
-                                )
-                                .strip()
-                            )
-
-                            if not text_value:
-                                continue
-
-                            text_normalized = " ".join(
-                                text_value
-                                .replace("\xa0", " ")
-                                .split()
-                            ).lower()
-
-                            # Must contain the requested location.
-                            if normalized_location not in text_normalized:
-                                continue
-
-                            # Never click a profile result.
-                            profile_link_ancestor = candidate.locator(
-                                "xpath=ancestor::a[contains(@href, '/in/')]"
-                            )
-
-                            if profile_link_ancestor.count():
-                                continue
-
-                            # Never click a profile-result container.
-                            if (
-                                "/in/" in text_value.lower()
-                                or
-                                "message" in text_normalized
-                                and "mutual connections" in text_normalized
-                            ):
-                                continue
-
-                            print(
-                                "Candidate location suggestion:",
-                                repr(text_value[:300])
-                            )
-
-                            candidate.click(
-                                timeout=10000
-                            )
-
-                            selected = True
-
-                            print(
-                                "Location suggestion clicked."
-                            )
-
-                            break
-
-                        except Exception:
-                            continue
-
-                    if selected:
-                        break
-
-                except Exception as ex:
-                    print(
-                        f"Location selector scan failed for {selector}:",
-                        repr(ex)
-                    )
-
-        # ------------------------------------------------------------
-        # Keyboard fallback.
-        #
-        # ArrowDown is allowed only as a fallback.
-        # NEVER press Enter here because Enter previously navigated
-        # away from the company people-search page.
-        # ------------------------------------------------------------
-        if not selected:
-
-            print(
-                "DOM location suggestion not found."
-            )
-
-            try:
-                location_box.click()
 
                 self.page.keyboard.press(
-                    "ArrowDown"
+                    "Escape"
                 )
 
                 self.page.wait_for_timeout(
                     1000
                 )
 
-                print(
-                    "Location suggestion highlighted using keyboard fallback."
-                )
+        except Exception:
 
-                selected = True
+            pass
 
-            except Exception as ex:
-                print(
-                    "[LOCATION ERROR] Keyboard fallback failed:",
-                    repr(ex)
-                )
-                return False
-
-        # ------------------------------------------------------------
-        # SAFETY CHECK
-        #
-        # The location click/highlight must never navigate to a
-        # profile page or generic LinkedIn page.
-        # ------------------------------------------------------------
-        after_selection_url = self.page.url
-
-        print(
-            "URL after location selection:",
-            after_selection_url
-        )
-
-        after_selection_lower = after_selection_url.lower()
-
-        if "/in/" in after_selection_lower:
-            print(
-                "[LOCATION ERROR] Location selection opened a profile."
-            )
-            return False
-
-        if "/search/results/people/" not in after_selection_lower:
-            print(
-                "[LOCATION ERROR] Location selection left people-search."
-            )
-            return False
-
-        if "currentcompany=" not in after_selection_lower:
-            print(
-                "[LOCATION ERROR] currentCompany disappeared."
-            )
-            return False
-
-        # ------------------------------------------------------------
-        # Click Show results.
-        # ------------------------------------------------------------
-        print(
-            "Looking for Show results..."
-        )
-
-        try:
-            show_results = self.page.get_by_text(
-                "Show results",
-                exact=True
-            )
-
-            show_count = show_results.count()
-
-            print(
-                "Show results exact matches:",
-                show_count
-            )
-
-            clicked_show_results = False
-
-            for i in range(show_count):
-
-                try:
-                    candidate = show_results.nth(i)
-
-                    if not candidate.is_visible():
-                        continue
-
-                    candidate.click(
-                        timeout=15000
-                    )
-
-                    clicked_show_results = True
-
-                    print(
-                        f"Clicked Show results #{i + 1}"
-                    )
-
-                    break
-
-                except Exception:
-                    continue
-
-            if not clicked_show_results:
-                print(
-                    "[LOCATION ERROR] Could not click Show results."
-                )
-                return False
-
-        except Exception as ex:
-            print(
-                "[LOCATION ERROR] Show results failed:",
-                repr(ex)
-            )
-            return False
+        self.page.get_by_text(
+            "Locations",
+            exact=False
+        ).first.click()
 
         self.page.wait_for_timeout(
-            4000
+            2000
         )
 
-        # ------------------------------------------------------------
-        # Final validation.
-        # ------------------------------------------------------------
-        final_url = self.page.url
+        location_box = self.page.locator(
+            "input"
+        ).last
 
-        print(
-            "Final URL after location filter:",
-            final_url
+        location_box.fill(
+            location
         )
 
-        final_url_lower = final_url.lower()
+        self.page.wait_for_timeout(
+            2000
+        )
 
-        if "/search/results/people/" not in final_url_lower:
-            print(
-                "[LOCATION ERROR] Final page is not people-search."
-            )
-            return False
+        self.page.keyboard.press(
+            "ArrowDown"
+        )
 
-        if "currentcompany=" not in final_url_lower:
-            print(
-                "[LOCATION ERROR] Final URL lost currentCompany."
-            )
-            return False
+        self.page.keyboard.press(
+            "Enter"
+        )
 
-        if "/in/" in final_url_lower:
-            print(
-                "[LOCATION ERROR] Final URL is a profile."
-            )
-            return False
+        self.page.wait_for_timeout(
+            1000
+        )
 
-        # Wait for the employee result list.
         try:
-            self.page.locator(
-                "a[href*='/in/']:visible"
-            ).first.wait_for(
-                state="visible",
-                timeout=30000
-            )
+
+            self.page.get_by_text(
+                "Show results",
+                exact=False
+            ).first.click()
+
         except Exception:
-            self.page.wait_for_timeout(
-                5000
-            )
 
-        profile_count = self.page.locator(
-            "a[href*='/in/']:visible"
-        ).count()
+            pass
 
-        print(
-            "Visible profile links after location filter:",
-            profile_count
-        )
-
-        print(
-            "Location applied successfully."
+        self.page.wait_for_timeout(
+            5000
         )
 
         return True
 
+
     def get_profiles(self, company="", location=""):
+        """
+        Discover ONLY the primary employee profile from each LinkedIn
+        employee result card.
+
+        IMPORTANT:
+        A LinkedIn employee result card can contain additional /in/
+        links for mutual connections or other people.
+
+        We must NEVER treat those nested links as separate employees.
+
+        Correct structure:
+
+            result card
+                -> primary employee /in/ link
+                -> mutual connection /in/ links
+                -> other nested /in/ links
+
+        Therefore this method processes result cards first and selects
+        only the FIRST visible /in/ link inside each card.
+        """
+
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
-
-        print(
-            "Requested company:",
-            company
-        )
-
-        print(
-            "Requested location:",
-            location
-        )
+        print("Requested company:", company)
+        print("Requested location:", location)
 
         profiles = []
         seen = set()
 
         # ------------------------------------------------------------
-        # Normalize values only for result-card validation.
-        # ------------------------------------------------------------
-        def normalize(value):
-            if not value:
-                return ""
-
-            value = (
-                str(value)
-                .replace("\xa0", " ")
-                .strip()
-                .lower()
-            )
-
-            import re
-
-            value = re.sub(
-                r"[^a-z0-9]+",
-                " ",
-                value
-            )
-
-            return " ".join(
-                value.split()
-            )
-
-        requested_company = normalize(
-            company
-        )
-
-        requested_location = normalize(
-            location
-        )
-
-        # ------------------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT use the entire <main> element as the candidate area.
-        #
-        # LinkedIn can place:
-        #   - recommendations
-        #   - mutual connections
-        #   - suggested people
-        #   - other /in/ links
-        #
-        # inside <main>.
-        #
-        # Candidate discovery must be restricted to the actual
-        # finite-search/result container.
+        # 1. Find the bounded employee search area.
         # ------------------------------------------------------------
 
         search_area = None
 
-        preferred_selectors = (
+        for selector in (
+            "main:visible",
             "div.scaffold-finite-scroll__content:visible",
-            "ul.reusable-search__entity-result-list:visible",
             "div.search-results-container:visible",
-        )
-
-        for selector in preferred_selectors:
-
+            "div[role='main']:visible",
+        ):
             try:
-                candidate = self.page.locator(
-                    selector
-                ).first
+                candidate = self.page.locator(selector).first
 
-                if candidate.count() == 0:
-                    continue
+                if candidate.count() and candidate.is_visible():
+                    search_area = candidate
 
-                if not candidate.is_visible():
-                    continue
+                    print(
+                        "Using bounded employee search area:",
+                        selector
+                    )
 
-                search_area = candidate
-
-                print(
-                    "Using employee result container:",
-                    selector
-                )
-
-                break
+                    break
 
             except Exception as ex:
-
                 print(
-                    "Result-container lookup failed:",
+                    "Search-area inspection failed:",
                     selector,
                     repr(ex)
                 )
 
         if search_area is None:
-
             print(
-                "ERROR: LinkedIn employee result container "
-                "was not found."
+                "ERROR: No bounded LinkedIn employee search area found."
             )
-
-            print(
-                "Refusing broad <main> /in/ scan."
-            )
-
             return profiles
 
         # ------------------------------------------------------------
-        # Canonical profile URL.
+        # 2. Canonical profile URL helper.
         # ------------------------------------------------------------
-        def canonical_profile_url(href):
 
+        def canonical_profile_url(href):
             if not href:
                 return ""
 
-            value = str(
-                href
-            ).strip()
+            value = str(href).strip()
 
             if value.startswith("/"):
-
                 value = (
                     "https://www.linkedin.com"
                     + value
@@ -1759,410 +1024,366 @@ class CompanyPage(BasePage):
 
             value = (
                 value
-                .split("?")[0]
-                .split("#")[0]
+                .split("?", 1)[0]
+                .split("#", 1)[0]
                 .rstrip("/")
             )
 
             if "/in/" not in value.lower():
                 return ""
 
-            return value
+            return value.lower()
 
         # ------------------------------------------------------------
-        # Locate the actual employee result card containing a link.
+        # 3. Locate actual LinkedIn employee result cards.
         #
-        # We walk upward from the /in/ link instead of treating every
-        # /in/ link in the container as an employee.
+        # Prefer LinkedIn's result-card containers.
         # ------------------------------------------------------------
-        def find_result_card(link):
 
-            selectors = (
-                "xpath=ancestor::li[contains(@class,'reusable-search__result-container')][1]",
-                "xpath=ancestor::li[contains(@class,'search-result')][1]",
-                "xpath=ancestor::li[contains(@class,'entity-result')][1]",
-                "xpath=ancestor::div[contains(@class,'entity-result')][1]",
-                "xpath=ancestor::div[contains(@class,'search-result')][1]",
-                "xpath=ancestor::li[1]",
-            )
+        card_selectors = (
+            "li.reusable-search__result-container:visible",
+            "li.search-result:visible",
+            "li.entity-result:visible",
+            "div.entity-result:visible",
+            "div.search-result:visible",
+        )
 
-            for selector in selectors:
+        cards = None
 
-                try:
+        for selector in card_selectors:
+            try:
+                candidate_cards = search_area.locator(selector)
+                count = candidate_cards.count()
 
-                    card = link.locator(
+                if count:
+                    cards = candidate_cards
+
+                    print(
+                        "Employee result cards found:",
+                        count
+                    )
+
+                    print(
+                        "Result-card selector:",
                         selector
                     )
 
-                    if card.count() == 0:
-                        continue
+                    break
+
+            except Exception as ex:
+                print(
+                    "Result-card lookup failed:",
+                    selector,
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # 4. Primary discovery:
+        #    one employee per result card.
+        # ------------------------------------------------------------
+
+        candidate_rows = []
+
+        if cards is not None:
+            card_count = cards.count()
+
+            for card_index in range(card_count):
+
+                try:
+                    card = cards.nth(card_index)
 
                     if not card.is_visible():
                         continue
 
-                    return card
+                    profile_links = card.locator(
+                        "a[href*='/in/']:visible"
+                    )
 
-                except Exception:
+                    link_count = profile_links.count()
 
-                    continue
+                    if not link_count:
+                        continue
 
-            return None
+                    # IMPORTANT:
+                    # The FIRST /in/ link in the actual result card
+                    # is the primary employee link.
+                    #
+                    # Later /in/ links are commonly mutual connections
+                    # or other nested people.
+                    primary_link = profile_links.first
+
+                    href = canonical_profile_url(
+                        primary_link.get_attribute("href")
+                    )
+
+                    if not href:
+                        continue
+
+                    raw_name = ""
+
+                    try:
+                        raw_name = (
+                            primary_link.inner_text(
+                                timeout=2000
+                            )
+                            .strip()
+                            .replace("\n", " ")
+                        )
+                    except Exception:
+                        pass
+
+                    # ------------------------------------------------
+                    # Optional card text for diagnostics only.
+                    # Do NOT use this as the profile URL source.
+                    # ------------------------------------------------
+
+                    card_text = ""
+
+                    try:
+                        card_text = (
+                            card.inner_text(
+                                timeout=2000
+                            )
+                            .strip()
+                            .replace("\n", " ")
+                        )
+                    except Exception:
+                        pass
+
+                    print("-" * 60)
+                    print(
+                        "EMPLOYEE RESULT CARD:",
+                        card_index + 1
+                    )
+
+                    print(
+                        "Primary employee:",
+                        raw_name
+                    )
+
+                    print(
+                        "Primary profile URL:",
+                        href
+                    )
+
+                    if card_text:
+                        print(
+                            "Card text:",
+                            card_text[:500]
+                        )
+
+                    candidate_rows.append(
+                        {
+                            "full_name": raw_name,
+                            "profile_url": href,
+                            "company": company,
+                            "location": location,
+                            "discovery_source": (
+                                "primary-result-card-profile-link"
+                            ),
+                        }
+                    )
+
+                except Exception as ex:
+                    print(
+                        "Result-card candidate inspection failed:",
+                        repr(ex)
+                    )
 
         # ------------------------------------------------------------
-        # Collect only validated result-card profiles.
+        # 5. Controlled fallback only when result-card selectors
+        #    are not exposed by LinkedIn.
+        #
+        # We DO NOT fall back to:
+        #
+        #     search_area -> every /in/ link
+        #
+        # because that recreates the mutual-connection bug.
+        #
+        # Instead, for each visible /in/ link we locate its nearest
+        # result-card ancestor and resolve that card's FIRST /in/ link.
         # ------------------------------------------------------------
-        def collect_visible_profiles():
 
-            new_profiles = 0
+        if not candidate_rows:
+
+            print(
+                "No standard result-card containers found."
+            )
+
+            print(
+                "Trying controlled nearest-card fallback..."
+            )
 
             try:
-
-                links = search_area.locator(
+                all_links = search_area.locator(
                     "a[href*='/in/']:visible"
                 )
 
-                count = links.count()
+                total_links = all_links.count()
 
                 print(
-                    "Visible /in/ links in result container:",
-                    count
+                    "Visible /in/ links in fallback:",
+                    total_links
                 )
 
-                for i in range(count):
+                fallback_seen_cards = set()
+
+                for i in range(total_links):
 
                     try:
+                        link = all_links.nth(i)
 
-                        link = links.nth(i)
+                        card = None
 
-                        url = canonical_profile_url(
-                            link.get_attribute(
-                                "href"
-                            )
-                        )
+                        for ancestor_selector in (
+                            "xpath=ancestor::li[contains(@class,'reusable-search__result-container')][1]",
+                            "xpath=ancestor::li[contains(@class,'entity-result')][1]",
+                            "xpath=ancestor::li[contains(@class,'search-result')][1]",
+                            "xpath=ancestor::div[contains(@class,'entity-result')][1]",
+                            "xpath=ancestor::div[contains(@class,'search-result')][1]",
+                            "xpath=ancestor::li[1]",
+                        ):
+                            try:
+                                possible_card = link.locator(
+                                    ancestor_selector
+                                )
 
-                        if not url:
-                            continue
+                                if possible_card.count():
+                                    card = possible_card
+                                    break
 
-                        if url in seen:
-                            continue
-
-                        # ------------------------------------------------
-                        # Find the bounded employee result card.
-                        # ------------------------------------------------
-                        card = find_result_card(
-                            link
-                        )
+                            except Exception:
+                                continue
 
                         if card is None:
-
-                            print(
-                                "SKIP /in/ link with no employee result card:",
-                                url
-                            )
-
                             continue
 
-                        # ------------------------------------------------
-                        # Read ONLY the result-card text.
-                        # ------------------------------------------------
-                        card_text = ""
+                        card_key = id(
+                            card
+                        )
+
+                        if card_key in fallback_seen_cards:
+                            continue
+
+                        fallback_seen_cards.add(
+                            card_key
+                        )
+
+                        primary_links = card.locator(
+                            "a[href*='/in/']:visible"
+                        )
+
+                        if not primary_links.count():
+                            continue
+
+                        primary_link = primary_links.first
+
+                        href = canonical_profile_url(
+                            primary_link.get_attribute("href")
+                        )
+
+                        if not href:
+                            continue
+
+                        raw_name = ""
 
                         try:
-
-                            card_text = (
-                                card.inner_text(
-                                    timeout=2000
-                                )
-                                .replace(
-                                    "\xa0",
-                                    " "
-                                )
-                                .strip()
-                            )
-
-                        except Exception:
-
-                            continue
-
-                        card_normalized = normalize(
-                            card_text
-                        )
-
-                        # ------------------------------------------------
-                        # CRITICAL:
-                        #
-                        # The requested company AND requested location
-                        # must both be represented in THIS result card.
-                        #
-                        # This prevents profile/recommendation/mutual
-                        # connection cards from entering the candidate
-                        # list.
-                        # ------------------------------------------------
-                        company_present = (
-                            bool(requested_company)
-                            and
-                            requested_company
-                            in
-                            card_normalized
-                        )
-
-                        location_present = (
-                            bool(requested_location)
-                            and
-                            requested_location
-                            in
-                            card_normalized
-                        )
-
-                        print(
-                            "Candidate-card validation:",
-                            url
-                        )
-
-                        print(
-                            "  Company present:",
-                            company_present
-                        )
-
-                        print(
-                            "  Location present:",
-                            location_present
-                        )
-
-                        if not company_present:
-
-                            print(
-                                "SKIP - requested company "
-                                "not present in result card."
-                            )
-
-                            continue
-
-                        if not location_present:
-
-                            print(
-                                "SKIP - requested location "
-                                "not present in result card."
-                            )
-
-                            continue
-
-                        # ------------------------------------------------
-                        # Accept only after card-level validation.
-                        # ------------------------------------------------
-                        seen.add(
-                            url
-                        )
-
-                        name = ""
-
-                        try:
-
-                            name = (
-                                link.inner_text(
+                            raw_name = (
+                                primary_link.inner_text(
                                     timeout=2000
                                 )
                                 .strip()
-                                .replace(
-                                    chr(10),
-                                    " "
-                                )
+                                .replace("\n", " ")
                             )
-
                         except Exception:
-
                             pass
 
-                        profiles.append(
+                        candidate_rows.append(
                             {
-                                "full_name": name,
-                                "profile_url": url,
+                                "full_name": raw_name,
+                                "profile_url": href,
                                 "company": company,
                                 "location": location,
+                                "discovery_source": (
+                                    "controlled-primary-card-fallback"
+                                ),
                             }
                         )
 
-                        new_profiles += 1
-
-                        print(
-                            "VALID EMPLOYEE CANDIDATE:",
-                            name
-                        )
-
-                        print(
-                            "Candidate URL:",
-                            url
-                        )
-
                     except Exception as ex:
-
                         print(
-                            "Profile candidate inspection failed:",
+                            "Controlled fallback candidate failed:",
                             repr(ex)
                         )
 
             except Exception as ex:
-
                 print(
-                    "Visible employee collection failed:",
+                    "Controlled primary-card fallback failed:",
                     repr(ex)
                 )
 
-            return new_profiles
-
         # ------------------------------------------------------------
-        # Initial result collection.
+        # 6. Final URL de-duplication.
         # ------------------------------------------------------------
-        collect_visible_profiles()
 
-        # ------------------------------------------------------------
-        # Controlled scrolling.
-        # ------------------------------------------------------------
-        MAX_SCROLLS = 20
-        EMPTY_PASSES_TO_STOP = 3
-        empty_passes = 0
-
-        for scroll_number in range(
-            1,
-            MAX_SCROLLS + 1
-        ):
-
-            before = len(
-                seen
-            )
-
-            print(
-                "-" * 60
-            )
-
-            print(
-                f"EMPLOYEE RESULT SCROLL "
-                f"{scroll_number}/{MAX_SCROLLS}"
-            )
-
-            print(
-                "-" * 60
-            )
-
-            scrolled = False
+        for row in candidate_rows:
 
             try:
-
-                result = search_area.evaluate(
-                    """
-                    (el) => {
-                        let node = el;
-
-                        while (node) {
-                            if (
-                                node.scrollHeight
-                                >
-                                node.clientHeight + 20
-                            ) {
-                                node.scrollTop =
-                                    node.scrollHeight;
-
-                                return true;
-                            }
-
-                            node = node.parentElement;
-                        }
-
-                        return false;
-                    }
-                    """
+                clean_url = canonical_profile_url(
+                    row.get("profile_url", "")
                 )
 
-                scrolled = bool(
-                    result
-                )
+                if not clean_url:
+                    continue
 
-                if scrolled:
-
+                if clean_url in seen:
                     print(
-                        "Scrolled employee result container."
+                        "SKIP duplicate primary employee:",
+                        clean_url
                     )
+                    continue
+
+                seen.add(
+                    clean_url
+                )
+
+                row["profile_url"] = clean_url
+
+                profiles.append(
+                    row
+                )
+
+                print("-" * 60)
+                print(
+                    "PRIMARY EMPLOYEE CANDIDATE:"
+                )
+                print(
+                    "Name:",
+                    row.get("full_name", "")
+                )
+                print(
+                    "URL:",
+                    clean_url
+                )
+                print(
+                    "Source:",
+                    row.get(
+                        "discovery_source",
+                        ""
+                    )
+                )
 
             except Exception as ex:
-
                 print(
-                    "Result-container scrolling failed:",
+                    "Final candidate processing failed:",
                     repr(ex)
                 )
 
-            if not scrolled:
-
-                try:
-
-                    search_area.scroll_into_view_if_needed(
-                        timeout=5000
-                    )
-
-                    self.page.mouse.wheel(
-                        0,
-                        1500
-                    )
-
-                    scrolled = True
-
-                    print(
-                        "Used employee-result mouse-wheel fallback."
-                    )
-
-                except Exception as ex:
-
-                    print(
-                        "Mouse-wheel fallback failed:",
-                        repr(ex)
-                    )
-
-            self.page.wait_for_timeout(
-                2000
-            )
-
-            collect_visible_profiles()
-
-            added = (
-                len(seen)
-                - before
-            )
-
-            print(
-                "New validated employee profiles:",
-                added
-            )
-
-            print(
-                "Total validated employee candidates:",
-                len(profiles)
-            )
-
-            if added == 0:
-
-                empty_passes += 1
-
-            else:
-
-                empty_passes = 0
-
-            if empty_passes >= EMPTY_PASSES_TO_STOP:
-
-                print(
-                    "No additional validated employee profiles "
-                    "rendered after multiple scroll passes."
-                )
-
-                break
-
-        collect_visible_profiles()
-
         print("=" * 60)
-
         print(
-            "TOTAL VALIDATED PROFILE CANDIDATES:",
+            "PRIMARY EMPLOYEE PROFILES EXTRACTED:",
             len(profiles)
         )
-
         print("=" * 60)
 
         return profiles
