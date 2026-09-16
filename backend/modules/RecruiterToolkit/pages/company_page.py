@@ -1015,441 +1015,200 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # CRITICAL LOCATION SUGGESTION SELECTION
+        # LOCATION AUTOCOMPLETE SELECTION - V5
         #
-        # ROOT CAUSE FOUND FROM THE LATEST GITHUB LOG:
-        #
-        # The input is real and typing succeeds:
-        #   input[data-testid="typeahead-input"]
-        #   placeholder="Add a location"
-        #
-        # But LinkedIn exposes NO aria-controls/aria-owns, no dialog,
-        # and no listbox. The previous DOM-ancestor search therefore
-        # cannot reach the detached autocomplete popup.
-        #
-        # The correct strategy is:
-        #   1. Find exact visible text for the expected LinkedIn location.
-        #   2. Inspect ALL exact-text matches.
-        #   3. Use screen geometry to distinguish the autocomplete popup
-        #      from employee result cards elsewhere on the page.
-        #   4. Click the matching visible suggestion.
-        #
-        # This avoids page-wide blind text clicking because the candidate
-        # must be:
-        #   - exact/valid location text
-        #   - visible
-        #   - spatially close to the active Add a location input
+        # The latest run proved that normal text/role/ARIA locators do
+        # not expose the current LinkedIn typeahead suggestion.
+        # V5 therefore uses keyboard navigation first, then bounded DOM
+        # hit-testing immediately below the active location input.
+        # Never perform a page-wide location click.
         # ------------------------------------------------------------
 
-        requested_location = str(
-            location
-        ).strip()
+        requested_location = str(location).strip()
+        expected_location = f"{requested_location}, United States"
 
-        expected_location = (
-            f"{requested_location}, United States"
-        )
-
-        print(
-            "Selecting LinkedIn location option:",
-            expected_location
-        )
+        print("Selecting LinkedIn location option:", expected_location)
 
         location_selected = False
 
-        def normalize_location_text(value):
-            return re.sub(
-                r"\s+",
-                " ",
-                str(value or "")
-            ).strip().lower()
+        def norm(value):
+            return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
-        requested_norm = normalize_location_text(
-            requested_location
-        )
+        requested_norm = norm(requested_location)
+        expected_norm = norm(expected_location)
 
-        expected_norm = normalize_location_text(
-            expected_location
-        )
-
-        def matches_location(value):
-            normalized = normalize_location_text(value)
-
-            if not normalized:
-                return False
-
+        def valid_location_text(value):
+            value = norm(value)
             return (
-                normalized == expected_norm
-                or normalized == requested_norm
-                or normalized.startswith(
-                    requested_norm + ","
-                )
-                or normalized.startswith(
-                    requested_norm + " -"
-                )
-                or normalized.startswith(
-                    requested_norm + " |"
+                value == expected_norm
+                or (
+                    value.startswith(requested_norm)
+                    and "united states" in value
+                    and len(value) <= 180
                 )
             )
 
-        # Re-acquire the exact active input.
         try:
-            location_inputs = self.page.locator(
+            inputs = self.page.locator(
                 "input[placeholder='Add a location']:visible"
             )
+            count = inputs.count()
+            print("Visible Add a location inputs during selection:", count)
 
-            if location_inputs.count() == 0:
-                print(
-                    "[LOCATION ERROR] Add a location input "
-                    "is no longer visible."
-                )
+            if count == 0:
+                print("[LOCATION ERROR] Add a location input disappeared.")
                 return False
 
-            location_box = location_inputs.last
+            location_input = inputs.last
+            input_box = location_input.bounding_box()
+            print("Location input bounding box:", input_box)
 
-            input_box = location_box.bounding_box()
+            if not input_box:
+                print("[LOCATION ERROR] Location input has no bounding box.")
+                return False
 
-            print(
-                "Location input bounding box:",
-                input_box
-            )
-
+            location_input.click(timeout=5000)
         except Exception as ex:
-            print(
-                "[LOCATION ERROR] Could not inspect "
-                "location input:",
-                repr(ex)
-            )
+            print("[LOCATION ERROR] Could not reacquire location input:", repr(ex))
             return False
 
-        self.page.wait_for_timeout(
-            2000
-        )
+        self.page.wait_for_timeout(1200)
 
-        # ------------------------------------------------------------
-        # PRIMARY METHOD:
-        # Search exact visible rendered location text and select the
-        # candidate that is physically close to the typeahead input.
-        #
-        # LinkedIn's current popup is detached from the input wrapper,
-        # so DOM ancestry/ARIA is not sufficient.
-        # ------------------------------------------------------------
+        # METHOD 1: force LinkedIn to expose the active suggestion.
         try:
-            exact_candidates = self.page.get_by_text(
-                expected_location,
-                exact=True
-            )
+            self.page.keyboard.press("ArrowDown")
+            self.page.wait_for_timeout(400)
+            active_id = location_input.get_attribute("aria-activedescendant")
+            print("aria-activedescendant after ArrowDown:", active_id)
 
-            exact_count = exact_candidates.count()
-
-            print(
-                "Exact visible expected-location matches:",
-                exact_count
-            )
-
-            nearby = []
-
-            if input_box:
-                input_left = input_box["x"]
-                input_top = input_box["y"]
-                input_right = input_left + input_box["width"]
-                input_bottom = input_top + input_box["height"]
-
-                for i in range(exact_count):
-                    candidate = exact_candidates.nth(i)
-
-                    try:
-                        if not candidate.is_visible():
-                            continue
-                    except Exception:
-                        continue
-
-                    try:
-                        box = candidate.bounding_box()
-                    except Exception:
-                        box = None
-
-                    try:
-                        rendered_text = candidate.inner_text(
-                            timeout=1000
-                        ).strip()
-                    except Exception:
-                        rendered_text = ""
-
-                    print(
-                        f"Exact location candidate #{i + 1}:",
-                        repr(rendered_text),
-                        "box=",
-                        box
-                    )
-
-                    if not box:
-                        continue
-
-                    candidate_left = box["x"]
-                    candidate_top = box["y"]
-                    candidate_right = candidate_left + box["width"]
-                    candidate_bottom = candidate_top + box["height"]
-
-                    horizontal_overlap = (
-                        candidate_right >= input_left - 500
-                        and candidate_left <= input_right + 500
-                    )
-
-                    # Autocomplete normally appears below the input.
-                    below_input = (
-                        candidate_top >= input_bottom - 10
-                        and candidate_top <= input_bottom + 400
-                    )
-
-                    if horizontal_overlap and below_input:
-                        nearby.append(
-                            (
-                                candidate_top,
-                                i,
-                                candidate,
-                                box
-                            )
-                        )
-
-                nearby.sort(
-                    key=lambda item: (
-                        item[0],
-                        item[1]
-                    )
-                )
-
-                print(
-                    "Nearby autocomplete candidates:",
-                    len(nearby)
-                )
-
-                for _, i, candidate, box in nearby:
-                    try:
-                        print(
-                            "Selecting nearby location candidate:",
-                            repr(
-                                candidate.inner_text(
-                                    timeout=1000
-                                ).strip()
-                            ),
-                            "box=",
-                            box
-                        )
-
-                        candidate.scroll_into_view_if_needed(
-                            timeout=2000
-                        )
-
-                        candidate.click(
-                            timeout=5000
-                        )
-
+            if active_id:
+                active = self.page.locator(f"#{active_id}")
+                if active.is_visible():
+                    active_text = active.inner_text(timeout=1000).strip()
+                    print("Active autocomplete candidate:", repr(active_text))
+                    if valid_location_text(active_text):
+                        active.click(timeout=5000)
                         location_selected = True
-
-                        print(
-                            "Location autocomplete candidate "
-                            "clicked successfully."
-                        )
-
-                        break
-
-                    except Exception as ex:
-                        print(
-                            f"Nearby candidate #{i + 1} click failed:",
-                            repr(ex)
-                        )
-
+                        print("Location selected through active descendant.")
         except Exception as ex:
-            print(
-                "Exact rendered-location lookup failed:",
-                repr(ex)
-            )
+            print("Active-descendant selection failed:", repr(ex))
 
-        # ------------------------------------------------------------
-        # SECONDARY METHOD:
-        # If exact "New Jersey, United States" is not present, inspect
-        # exact requested-location matches using the same geometry.
-        # ------------------------------------------------------------
+        # METHOD 2: inspect the actual DOM under the popup area.
         if not location_selected:
             try:
-                requested_candidates = self.page.get_by_text(
-                    requested_location,
-                    exact=True
+                candidates = self.page.evaluate(
+                    """({b, requested, expected}) => {
+                        const norm = v => String(v || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                        const req = norm(requested);
+                        const exp = norm(expected);
+                        const out = [];
+                        const seen = new Set();
+                        const visible = el => {
+                            if (!el) return false;
+                            const s = getComputedStyle(el), r = el.getBoundingClientRect();
+                            return s.display !== "none" && s.visibility !== "hidden" && s.opacity !== "0" && r.width > 0 && r.height > 0;
+                        };
+                        const matches = el => {
+                            const t = norm(el.innerText || el.textContent || "");
+                            return t === exp || (t.startsWith(req) && t.includes("united states") && t.length <= 180);
+                        };
+                        const add = el => {
+                            if (!el || seen.has(el) || !visible(el) || !matches(el)) return;
+                            const r = el.getBoundingClientRect();
+                            if (r.top < b.y + b.height - 5 || r.top > b.y + b.height + 260 || r.right < b.x - 80 || r.left > b.x + b.width + 80) return;
+                            seen.add(el);
+                            out.push({
+                                text: String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim(),
+                                x: r.x, y: r.y, w: r.width, h: r.height,
+                                cx: r.x + r.width / 2, cy: r.y + r.height / 2,
+                                tag: el.tagName, role: el.getAttribute("role"), testid: el.getAttribute("data-testid"),
+                                html: el.outerHTML.slice(0, 1800)
+                            });
+                        };
+                        const left = Math.max(0, b.x - 20), right = b.x + b.width + 20;
+                        const top = b.y + b.height + 2, bottom = top + 260;
+                        for (let y = top; y <= bottom; y += 6) {
+                            for (let x = left; x <= right; x += 12) {
+                                for (const el of document.elementsFromPoint(x, y)) {
+                                    add(el);
+                                    let p = el.parentElement;
+                                    for (let d = 0; p && d < 4; d++) { add(p); p = p.parentElement; }
+                                }
+                            }
+                        }
+                        out.sort((a, z) => a.y - z.y);
+                        return out.slice(0, 20);
+                    }""",
+                    {"b": input_box, "requested": requested_location, "expected": expected_location},
                 )
 
-                requested_count = requested_candidates.count()
+                print("DOM hit-test location candidates:", len(candidates or []))
+                for i, c in enumerate(candidates or []):
+                    print(f"Hit-test candidate #{i + 1}:", repr(c["text"]), "tag=", c["tag"], "role=", c["role"], "testid=", c["testid"], "box=", (c["x"], c["y"], c["w"], c["h"]))
 
-                print(
-                    "Exact requested-location matches:",
-                    requested_count
-                )
+                for c in candidates or []:
+                    print("Clicking bounded autocomplete candidate:", repr(c["text"]), "at", (c["cx"], c["cy"]))
+                    self.page.mouse.click(c["cx"], c["cy"])
+                    self.page.wait_for_timeout(900)
+                    u = self.page.url.lower()
+                    if "/search/results/people/" in u and "currentcompany=" in u and "/in/" not in u:
+                        location_selected = True
+                        print("Location selected through DOM hit-testing.")
+                        break
+            except Exception as ex:
+                print("DOM hit-testing failed:", repr(ex))
 
-                nearby_requested = []
-
-                if input_box:
-                    input_left = input_box["x"]
-                    input_top = input_box["y"]
-                    input_right = input_left + input_box["width"]
-                    input_bottom = input_top + input_box["height"]
-
-                    for i in range(requested_count):
-                        candidate = requested_candidates.nth(i)
-
-                        try:
-                            if not candidate.is_visible():
-                                continue
-                        except Exception:
-                            continue
-
-                        try:
-                            box = candidate.bounding_box()
-                        except Exception:
-                            box = None
-
-                        if not box:
-                            continue
-
-                        candidate_left = box["x"]
-                        candidate_top = box["y"]
-                        candidate_right = candidate_left + box["width"]
-
-                        horizontal_overlap = (
-                            candidate_right >= input_left - 500
-                            and candidate_left <= input_right + 500
-                        )
-
-                        below_input = (
-                            candidate_top >= input_bottom - 10
-                            and candidate_top <= input_bottom + 400
-                        )
-
-                        if horizontal_overlap and below_input:
-                            nearby_requested.append(
-                                (
-                                    candidate_top,
-                                    i,
-                                    candidate,
-                                    box
-                                )
-                            )
-
-                    nearby_requested.sort(
-                        key=lambda item: (
-                            item[0],
-                            item[1]
-                        )
-                    )
-
-                    for _, i, candidate, box in nearby_requested:
-                        try:
-                            print(
-                                "Selecting nearby requested-location "
-                                f"candidate #{i + 1}:",
-                                repr(
-                                    candidate.inner_text(
-                                        timeout=1000
-                                    ).strip()
-                                )
-                            )
-
-                            candidate.scroll_into_view_if_needed(
-                                timeout=2000
-                            )
-
-                            candidate.click(
-                                timeout=5000
-                            )
-
+        # METHOD 3: Enter is allowed only if an active valid suggestion exists.
+        if not location_selected:
+            try:
+                location_input.click(timeout=3000)
+                self.page.keyboard.press("ArrowDown")
+                self.page.wait_for_timeout(400)
+                active_id = location_input.get_attribute("aria-activedescendant")
+                print("Keyboard fallback active descendant:", active_id)
+                if active_id:
+                    active = self.page.locator(f"#{active_id}")
+                    active_text = active.inner_text(timeout=1000).strip()
+                    print("Keyboard fallback active text:", repr(active_text))
+                    if valid_location_text(active_text):
+                        self.page.keyboard.press("Enter")
+                        self.page.wait_for_timeout(900)
+                        u = self.page.url.lower()
+                        if "/search/results/people/" in u and "currentcompany=" in u and "/in/" not in u:
                             location_selected = True
-
-                            print(
-                                "Location autocomplete candidate "
-                                "clicked successfully."
-                            )
-
-                            break
-
-                        except Exception as ex:
-                            print(
-                                "Requested-location candidate click failed:",
-                                repr(ex)
-                            )
-
+                            print("Location selected through controlled keyboard fallback.")
             except Exception as ex:
-                print(
-                    "Requested-location lookup failed:",
-                    repr(ex)
-                )
+                print("Controlled keyboard fallback failed:", repr(ex))
 
-        # ------------------------------------------------------------
-        # HARD FAILURE
-        # ------------------------------------------------------------
         if not location_selected:
-            print(
-                "ERROR: Could not click the LinkedIn "
-                "location autocomplete option."
-            )
-
-            print(
-                "Requested location:",
-                requested_location
-            )
-
-            print(
-                "Expected LinkedIn location:",
-                expected_location
-            )
-
-            # Print all exact expected-location matches with geometry.
-            # This is the definitive diagnostic if LinkedIn's UI changed.
+            print("ERROR: Could not select the LinkedIn location autocomplete option.")
+            print("Requested location:", requested_location)
+            print("Expected LinkedIn location:", expected_location)
             try:
-                all_matches = self.page.get_by_text(
-                    expected_location,
-                    exact=True
-                )
-
-                print(
-                    "FAILURE DIAGNOSTIC - exact expected matches:",
-                    all_matches.count()
-                )
-
-                for i in range(all_matches.count()):
-                    item = all_matches.nth(i)
-
-                    try:
-                        print(
-                            f"  match #{i + 1}: visible=",
-                            item.is_visible(),
-                            "box=",
-                            item.bounding_box(),
-                            "html=",
-                            item.evaluate(
-                                "(el) => el.outerHTML"
-                            )[:3000]
-                        )
-                    except Exception as ex:
-                        print(
-                            f"  match #{i + 1} diagnostic failed:",
-                            repr(ex)
-                        )
-
-            except Exception as ex:
-                print(
-                    "Failure diagnostics failed:",
-                    repr(ex)
-                )
-
-            print(
-                "Location filter result: False"
-            )
-
+                print("Final input value:", location_input.input_value())
+                print("Final aria-activedescendant:", location_input.get_attribute("aria-activedescendant"))
+                print("Final aria-expanded:", location_input.get_attribute("aria-expanded"))
+            except Exception:
+                pass
+            print("Location filter result: False")
             return False
 
-        # IMPORTANT:
-        # Do NOT press Enter after selecting the suggestion.
-        print(
-            "Location suggestion selected successfully."
-        )
+        print("Location suggestion selected successfully.")
+        self.page.wait_for_timeout(1000)
+
+        after_selection_url = self.page.url
+        after_selection_lower = after_selection_url.lower()
+        print("URL after location selection:", after_selection_url)
+
+        if "/in/" in after_selection_lower:
+            print("[LOCATION ERROR] Location selection opened a profile.")
+            return False
+        if "/search/results/people/" not in after_selection_lower:
+            print("[LOCATION ERROR] Location selection left people-search.")
+            return False
+        if "currentcompany=" not in after_selection_lower:
+            print("[LOCATION ERROR] currentCompany disappeared.")
+            return False
 
         # IMPORTANT:
         # Do NOT press Enter.
