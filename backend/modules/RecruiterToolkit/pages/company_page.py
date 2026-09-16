@@ -939,63 +939,34 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # Find the active Location dialog and its actual location input.
-        # Do not depend on page-wide visible-input ordering.
+        # ------------------------------------------------------------
+        # Find LinkedIn's actual Location input.
+        #
+        # IMPORTANT:
+        # LinkedIn does NOT consistently expose this UI as role="dialog".
+        # Target the exact Add a location input instead.
         # ------------------------------------------------------------
         try:
-            location_dialog = None
-
-            dialogs = self.page.locator(
-                "[role='dialog']:visible"
-            )
-
-            print(
-                "Visible dialogs:",
-                dialogs.count()
-            )
-
-            for i in range(
-                dialogs.count() - 1,
-                -1,
-                -1
-            ):
-                dialog = dialogs.nth(i)
-
-                try:
-                    if not dialog.is_visible():
-                        continue
-                except Exception:
-                    continue
-
-                if dialog.locator(
-                    "input[placeholder='Add a location']:visible"
-                ).count() > 0:
-                    location_dialog = dialog
-                    break
-
-            if location_dialog is None:
-                print(
-                    "[LOCATION ERROR] Active Location dialog "
-                    "with Add a location input was not found."
-                )
-                return False
-
-            location_inputs = location_dialog.locator(
+            location_inputs = self.page.locator(
                 "input[placeholder='Add a location']:visible"
             )
 
+            input_count = location_inputs.count()
+
             print(
-                "Visible location inputs in dialog:",
-                location_inputs.count()
+                "Visible Add a location inputs:",
+                input_count
             )
 
-            if location_inputs.count() == 0:
+            if input_count == 0:
                 print(
-                    "[LOCATION ERROR] Add a location input "
-                    "was not found."
+                    "[LOCATION ERROR] No visible "
+                    "Add a location input was found."
                 )
                 return False
 
+            # LinkedIn can retain an older hidden instance.
+            # Use the newest visible exact-placeholder input.
             location_box = location_inputs.last
 
             print(
@@ -1003,10 +974,20 @@ class CompanyPage(BasePage):
                 location_box.get_attribute("placeholder")
             )
 
-            # LinkedIn autocomplete is more reliably triggered by
-            # real sequential keyboard input than fill() alone.
+            print(
+                "Location input aria-controls:",
+                location_box.get_attribute("aria-controls")
+            )
+
+            print(
+                "Location input aria-owns:",
+                location_box.get_attribute("aria-owns")
+            )
+
             location_box.click()
             location_box.fill("")
+
+            # Sequential typing reliably triggers LinkedIn autocomplete.
             location_box.press_sequentially(
                 str(location).strip(),
                 delay=100
