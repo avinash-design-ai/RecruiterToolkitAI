@@ -939,35 +939,77 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # Find the actual location input.
+        # Find the active Location dialog and its actual location input.
+        # Do not depend on page-wide visible-input ordering.
         # ------------------------------------------------------------
         try:
-            inputs = self.page.locator(
-                "input:visible"
-            )
+            location_dialog = None
 
-            input_count = inputs.count()
+            dialogs = self.page.locator(
+                "[role='dialog']:visible"
+            )
 
             print(
-                "Visible inputs:",
-                input_count
+                "Visible dialogs:",
+                dialogs.count()
             )
 
-            if input_count == 0:
+            for i in range(
+                dialogs.count() - 1,
+                -1,
+                -1
+            ):
+                dialog = dialogs.nth(i)
+
+                try:
+                    if not dialog.is_visible():
+                        continue
+                except Exception:
+                    continue
+
+                if dialog.locator(
+                    "input[placeholder='Add a location']:visible"
+                ).count() > 0:
+                    location_dialog = dialog
+                    break
+
+            if location_dialog is None:
                 print(
-                    "[LOCATION ERROR] No visible inputs."
+                    "[LOCATION ERROR] Active Location dialog "
+                    "with Add a location input was not found."
                 )
                 return False
 
-            location_box = inputs.last
+            location_inputs = location_dialog.locator(
+                "input[placeholder='Add a location']:visible"
+            )
+
+            print(
+                "Visible location inputs in dialog:",
+                location_inputs.count()
+            )
+
+            if location_inputs.count() == 0:
+                print(
+                    "[LOCATION ERROR] Add a location input "
+                    "was not found."
+                )
+                return False
+
+            location_box = location_inputs.last
 
             print(
                 "Location input placeholder:",
                 location_box.get_attribute("placeholder")
             )
 
-            location_box.fill(
-                location
+            # LinkedIn autocomplete is more reliably triggered by
+            # real sequential keyboard input than fill() alone.
+            location_box.click()
+            location_box.fill("")
+            location_box.press_sequentially(
+                str(location).strip(),
+                delay=100
             )
 
         except Exception as ex:
@@ -994,22 +1036,13 @@ class CompanyPage(BasePage):
         # ------------------------------------------------------------
         # CRITICAL LOCATION SUGGESTION SELECTION
         #
-        # LinkedIn does NOT normally expose the requested location
-        # exactly as typed.
+        # LinkedIn does not consistently expose autocomplete suggestions
+        # as role='option'. The suggestion can be rendered as an LI,
+        # button, listbox child, or an ARIA-controlled popup.
         #
-        # Example:
-        #   Requested: New Jersey
-        #   LinkedIn:  New Jersey, United States
-        #
-        # Therefore we must target LinkedIn's actual autocomplete
-        # option using the normalized country-qualified value.
-        #
-        # Do NOT use:
-        #   get_by_text("New Jersey", exact=True)
-        #   [role='listitem']
-        #   ArrowDown + Enter
-        #
-        # [role='listitem'] may match employee profile cards.
+        # Keep all detection scoped to the Location UI. Never use a
+        # page-wide get_by_text("New Jersey") because employee cards
+        # can contain the same location text.
         # ------------------------------------------------------------
 
         requested_location = str(
@@ -1027,130 +1060,364 @@ class CompanyPage(BasePage):
 
         location_selected = False
 
-        # ------------------------------------------------------------
-        # PRIMARY METHOD
-        #
-        # LinkedIn's autocomplete option was previously confirmed to
-        # render as:
-        #
-        #   role="option"
-        #   text="New Jersey, United States"
-        #
-        # Select that exact option.
-        # ------------------------------------------------------------
+        def normalize_location_text(value):
+            return re.sub(
+                r"\s+",
+                " ",
+                str(value or "")
+            ).strip().lower()
 
-        try:
-            location_option = self.page.get_by_role(
-                "option",
-                name=expected_location,
-                exact=True
+        requested_norm = normalize_location_text(
+            requested_location
+        )
+
+        expected_norm = normalize_location_text(
+            expected_location
+        )
+
+        def location_text_matches(value):
+            normalized = normalize_location_text(
+                value
             )
 
-            option_count = location_option.count()
+            if not normalized:
+                return False
 
-            print(
-                "Matching location options found:",
-                option_count
+            return (
+                normalized == expected_norm
+                or normalized == requested_norm
+                or normalized.startswith(
+                    requested_norm + ","
+                )
+                or normalized.startswith(
+                    requested_norm + " -"
+                )
+                or normalized.startswith(
+                    requested_norm + " |"
+                )
             )
 
-            if option_count > 0:
+        def get_candidate_text(locator):
+
+            try:
+                value = locator.inner_text(
+                    timeout=1000
+                )
+
+                if location_text_matches(value):
+                    return value.strip()
+
+            except Exception:
+                pass
+
+            for attr in (
+                "aria-label",
+                "title"
+            ):
+
                 try:
-                    location_option.first.scroll_into_view_if_needed()
+                    value = locator.get_attribute(
+                        attr
+                    )
 
-                    location_option.first.click(
-                        timeout=15000
+                    if (
+                        value
+                        and location_text_matches(value)
+                    ):
+                        return value.strip()
+
+                except Exception:
+                    pass
+
+            return None
+
+        def click_candidates(
+            container,
+            description
+        ):
+
+            nonlocal location_selected
+
+            try:
+                count = container.count()
+            except Exception:
+                return False
+
+            for i in range(count):
+
+                candidate = container.nth(i)
+
+                try:
+                    if not candidate.is_visible():
+                        continue
+                except Exception:
+                    continue
+
+                matched_text = get_candidate_text(
+                    candidate
+                )
+
+                if not matched_text:
+                    continue
+
+                print(
+                    "Location autocomplete candidate "
+                    f"found ({description}):",
+                    matched_text
+                )
+
+                try:
+                    candidate.scroll_into_view_if_needed(
+                        timeout=1000
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    candidate.click(
+                        timeout=5000
                     )
 
                     location_selected = True
-
-                    print(
-                        "Location option clicked successfully."
-                    )
+                    return True
 
                 except Exception as ex:
+
                     print(
-                        "Location option click failed:",
+                        "Location candidate click failed "
+                        f"({description}):",
                         repr(ex)
                     )
 
+            return False
+
+        # Allow the autocomplete popup time to appear.
+        self.page.wait_for_timeout(
+            2500
+        )
+
+        # ------------------------------------------------------------
+        # 1. Search inside the active Location dialog.
+        # ------------------------------------------------------------
+        try:
+
+            if location_dialog is not None:
+
+                if click_candidates(
+                    location_dialog.locator(
+                        "[role='option']:visible"
+                    ),
+                    "dialog role=option"
+                ):
+                    pass
+
+                if not location_selected:
+
+                    if click_candidates(
+                        location_dialog.locator(
+                            "li:visible"
+                        ),
+                        "dialog li"
+                    ):
+                        pass
+
+                if not location_selected:
+
+                    if click_candidates(
+                        location_dialog.locator(
+                            "button:visible, "
+                            "[role='button']:visible"
+                        ),
+                        "dialog clickable"
+                    ):
+                        pass
+
         except Exception as ex:
+
             print(
-                "Location option lookup failed:",
+                "Dialog autocomplete lookup failed:",
                 repr(ex)
             )
 
         # ------------------------------------------------------------
-        # CONTROLLED FALLBACK
-        #
-        # Same confirmed role=option DOM.
-        # We inspect every visible option and compare its complete
-        # rendered text to the country-qualified location.
+        # 2. Follow aria-controls / aria-owns.
+        # LinkedIn can render the popup outside the dialog.
         # ------------------------------------------------------------
-
         if not location_selected:
 
             try:
-                visible_options = self.page.locator(
-                    "[role='option']:visible"
-                )
 
-                visible_count = visible_options.count()
+                controlled_ids = []
 
-                print(
-                    "Visible location options:",
-                    visible_count
-                )
+                for attr in (
+                    "aria-controls",
+                    "aria-owns"
+                ):
 
-                for i in range(visible_count):
+                    value = location_box.get_attribute(
+                        attr
+                    )
 
-                    try:
-                        option = visible_options.nth(i)
+                    if value:
 
-                        option_text = (
-                            option.inner_text(
-                                timeout=2000
-                            )
-                            .strip()
+                        controlled_ids.extend(
+                            item.strip()
+                            for item in value.split()
+                            if item.strip()
                         )
 
-                        print(
-                            f"Location option {i}:",
-                            repr(option_text)
-                        )
+                for controlled_id in controlled_ids:
 
-                        if (
-                            option_text.lower()
-                            == expected_location.lower()
-                        ):
+                    if location_selected:
+                        break
 
-                            option.scroll_into_view_if_needed()
+                    popup = self.page.locator(
+                        f"[id='{controlled_id}']:visible"
+                    )
 
-                            option.click(
-                                timeout=15000
-                            )
-
-                            location_selected = True
-
-                            print(
-                                "Location option clicked "
-                                "successfully via fallback."
-                            )
-
-                            break
-
-                    except Exception:
+                    if popup.count() == 0:
                         continue
 
+                    if click_candidates(
+                        popup.locator(
+                            "[role='option']:visible"
+                        ),
+                        f"ARIA popup {controlled_id} option"
+                    ):
+                        break
+
+                    if click_candidates(
+                        popup.locator(
+                            "li:visible"
+                        ),
+                        f"ARIA popup {controlled_id} li"
+                    ):
+                        break
+
+                    if click_candidates(
+                        popup.locator(
+                            "button:visible, "
+                            "[role='button']:visible"
+                        ),
+                        f"ARIA popup {controlled_id} clickable"
+                    ):
+                        break
+
             except Exception as ex:
+
                 print(
-                    "Location option fallback failed:",
+                    "ARIA popup lookup failed:",
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # 3. Visible listbox fallback.
+        # ------------------------------------------------------------
+        if not location_selected:
+
+            try:
+
+                listboxes = self.page.locator(
+                    "[role='listbox']:visible"
+                )
+
+                print(
+                    "Visible listboxes:",
+                    listboxes.count()
+                )
+
+                for i in range(
+                    listboxes.count()
+                ):
+
+                    if location_selected:
+                        break
+
+                    listbox = listboxes.nth(i)
+
+                    if click_candidates(
+                        listbox.locator(
+                            "[role='option']:visible"
+                        ),
+                        f"listbox #{i + 1} option"
+                    ):
+                        break
+
+                    if click_candidates(
+                        listbox.locator(
+                            "li:visible"
+                        ),
+                        f"listbox #{i + 1} li"
+                    ):
+                        break
+
+                    if click_candidates(
+                        listbox.locator(
+                            "button:visible, "
+                            "[role='button']:visible"
+                        ),
+                        f"listbox #{i + 1} clickable"
+                    ):
+                        break
+
+            except Exception as ex:
+
+                print(
+                    "Listbox lookup failed:",
+                    repr(ex)
+                )
+
+        # ------------------------------------------------------------
+        # 4. Safe UL/LI fallback.
+        # Only inspect visible list structures.
+        # ------------------------------------------------------------
+        if not location_selected:
+
+            try:
+
+                visible_lists = self.page.locator(
+                    "ul:visible"
+                )
+
+                for i in range(
+                    visible_lists.count()
+                ):
+
+                    if location_selected:
+                        break
+
+                    ul = visible_lists.nth(i)
+
+                    try:
+                        ul_text = normalize_location_text(
+                            ul.inner_text(
+                                timeout=500
+                            )
+                        )
+                    except Exception:
+                        ul_text = ""
+
+                    if requested_norm not in ul_text:
+                        continue
+
+                    if click_candidates(
+                        ul.locator(
+                            "li:visible"
+                        ),
+                        f"visible ul #{i + 1} li"
+                    ):
+                        break
+
+            except Exception as ex:
+
+                print(
+                    "UL autocomplete lookup failed:",
                     repr(ex)
                 )
 
         # ------------------------------------------------------------
         # HARD FAILURE
         # ------------------------------------------------------------
-
         if not location_selected:
 
             print(
@@ -1168,8 +1435,14 @@ class CompanyPage(BasePage):
                 expected_location
             )
 
+            print(
+                "Location filter result: False"
+            )
+
             return False
 
+        # IMPORTANT:
+        # Do NOT press Enter after selecting the suggestion.
         print(
             "Location suggestion selected successfully."
         )
