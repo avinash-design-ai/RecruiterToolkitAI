@@ -1217,95 +1217,433 @@ class CompanyPage(BasePage):
 
         # ------------------------------------------------------------
         # Click Show results.
+        #
+        # IMPORTANT:
+        # Do NOT use page.get_by_text("Show results").
+        #
+        # The previous implementation could match text from an
+        # unrelated LinkedIn element and navigate away from the
+        # authenticated people-search page.
+        #
+        # We require the actual Show results BUTTON belonging to
+        # the active Location filter dialog.
+        #
+        # There is intentionally NO page-wide fallback.
         # ------------------------------------------------------------
-        print(
-            "Looking for Show results..."
-        )
 
+        print("=" * 60)
+        print("LOCATING SHOW RESULTS BUTTON")
+        print("=" * 60)
+
+        show_results = None
+        selected_dialog_index = None
+
+        # ------------------------------------------------------------
+        # Locate the visible Location filter dialog.
+        # ------------------------------------------------------------
         try:
-            show_results = self.page.get_by_text(
-                "Show results",
-                exact=True
+
+            dialogs = self.page.locator(
+                "[role='dialog']:visible"
             )
 
-            show_count = show_results.count()
+            dialog_count = dialogs.count()
 
             print(
-                "Show results exact matches:",
-                show_count
+                "Visible dialogs:",
+                dialog_count
             )
 
-            clicked_show_results = False
-
-            for i in range(show_count):
+            # Inspect newest dialog first.
+            for i in range(
+                dialog_count - 1,
+                -1,
+                -1
+            ):
 
                 try:
-                    candidate = show_results.nth(i)
 
-                    if not candidate.is_visible():
+                    dialog = dialogs.nth(i)
+
+                    if not dialog.is_visible():
                         continue
 
-                    candidate.click(
-                        timeout=15000
-                    )
+                    dialog_text = ""
 
-                    clicked_show_results = True
+                    try:
+
+                        dialog_text = (
+                            dialog.inner_text(
+                                timeout=2000
+                            )
+                            .strip()
+                        )
+
+                    except Exception:
+                        pass
 
                     print(
-                        f"Clicked Show results #{i + 1}"
+                        f"Dialog #{i + 1} text:",
+                        repr(
+                            dialog_text[:500]
+                        )
                     )
 
-                    break
+                    # The Location filter dialog must contain
+                    # LinkedIn's location input.
+                    has_location_input = (
+                        dialog.locator(
+                            "input[placeholder='Add a location']"
+                        ).count() > 0
+                    )
 
-                except Exception:
-                    continue
+                    print(
+                        f"Dialog #{i + 1} "
+                        f"has location input:",
+                        has_location_input
+                    )
 
-            if not clicked_show_results:
-                print(
-                    "[LOCATION ERROR] Could not click Show results."
-                )
-                return False
+                    if not has_location_input:
+                        continue
+
+                    # Only look for an actual BUTTON inside this
+                    # Location dialog.
+                    show_buttons = (
+                        dialog.get_by_role(
+                            "button",
+                            name="Show results",
+                            exact=True
+                        )
+                    )
+
+                    button_count = (
+                        show_buttons.count()
+                    )
+
+                    print(
+                        f"Dialog #{i + 1} "
+                        f"Show results buttons:",
+                        button_count
+                    )
+
+                    for j in range(
+                        button_count
+                    ):
+
+                        try:
+
+                            candidate = (
+                                show_buttons.nth(j)
+                            )
+
+                            if not candidate.is_visible():
+                                continue
+
+                            if not candidate.is_enabled():
+
+                                print(
+                                    f"Show results button "
+                                    f"#{j + 1} is disabled."
+                                )
+
+                                continue
+
+                            show_results = candidate
+                            selected_dialog_index = i
+
+                            print(
+                                f"Selected Show results "
+                                f"BUTTON #{j + 1} from "
+                                f"Location dialog #{i + 1}."
+                            )
+
+                            break
+
+                        except Exception as ex:
+
+                            print(
+                                f"Button #{j + 1} inspection "
+                                f"failed:",
+                                repr(ex)
+                            )
+
+                    if show_results is not None:
+                        break
+
+                except Exception as ex:
+
+                    print(
+                        f"Dialog #{i + 1} inspection failed:",
+                        repr(ex)
+                    )
 
         except Exception as ex:
+
             print(
-                "[LOCATION ERROR] Show results failed:",
+                "Location dialog lookup failed:",
                 repr(ex)
             )
+
+        # ------------------------------------------------------------
+        # HARD FAILURE
+        #
+        # DO NOT use a page-wide Show results selector.
+        # ------------------------------------------------------------
+        if show_results is None:
+
+            print(
+                "[LOCATION ERROR] Could not identify the "
+                "Show results BUTTON inside the active "
+                "Location filter dialog."
+            )
+
             return False
 
-        self.page.wait_for_timeout(
-            4000
+        # ------------------------------------------------------------
+        # Button diagnostics.
+        # ------------------------------------------------------------
+        try:
+
+            print("=" * 60)
+            print("SHOW RESULTS BUTTON DIAGNOSTICS")
+            print("=" * 60)
+
+            print(
+                "Selected dialog index:",
+                selected_dialog_index
+            )
+
+            print(
+                "Tag:",
+                show_results.evaluate(
+                    "(el) => el.tagName"
+                )
+            )
+
+            print(
+                "Text:",
+                repr(
+                    show_results.inner_text(
+                        timeout=2000
+                    )
+                )
+            )
+
+            print(
+                "aria-label:",
+                show_results.get_attribute(
+                    "aria-label"
+                )
+            )
+
+            print(
+                "type:",
+                show_results.get_attribute(
+                    "type"
+                )
+            )
+
+            print(
+                "disabled:",
+                show_results.get_attribute(
+                    "disabled"
+                )
+            )
+
+        except Exception as ex:
+
+            print(
+                "Button diagnostics failed:",
+                repr(ex)
+            )
+
+        # ------------------------------------------------------------
+        # Capture known-good URL before clicking.
+        # ------------------------------------------------------------
+        before_show_results_url = (
+            self.page.url
         )
 
+        print(
+            "URL before Show results:",
+            before_show_results_url
+        )
+
+        before_lower = (
+            before_show_results_url.lower()
+        )
+
+        if (
+            "/search/results/people/"
+            not in before_lower
+        ):
+
+            print(
+                "[LOCATION ERROR] Before clicking "
+                "Show results, page is no longer "
+                "people-search."
+            )
+
+            return False
+
+        if (
+            "currentcompany="
+            not in before_lower
+        ):
+
+            print(
+                "[LOCATION ERROR] Before clicking "
+                "Show results, currentCompany is missing."
+            )
+
+            return False
+
         # ------------------------------------------------------------
-        # Final validation.
+        # CLICK THE REAL BUTTON.
         # ------------------------------------------------------------
-        final_url = self.page.url
+        print("=" * 60)
+        print("CLICKING SHOW RESULTS BUTTON")
+        print("=" * 60)
+
+        try:
+
+            show_results.scroll_into_view_if_needed()
+
+            show_results.click(
+                timeout=15000
+            )
+
+            print(
+                "Show results BUTTON clicked successfully."
+            )
+
+        except Exception as ex:
+
+            print(
+                "[LOCATION ERROR] Show results button "
+                "click failed:",
+                repr(ex)
+            )
+
+            return False
+
+        # ------------------------------------------------------------
+        # Wait for LinkedIn navigation.
+        # ------------------------------------------------------------
+        final_url = None
+
+        for attempt in range(12):
+
+            self.page.wait_for_timeout(
+                1000
+            )
+
+            current_url = (
+                self.page.url
+            )
+
+            print(
+                f"Post-Show-results URL check "
+                f"{attempt + 1}/12:",
+                current_url
+            )
+
+            current_lower = (
+                current_url.lower()
+            )
+
+            # Never accept LinkedIn root.
+            if (
+                current_lower.rstrip("/")
+                == "https://www.linkedin.com"
+            ):
+
+                print(
+                    "[LOCATION ERROR] Show results "
+                    "navigated to LinkedIn root."
+                )
+
+                return False
+
+            # Never accept profile navigation.
+            if "/in/" in current_lower:
+
+                print(
+                    "[LOCATION ERROR] Show results "
+                    "navigated to a profile."
+                )
+
+                return False
+
+            # Require the company people-search page.
+            if (
+                "/search/results/people/"
+                in current_lower
+                and "currentcompany="
+                in current_lower
+            ):
+
+                final_url = current_url
+                break
+
+        if not final_url:
+            final_url = self.page.url
+
+        # ------------------------------------------------------------
+        # FINAL VALIDATION
+        # ------------------------------------------------------------
+        print("=" * 60)
+        print("FINAL LOCATION FILTER VALIDATION")
+        print("=" * 60)
 
         print(
-            "Final URL after location filter:",
+            "Final URL:",
             final_url
         )
 
-        final_url_lower = final_url.lower()
+        final_lower = (
+            final_url.lower()
+        )
 
-        if "/search/results/people/" not in final_url_lower:
+        # Must remain on people-search.
+        if (
+            "/search/results/people/"
+            not in final_lower
+        ):
+
             print(
-                "[LOCATION ERROR] Final page is not people-search."
+                "[LOCATION ERROR] Final page is not "
+                "people-search."
             )
+
             return False
 
-        if "currentcompany=" not in final_url_lower:
+        # Company filter must survive.
+        if (
+            "currentcompany="
+            not in final_lower
+        ):
+
             print(
-                "[LOCATION ERROR] Final URL lost currentCompany."
+                "[LOCATION ERROR] Final URL lost "
+                "currentCompany."
             )
+
             return False
 
-        if "/in/" in final_url_lower:
+        # Never accept a profile.
+        if "/in/" in final_lower:
+
             print(
-                "[LOCATION ERROR] Final URL is a profile."
+                "[LOCATION ERROR] Final URL is a "
+                "profile page."
             )
+
             return False
+
+        print(
+            "Location filter navigation validated successfully."
+        )
 
         # Wait for the employee result list.
         try:
