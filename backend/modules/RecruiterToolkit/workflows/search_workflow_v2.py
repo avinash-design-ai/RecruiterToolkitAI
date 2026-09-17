@@ -45,6 +45,160 @@ def normalize_location(value):
     return " ".join(value.split())
 
 
+
+class SearchWorkflowProfilePage(LinkedInProfilePageV2):
+    """
+    Workflow-local navigation fix.
+
+    The employee search page is NEVER used as the profile page.
+    For every candidate we:
+      1. stay on the authenticated employee-search page,
+      2. find the exact candidate /in/ href,
+      3. Ctrl-click that exact link and capture the newly opened tab,
+      4. verify the new tab is the requested profile,
+      5. let LinkedInProfilePageV2 handle extraction,
+      6. close only the temporary profile tab.
+
+    This preserves the working CompanyPage search/filter/pagination flow
+    and prevents profile navigation from replacing the employee search page.
+    """
+
+    @staticmethod
+    def _canonical_profile_url(value):
+        if not value:
+            return ""
+        value = str(value).strip()
+        if value.startswith("/"):
+            value = "https://www.linkedin.com" + value
+        return value.split("?")[0].split("#")[0].rstrip("/").lower()
+
+    @staticmethod
+    def _blocked_url(url):
+        u = (url or "").lower()
+        return (
+            "/authwall" in u
+            or "/login" in u
+            or "/ssr-login/" in u
+            or "remember-me-auto-login" in u
+        )
+
+    def _employee_search_page(self):
+        """
+        Return the current authenticated company-scoped people-search page.
+        Do not navigate away from it.
+        """
+        try:
+            current = self._original_profile_page
+            if current and not current.is_closed():
+                u = (current.url or "").lower()
+                if "/search/results/people/" in u and "currentcompany=" in u:
+                    return current
+        except Exception:
+            pass
+
+        # The current workflow page is normally the search page. Keep this
+        # as a non-navigating fallback so a temporary profile tab can never
+        # become the source page for the next candidate.
+        try:
+            current = self.page
+            if current and not current.is_closed():
+                u = (current.url or "").lower()
+                if "/search/results/people/" in u and "currentcompany=" in u:
+                    return current
+        except Exception:
+            pass
+
+        return None
+
+    def open_profile(self, profile_url):
+        requested = self._canonical_profile_url(profile_url)
+        if not requested or "/in/" not in requested:
+            print("INVALID PROFILE URL:", profile_url)
+            return False
+
+        search_page = self._employee_search_page()
+        if search_page is None:
+            print("PROFILE OPEN FAILED: authenticated employee-search page is not available.")
+            return False
+
+        self._original_profile_page = search_page
+        self.profile_url = str(profile_url).strip()
+
+        print("PROFILE NAVIGATION MODE: authenticated search page -> exact link -> new tab")
+        print("REQUESTED PROFILE:", self.profile_url)
+        print("SEARCH PAGE REMAINS:", search_page.url)
+
+        try:
+            exact_link = None
+            links = search_page.locator("a[href*='/in/']:visible")
+            count = links.count()
+
+            for i in range(count):
+                try:
+                    href = links.nth(i).get_attribute("href")
+                    if self._canonical_profile_url(href) == requested:
+                        exact_link = links.nth(i)
+                        break
+                except Exception:
+                    continue
+
+            if exact_link is None:
+                print("EXACT EMPLOYEE PROFILE LINK NOT FOUND ON SEARCH PAGE.")
+                return False
+
+            print("EXACT EMPLOYEE PROFILE LINK FOUND.")
+
+            # Capture the new tab explicitly. This is the important fix:
+            # the authenticated employee-search page is not replaced.
+            profile_page = None
+            try:
+                context = search_page.context
+                # Use the browser-context page event so we capture the actual
+                # new tab created by the authenticated LinkedIn click.
+                with context.expect_page(timeout=15000) as page_info:
+                    exact_link.click(modifiers=["Control"], timeout=15000)
+                profile_page = page_info.value
+            except Exception as ex:
+                print("CTRL-CLICK NEW-TAB OPEN FAILED:", repr(ex))
+
+            if profile_page is None:
+                print("PROFILE OPEN FAILED: no new profile tab was created.")
+                return False
+
+            self._temporary_profile_page = profile_page
+            self.page = profile_page
+
+            try:
+                profile_page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+
+            try:
+                profile_page.wait_for_timeout(2500)
+            except Exception:
+                pass
+
+            actual = self._canonical_profile_url(profile_page.url)
+            print("PROFILE TAB URL:", profile_page.url)
+
+            if self._blocked_url(profile_page.url):
+                print("AUTHWALL/LOGIN DETECTED ON PROFILE TAB.")
+                return False
+
+            if actual != requested:
+                print("REJECTED: profile tab URL does not match requested candidate.")
+                print("Requested:", requested)
+                print("Actual:", actual)
+                return False
+
+            print("EXACT AUTHENTICATED EMPLOYEE PROFILE OPENED.")
+            return True
+
+        except Exception as ex:
+            print("PROFILE NEW-TAB NAVIGATION FAILED:", repr(ex))
+            return False
+
+
 class SearchWorkflowV2:
 
     def __init__(self, page):
@@ -489,7 +643,7 @@ class SearchWorkflowV2:
                     # LinkedInProfilePageV2.open_profile() searches that page for
                     # the EXACT candidate URL and Ctrl-clicks that exact link
                     # into a temporary profile tab.
-                    profile = LinkedInProfilePageV2(
+                    profile = SearchWorkflowProfilePage(
                         self.page
                     )
 
@@ -506,26 +660,9 @@ class SearchWorkflowV2:
 
                     if not profile_opened:
 
-                        print("PROFILE PAGE COULD NOT BE OPENED")
-                        fallback_data = self._search_result_fallback(
-                            row, company, location
-                        )
-                        if fallback_data.get("full_name") and fallback_data.get("profile_url"):
-                            results.append(fallback_data)
-                            print("SEARCH-RESULT FALLBACK COLLECTED")
-                            try:
-                                autosave = Exporter.export_csv(
-                                    results,
-                                    f"{company}_{location}_v2_autosave.csv"
-                                )
-                                print("Autosave:", autosave)
-                            except Exception as ex:
-                                print("Autosave failed:", repr(ex))
-                            if len(results) >= max_profiles:
-                                print("Maximum profile limit reached.")
-                                break
-                        else:
-                            print("REJECT - search-result fallback was incomplete.")
+                        print("PROFILE PAGE COULD NOT BE OPENED.")
+                        print("Candidate NOT counted as collected.")
+                        print("Continuing to next candidate...")
                         continue
 
                     # -------------------------------------------------
@@ -622,24 +759,9 @@ class SearchWorkflowV2:
 
                     if not data.get("full_name"):
 
-                        print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY")
-                        fallback_data = self._search_result_fallback(
-                            row, company, location
-                        )
-                        if fallback_data.get("full_name") and fallback_data.get("profile_url"):
-                            results.append(fallback_data)
-                            print("SEARCH-RESULT FALLBACK COLLECTED")
-                            try:
-                                autosave = Exporter.export_csv(
-                                    results,
-                                    f"{company}_{location}_v2_autosave.csv"
-                                )
-                                print("Autosave:", autosave)
-                            except Exception as ex:
-                                print("Autosave failed:", repr(ex))
-                            if len(results) >= max_profiles:
-                                print("Maximum profile limit reached.")
-                                break
+                        print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY.")
+                        print("Candidate NOT counted as collected.")
+                        print("Continuing to next candidate...")
                         continue
 
                     actual_company = (
@@ -826,25 +948,7 @@ class SearchWorkflowV2:
                 except Exception as ex:
 
                     print("Profile processing failed:", repr(ex))
-                    fallback_data = self._search_result_fallback(
-                        row, company, location
-                    )
-                    if fallback_data.get("full_name") and fallback_data.get("profile_url"):
-                        results.append(fallback_data)
-                        print("SEARCH-RESULT FALLBACK COLLECTED")
-                        try:
-                            autosave = Exporter.export_csv(
-                                results,
-                                f"{company}_{location}_v2_autosave.csv"
-                            )
-                            print("Autosave:", autosave)
-                        except Exception as save_ex:
-                            print("Autosave failed:", repr(save_ex))
-                        if len(results) >= max_profiles:
-                            print("Maximum profile limit reached.")
-                            break
-                    else:
-                        print("REJECT - search-result fallback was incomplete.")
+                    print("Candidate NOT counted as collected.")
                     print("Continuing to next candidate...")
                     continue
 
