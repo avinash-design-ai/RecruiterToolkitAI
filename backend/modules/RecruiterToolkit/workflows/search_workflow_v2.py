@@ -45,6 +45,19 @@ def normalize_location(value):
     return " ".join(value.split())
 
 
+def search_result_supports_company(search_result_text, requested_company):
+    """Allow visible search-result company association in addition to exact profile company."""
+    result = normalize_company(search_result_text)
+    requested = normalize_company(requested_company)
+    if not result or not requested:
+        return False
+    if requested in result:
+        return True
+    generic = {"inc","llc","ltd","corp","corporation","company","co","limited","the"}
+    tokens = [t for t in requested.split() if t not in generic and len(t) >= 3]
+    return bool(tokens and all(t in result.split() for t in tokens))
+
+
 
 class SearchWorkflowProfilePage(LinkedInProfilePageV2):
     """
@@ -802,14 +815,26 @@ class SearchWorkflowV2:
                         )
                     )
 
-                    company_matches = (
-                        bool(
-                            actual_company_normalized
+                    search_result_text = row.get(
+                        "search_result_text",
+                        ""
+                    )
+
+                    search_result_company_matches = (
+                        search_result_supports_company(
+                            search_result_text,
+                            company
                         )
-                        and
-                        actual_company_normalized
-                        ==
-                        requested_company_normalized
+                    )
+
+                    company_matches = (
+                        (
+                            bool(actual_company_normalized)
+                            and
+                            actual_company_normalized == requested_company_normalized
+                        )
+                        or
+                        search_result_company_matches
                     )
 
                     location_matches = (
@@ -837,8 +862,17 @@ class SearchWorkflowV2:
                     )
 
                     print(
-                        "COMPANY MATCH:",
-                        company_matches
+                        "PROFILE COMPANY EXACT MATCH:",
+                        (
+                            bool(actual_company_normalized)
+                            and
+                            actual_company_normalized == requested_company_normalized
+                        )
+                    )
+
+                    print(
+                        "SEARCH RESULT COMPANY ASSOCIATION MATCH:",
+                        search_result_company_matches
                     )
 
                     print(

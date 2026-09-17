@@ -899,34 +899,8 @@ class CompanyPage(BasePage):
 
         return True
 
-    def get_profiles(self, company="", location=""):
-        """
-        Discover primary employee profile links from the authenticated
-        LinkedIn company + location people-search results.
-
-        IMPORTANT:
-
-        LinkedIn may expose several /in/ links for a single employee
-        result. The primary employee link normally contains the richer
-        result-card text, such as:
-
-            Name
-            Job title / headline
-            Location
-            Company
-            Connect / Message
-            Mutual connections
-
-        Mutual-connection profile links normally contain only the person's
-        name.
-
-        Therefore we score the rendered /in/ links and keep the richest
-        link for each unique profile URL.
-
-        This intentionally does NOT rely on brittle LinkedIn result-card
-        CSS classes.
-        """
-
+def get_profiles(self, company="", location=""):
+        """Extract location-matching employee /in/ links without connection-degree filtering."""
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
@@ -934,11 +908,6 @@ class CompanyPage(BasePage):
         print("Requested location:", location)
 
         profiles = []
-
-        # ------------------------------------------------------------
-        # Locate the bounded LinkedIn employee-search area.
-        # ------------------------------------------------------------
-
         search_area = None
 
         for selector in (
@@ -949,618 +918,303 @@ class CompanyPage(BasePage):
         ):
             try:
                 candidate = self.page.locator(selector).first
-
-                if (
-                    candidate.count()
-                    and candidate.is_visible()
-                ):
+                if candidate.count() and candidate.is_visible():
                     search_area = candidate
-
-                    print(
-                        "Using bounded employee search area:",
-                        selector
-                    )
-
+                    print("Using bounded employee search area:", selector)
                     break
-
             except Exception as ex:
-                print(
-                    "Search-area inspection failed:",
-                    selector,
-                    repr(ex)
-                )
+                print("Search-area inspection failed:", selector, repr(ex))
 
         if search_area is None:
-            print(
-                "ERROR: No bounded LinkedIn employee search area found."
-            )
+            print("ERROR: No bounded LinkedIn employee search area found.")
             return profiles
-
-        # ------------------------------------------------------------
-        # Canonical profile URL.
-        # ------------------------------------------------------------
 
         def canonical_profile_url(href):
             if not href:
                 return ""
-
             value = str(href).strip()
-
             if value.startswith("/"):
-                value = (
-                    "https://www.linkedin.com"
-                    + value
-                )
-
-            value = (
-                value
-                .split("?", 1)[0]
-                .split("#", 1)[0]
-                .rstrip("/")
-            )
-
-            if "/in/" not in value.lower():
-                return ""
-
-            return value.lower()
-
-        # ------------------------------------------------------------
-        # Text normalization.
-        # ------------------------------------------------------------
+                value = "https://www.linkedin.com" + value
+            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            return value.lower() if "/in/" in value.lower() else ""
 
         def normalize_text(value):
             if not value:
                 return ""
+            value = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
+            return re.sub(r"\s+", " ", value).strip().lower()
 
-            value = (
-                str(value)
-                .replace("\xa0", " ")
-                .replace("\n", " ")
-                .replace("\r", " ")
-            )
-
-            value = re.sub(
-                r"\s+",
-                " ",
-                value
-            )
-
-            return value.strip().lower()
-
-        requested_company_normalized = normalize_text(
-            company
-        )
-
-        requested_location_normalized = normalize_text(
-            location
-        )
-
-        # ------------------------------------------------------------
-        # Location tokens.
-        #
-        # Example:
-        # "New Jersey"
-        # -> ["new", "jersey"]
-        # ------------------------------------------------------------
-
+        requested_location_normalized = normalize_text(location)
         location_tokens = [
-            token
-            for token in re.findall(
-                r"[a-z0-9]+",
-                requested_location_normalized
-            )
-            if len(token) >= 3
+            t for t in re.findall(r"[a-z0-9]+", requested_location_normalized)
+            if len(t) >= 3
         ]
-
-        # ------------------------------------------------------------
-        # Company tokens.
-        #
-        # Example:
-        # "SmartWorks, LLC"
-        # -> ["smartworks", "llc"]
-        #
-        # We use the meaningful token(s) as supporting evidence only.
-        # ------------------------------------------------------------
-
-        company_tokens = [
-            token
-            for token in re.findall(
-                r"[a-z0-9]+",
-                requested_company_normalized
-            )
-            if len(token) >= 3
-        ]
-
-        # ------------------------------------------------------------
-        # Collect all visible /in/ links.
-        #
-        # This preserves the DOM behavior that previously worked.
-        # ------------------------------------------------------------
 
         try:
-            links = search_area.locator(
-                "a[href*='/in/']:visible"
-            )
-
+            links = search_area.locator("a[href*='/in/']:visible")
             total_links = links.count()
-
         except Exception as ex:
-            print(
-                "Visible profile-link lookup failed:",
-                repr(ex)
-            )
+            print("Visible profile-link lookup failed:", repr(ex))
             return profiles
 
-        print(
-            "Visible /in/ links available:",
-            total_links
-        )
-
+        print("Visible /in/ links available:", total_links)
         if total_links == 0:
-            print(
-                "No visible LinkedIn profile links found on this page."
-            )
-            print(
-                "Valid empty page; returning zero candidates for this page."
-            )
             return profiles
-
-        # ------------------------------------------------------------
-        # best_by_url:
-        #
-        # One employee can have multiple /in/ anchors.
-        #
-        # Keep only the richest/highest-confidence representation for
-        # that profile URL.
-        # ------------------------------------------------------------
 
         best_by_url = {}
 
         for index in range(total_links):
-
             try:
                 link = links.nth(index)
-
-                href = canonical_profile_url(
-                    link.get_attribute("href")
-                )
-
-                if not href:
+                profile_url = canonical_profile_url(link.get_attribute("href"))
+                if not profile_url:
                     continue
 
                 raw_text = ""
-
                 try:
-                    raw_text = (
-                        link.inner_text(
-                            timeout=2000
-                        )
-                        .strip()
-                    )
+                    raw_text = link.inner_text(timeout=2000).strip()
                 except Exception:
                     pass
 
-                text = normalize_text(
-                    raw_text
-                )
+                # Prefer the nearest result-like ancestor when it contains
+                # richer text than the anchor itself. This avoids selecting
+                # nested mutual-connection links as separate employees.
+                card_text = raw_text
+                try:
+                    ancestor_text = link.evaluate("""
+                        (el) => {
+                            let node = el;
+                            for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
+                                const tag = (node.tagName || '').toLowerCase();
+                                const cls = (node.className || '').toString().toLowerCase();
+                                if (
+                                    tag === 'li' ||
+                                    cls.includes('entity-result') ||
+                                    cls.includes('reusable-search__result') ||
+                                    cls.includes('search-result')
+                                ) {
+                                    return node.innerText || '';
+                                }
+                            }
+                            return '';
+                        }
+                    """)
+                    if ancestor_text and len(str(ancestor_text).strip()) > len(raw_text):
+                        card_text = str(ancestor_text).strip()
+                except Exception:
+                    pass
 
+                text = normalize_text(card_text)
                 if not text:
                     continue
 
-                score = 0
-                reasons = []
+                location_match = False
+                if requested_location_normalized:
+                    location_match = requested_location_normalized in text
+                    if not location_match and location_tokens:
+                        location_match = all(token in text for token in location_tokens)
 
-                # ----------------------------------------------------
-                # Strongest signal:
-                #
-                # The employee result anchor can contain "mutual
-                # connections" because the complete employee result is
-                # rendered inside that anchor.
-                # ----------------------------------------------------
+                    if not location_match:
+                        print("SKIP outside requested location:", profile_url,
+                              "| requested:", location, "| text:", card_text[:400])
+                        continue
 
-                if "mutual connections" in text:
+                # Score ONLY to select the richest duplicate representation.
+                # Connection degree (1st/2nd/3rd) is deliberately ignored.
+                score = min(len(text), 300) // 10
+                if requested_location_normalized in text:
                     score += 100
-                    reasons.append(
-                        "contains mutual-connections result text"
-                    )
-
-                # ----------------------------------------------------
-                # Requested location is a very strong signal.
-                #
-                # Mutual connections generally do not contain the
-                # employee's geographic result location.
-                # ----------------------------------------------------
-
-                if (
-                    requested_location_normalized
-                    and requested_location_normalized in text
-                ):
-                    score += 80
-                    reasons.append(
-                        "contains requested location"
-                    )
-
-                elif location_tokens:
-                    matched_location_tokens = sum(
-                        1
-                        for token in location_tokens
-                        if token in text
-                    )
-
-                    if matched_location_tokens:
-                        score += (
-                            25
-                            * matched_location_tokens
-                        )
-
-                        reasons.append(
-                            "contains location tokens"
-                        )
-
-                # ----------------------------------------------------
-                # Requested company is another strong signal.
-                # ----------------------------------------------------
-
-                if (
-                    requested_company_normalized
-                    and requested_company_normalized in text
-                ):
-                    score += 70
-                    reasons.append(
-                        "contains requested company"
-                    )
-
-                else:
-                    matched_company_tokens = sum(
-                        1
-                        for token in company_tokens
-                        if token in text
-                    )
-
-                    if matched_company_tokens:
-                        score += (
-                            20
-                            * matched_company_tokens
-                        )
-
-                        reasons.append(
-                            "contains company tokens"
-                        )
-
-                # ----------------------------------------------------
-                # Employee result action signals.
-                # ----------------------------------------------------
-
                 if "connect" in text:
-                    score += 15
-                    reasons.append(
-                        "contains Connect"
-                    )
-
-                if "message" in text:
-                    score += 15
-                    reasons.append(
-                        "contains Message"
-                    )
-
-                if "follow" in text:
                     score += 10
-                    reasons.append(
-                        "contains Follow"
-                    )
-
-                # ----------------------------------------------------
-                # Richer text is useful because mutual-connection
-                # anchors are normally just a person's name.
-                # ----------------------------------------------------
-
-                text_length = len(
-                    text
-                )
-
-                if text_length >= 150:
-                    score += 35
-                    reasons.append(
-                        "rich result text"
-                    )
-
-                elif text_length >= 100:
-                    score += 25
-                    reasons.append(
-                        "rich result text"
-                    )
-
-                elif text_length >= 60:
-                    score += 15
-                    reasons.append(
-                        "extended result text"
-                    )
-
-                elif text_length <= 60:
-                    score -= 20
-                    reasons.append(
-                        "short profile-link text"
-                    )
-
-                # ----------------------------------------------------
-                # Very short name-only links with no location/company
-                # evidence are treated as likely nested people.
-                # ----------------------------------------------------
-
-                if (
-                    text_length <= 60
-                    and requested_location_normalized
-                    not in text
-                    and not (
-                        requested_company_normalized
-                        and requested_company_normalized in text
-                    )
-                    and "mutual connections" not in text
-                ):
-                    score -= 50
-                    reasons.append(
-                        "likely nested/mutual profile"
-                    )
-
-                existing = best_by_url.get(
-                    href
-                )
+                if "message" in text:
+                    score += 10
+                if "follow" in text:
+                    score += 5
 
                 candidate = {
-                    "url": href,
-                    "text": raw_text.replace(
-                        "\n",
-                        " "
-                    ).strip(),
-                    "normalized_text": text,
+                    "url": profile_url,
+                    "text": card_text.replace("\n", " ").strip(),
                     "score": score,
-                    "reasons": reasons,
                     "dom_index": index,
                 }
 
-                # Keep the strongest representation of the same URL.
-                if (
-                    existing is None
-                    or score > existing["score"]
-                ):
-                    best_by_url[href] = candidate
+                old = best_by_url.get(profile_url)
+                if old is None or score > old["score"]:
+                    best_by_url[profile_url] = candidate
 
                 print("-" * 60)
-                print(
-                    "PROFILE LINK:",
-                    index + 1
-                )
-                print(
-                    "URL:",
-                    href
-                )
-                print(
-                    "Text:",
-                    raw_text.replace(
-                        "\n",
-                        " "
-                    ).strip()[:500]
-                )
-                print(
-                    "Score:",
-                    score
-                )
-                print(
-                    "Reasons:",
-                    ", ".join(reasons)
-                )
+                print("PROFILE LINK:", index + 1)
+                print("URL:", profile_url)
+                print("Text:", candidate["text"][:500])
+                print("Score:", score)
+                print("Connection degree is NOT used as a filter.")
 
             except Exception as ex:
-                print(
-                    "Profile-link scoring failed:",
-                    repr(ex)
-                )
+                print("Profile-link inspection failed:", repr(ex))
 
-        # ------------------------------------------------------------
-        # Sort strongest primary employee links first.
-        #
-        # Preserve DOM order when scores are equal.
-        # ------------------------------------------------------------
-
-        ranked = sorted(
-            best_by_url.values(),
-            key=lambda item: (
-                -item["score"],
-                item["dom_index"],
-            )
-        )
+        ranked = sorted(best_by_url.values(), key=lambda x: x["dom_index"])
 
         print("=" * 60)
-        print(
-            "UNIQUE PROFILE URLs AFTER DEDUP:",
-            len(ranked)
-        )
+        print("UNIQUE LOCATION-MATCHING PROFILE URLs:", len(ranked))
         print("=" * 60)
-
-        # ------------------------------------------------------------
-        # Do not blindly accept extremely weak name-only links.
-        #
-        # A primary employee result should normally have at least one
-        # meaningful result signal:
-        #
-        #   location
-        #   company
-        #   mutual-connections result text
-        #   Connect/Message/Follow
-        #   rich result text
-        #
-        # Workflow-level profile validation remains authoritative.
-        # ------------------------------------------------------------
-
-        reliable = []
 
         for item in ranked:
+            profiles.append({
+                "full_name": item["text"],
+                "profile_url": item["url"],
+                "company": company,
+                "location": location,
+                "search_result_text": item["text"],
+            })
+            print("EMPLOYEE CANDIDATE:", item["url"], "|", item["text"][:300])
 
-            text = item["normalized_text"]
-
-            # --------------------------------------------------------
-            # LOCATION SAFETY CHECK
-            # --------------------------------------------------------
-            # We no longer depend on LinkedIn's autocomplete filter.
-            # Therefore a profile is eligible only when its rendered
-            # result-card text contains the requested location.
-            # This prevents opening an employee outside the requested
-            # location.
-            # --------------------------------------------------------
-            if requested_location_normalized:
-                if requested_location_normalized not in text:
-                    print(
-                        "SKIP profile outside requested location:",
-                        item["url"],
-                        "| requested:",
-                        location,
-                        "| text:",
-                        item["text"]
-                    )
-                    continue
-
-            strong_signal = (
-                "mutual connections" in text
-                or (
-                    requested_location_normalized
-                    and requested_location_normalized in text
-                )
-                or (
-                    requested_company_normalized
-                    and requested_company_normalized in text
-                )
-                or "connect" in text
-                or "message" in text
-                or "follow" in text
-                or len(text) >= 100
-            )
-
-            if not strong_signal:
-                print(
-                    "SKIP weak/naked /in/ link:",
-                    item["url"],
-                    "|",
-                    item["text"]
-                )
-                continue
-
-            reliable.append(
-                item
-            )
-
-        print(
-            "Reliable primary employee candidates:",
-            len(reliable)
-        )
-
-        # ------------------------------------------------------------
-        # Build result records.
-        # ------------------------------------------------------------
-
-        for item in reliable:
-
-            profile_url = item["url"]
-
-            profiles.append(
-                {
-                    "full_name": item["text"],
-                    "profile_url": profile_url,
-                    "company": company,
-                    "location": location,
-                }
-            )
-
-            print("-" * 60)
-            print(
-                "PRIMARY EMPLOYEE CANDIDATE:"
-            )
-            print(
-                "Name/Text:",
-                item["text"]
-            )
-            print(
-                "URL:",
-                profile_url
-            )
-            print(
-                "Score:",
-                item["score"]
-            )
-
-        print("=" * 60)
-        print(
-            "EMPLOYEE PROFILES EXTRACTED:",
-            len(profiles)
-        )
-        print("=" * 60)
-
+        print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
         return profiles
 
-    def next_page(self):
-
+def next_page(self):
+        """Click Next and only report success if the same company people-search remains active."""
         try:
+            before_url = str(self.page.url or "").strip()
+            qs = parse_qs(urlparse(before_url).query)
+            company_ids = qs.get("currentCompany", []) or qs.get("currentcompany", [])
 
-            print(
-                "Trying next page..."
-            )
+            print("=" * 60)
+            print("PAGINATION DIAGNOSTICS")
+            print("Current URL:", before_url)
+            print("Current company ID:", company_ids)
+            print("=" * 60)
 
-            print(
-                "NEW NEXT_PAGE EXECUTING"
-            )
+            if "/search/results/people/" not in before_url.lower():
+                print("NEXT ABORTED - not on people search.")
+                return False
 
-            buttons = self.page.locator(
-                "button"
-            )
+            before_profiles = set()
+            try:
+                links = self.page.locator("a[href*='/in/']:visible")
+                for i in range(min(links.count(), 200)):
+                    href = links.nth(i).get_attribute("href")
+                    if href and "/in/" in href.lower():
+                        before_profiles.add(
+                            str(href).split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
+                        )
+            except Exception as ex:
+                print("Pre-next profile snapshot failed:", repr(ex))
 
-            for i in range(
-                buttons.count()
-            ):
+            next_control = None
+            control_info = None
 
+            selectors = [
+                "nav[aria-label*='Pagination' i] button:visible",
+                "nav[aria-label*='Pagination' i] a:visible",
+                "div.artdeco-pagination button:visible",
+                "div.artdeco-pagination a:visible",
+                "button:visible",
+                "[role='button']:visible",
+                "a:visible",
+            ]
+
+            for selector in selectors:
                 try:
+                    controls = self.page.locator(selector)
+                    for i in range(controls.count()):
+                        c = controls.nth(i)
+                        try: text = c.inner_text(timeout=1000).strip()
+                        except Exception: text = ""
+                        try: aria = (c.get_attribute("aria-label") or "").strip()
+                        except Exception: aria = ""
+                        try: title = (c.get_attribute("title") or "").strip()
+                        except Exception: title = ""
+                        try: href = (c.get_attribute("href") or "").strip()
+                        except Exception: href = ""
+                        try:
+                            if c.is_disabled():
+                                continue
+                        except Exception:
+                            pass
 
-                    btn = buttons.nth(i)
+                        label = " ".join(x for x in (text, aria, title) if x).lower().strip()
+                        if label == "next" or "next page" in label or aria.lower() == "next":
+                            next_control = c
+                            control_info = (selector, text, aria, title, href)
+                            break
+                    if next_control is not None:
+                        break
+                except Exception as ex:
+                    print("Next-control inspection failed:", selector, repr(ex))
 
-                    text = (
-                        btn.inner_text()
-                        .strip()
-                    )
+            if next_control is None:
+                print("NEXT CONTROL NOT FOUND.")
+                return False
 
-                    if text == "Next":
+            print("NEXT CONTROL FOUND")
+            print("Selector:", control_info[0])
+            print("Text:", control_info[1])
+            print("aria-label:", control_info[2])
+            print("title:", control_info[3])
+            print("href:", control_info[4])
+            try:
+                print("outerHTML:", next_control.evaluate("(el) => el.outerHTML")[:2000])
+            except Exception:
+                pass
 
-                        print(
-                            "Clicking Next"
-                        )
+            print("Clicking Next...")
+            next_control.click()
 
-                        btn.click()
+            last_url = before_url
+            for wait_ms in (250, 750, 1500, 3000, 5000, 8000):
+                self.page.wait_for_timeout(wait_ms if wait_ms == 250 else wait_ms - (250 if wait_ms > 250 else 0))
+                now = str(self.page.url or "").strip()
+                if now != last_url:
+                    print(f"URL after {wait_ms} ms:", now)
+                    last_url = now
 
-                        self.page.wait_for_timeout(
-                            5000
-                        )
+                low = now.lower()
+                if "/ssr-login/" in low or "/authwall" in low or "/login" in low:
+                    print("=" * 60)
+                    print("NEXT NAVIGATION DIAGNOSIS: LINKEDIN REDIRECTED TO LOGIN/AUTHWALL.")
+                    print("Before Next:", before_url)
+                    print("After Next:", now)
+                    print("This is NOT counted as a successful next page.")
+                    print("=" * 60)
+                    return False
 
-                        print(
-                            "Current URL after next:"
-                        )
+                if "/search/results/people/" not in low:
+                    continue
 
-                        print(
-                            self.page.url
-                        )
+                new_qs = parse_qs(urlparse(now).query)
+                new_company_ids = new_qs.get("currentCompany", []) or new_qs.get("currentcompany", [])
+                same_company = (not company_ids) or any(
+                    str(x) in [str(y) for y in company_ids] for x in new_company_ids
+                )
+                if not same_company:
+                    print("NEXT REJECTED - company scope changed.")
+                    print("Expected:", company_ids, "Actual:", new_company_ids)
+                    return False
 
-                        return True
+                if now != before_url:
+                    print("NEXT PAGE VALIDATED - same company people-search URL changed.")
+                    return True
 
+                after_profiles = set()
+                try:
+                    links = self.page.locator("a[href*='/in/']:visible")
+                    for i in range(min(links.count(), 200)):
+                        href = links.nth(i).get_attribute("href")
+                        if href and "/in/" in href.lower():
+                            after_profiles.add(
+                                str(href).split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
+                            )
                 except Exception:
                     pass
 
-            print(
-                "Next button not found"
-            )
+                if after_profiles and after_profiles != before_profiles:
+                    print("NEXT PAGE VALIDATED - result set changed in-place.")
+                    return True
 
+            print("NEXT CLICK DID NOT PRODUCE A VALIDATED NEXT PAGE.")
             return False
 
         except Exception as ex:
-
-            print(
-                "Next page failed:",
-                ex
-            )
-
+            print("Next page failed:", repr(ex))
             return False
+
