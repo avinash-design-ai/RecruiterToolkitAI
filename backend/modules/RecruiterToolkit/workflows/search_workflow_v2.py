@@ -416,20 +416,8 @@ class SearchWorkflowV2:
 
             print("Candidates returned by CompanyPage:", len(page_results))
 
-            candidate_rows = []
-            for source_row in page_results:
-                try:
-                    candidate_rows.append(dict(source_row))
-                except Exception:
-                    candidate_rows.append(source_row)
-
-            print(
-                "FROZEN CANDIDATE SNAPSHOT:",
-                len(candidate_rows)
-            )
-
             for candidate_index, row in enumerate(
-                candidate_rows,
+                page_results,
                 start=1
             ):
 
@@ -497,22 +485,12 @@ class SearchWorkflowV2:
 
                 try:
 
-                    # -------------------------------------------------
-                    # IMPORTANT:
-                    #
-                    # self.page belongs to the employee-search page.
-                    #
-                    # self.profile_page is the dedicated controller page
-                    # created in SearchWorkflowV2.__init__().
-                    # -------------------------------------------------
-
-                    # Keep self.page as the authoritative
-                    # company + location employee-search page.
-                    #
-                    # LinkedInProfilePageV2 creates a fresh
-                    # temporary profile tab for this candidate.
+                    # self.page remains the authenticated employee-search page.
+                    # LinkedInProfilePageV2.open_profile() searches that page for
+                    # the EXACT candidate URL and Ctrl-clicks that exact link
+                    # into a temporary profile tab.
                     profile = LinkedInProfilePageV2(
-                        self.profile_page
+                        self.page
                     )
 
                     print(
@@ -528,38 +506,26 @@ class SearchWorkflowV2:
 
                     if not profile_opened:
 
-                        print(
-                            "PROFILE PAGE COULD NOT BE OPENED"
+                        print("PROFILE PAGE COULD NOT BE OPENED")
+                        fallback_data = self._search_result_fallback(
+                            row, company, location
                         )
-
-                        print("=" * 60)
-                        print(
-                            "PROFILE PAGE NOT ACCESSIBLE"
-                        )
-                        print("=" * 60)
-                        print(
-                            "Keeping employee from search result."
-                        )
-
-                        fallback = (
-                            self._search_result_fallback(
-                                row,
-                                company,
-                                location
-                            )
-                        )
-
-                        if fallback.get("profile_url"):
-                            results.append(fallback)
-
-                            print(
-                                "SEARCH RESULT PROFILE RETAINED"
-                            )
-                            print(
-                                "Email unavailable because "
-                                "LinkedIn profile navigation was blocked."
-                            )
-
+                        if fallback_data.get("full_name") and fallback_data.get("profile_url"):
+                            results.append(fallback_data)
+                            print("SEARCH-RESULT FALLBACK COLLECTED")
+                            try:
+                                autosave = Exporter.export_csv(
+                                    results,
+                                    f"{company}_{location}_v2_autosave.csv"
+                                )
+                                print("Autosave:", autosave)
+                            except Exception as ex:
+                                print("Autosave failed:", repr(ex))
+                            if len(results) >= max_profiles:
+                                print("Maximum profile limit reached.")
+                                break
+                        else:
+                            print("REJECT - search-result fallback was incomplete.")
                         continue
 
                     # -------------------------------------------------
@@ -654,34 +620,26 @@ class SearchWorkflowV2:
 
                     data = profile.get_profile()
 
-                    if not data.get(
-                        "full_name"
-                    ):
+                    if not data.get("full_name"):
 
-                        print(
-                            "REJECT - profile opened but "
-                            "no profile name was extracted."
+                        print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY")
+                        fallback_data = self._search_result_fallback(
+                            row, company, location
                         )
-
-                        fallback = (
-                            self._search_result_fallback(
-                                row,
-                                company,
-                                location
-                            )
-                        )
-
-                        if fallback.get("profile_url"):
-                            results.append(fallback)
-
-                            print(
-                                "SEARCH RESULT PROFILE RETAINED"
-                            )
-                            print(
-                                "Email unavailable because "
-                                "profile extraction returned no name."
-                            )
-
+                        if fallback_data.get("full_name") and fallback_data.get("profile_url"):
+                            results.append(fallback_data)
+                            print("SEARCH-RESULT FALLBACK COLLECTED")
+                            try:
+                                autosave = Exporter.export_csv(
+                                    results,
+                                    f"{company}_{location}_v2_autosave.csv"
+                                )
+                                print("Autosave:", autosave)
+                            except Exception as ex:
+                                print("Autosave failed:", repr(ex))
+                            if len(results) >= max_profiles:
+                                print("Maximum profile limit reached.")
+                                break
                         continue
 
                     actual_company = (
@@ -867,20 +825,27 @@ class SearchWorkflowV2:
 
                 except Exception as ex:
 
-                    print(
-                        "Profile processing failed:",
-                        repr(ex)
+                    print("Profile processing failed:", repr(ex))
+                    fallback_data = self._search_result_fallback(
+                        row, company, location
                     )
-
-                    print(
-                        "REJECT - profile could not "
-                        "be verified safely."
-                    )
-
-                    print(
-                        "Continuing to next candidate..."
-                    )
-
+                    if fallback_data.get("full_name") and fallback_data.get("profile_url"):
+                        results.append(fallback_data)
+                        print("SEARCH-RESULT FALLBACK COLLECTED")
+                        try:
+                            autosave = Exporter.export_csv(
+                                results,
+                                f"{company}_{location}_v2_autosave.csv"
+                            )
+                            print("Autosave:", autosave)
+                        except Exception as save_ex:
+                            print("Autosave failed:", repr(save_ex))
+                        if len(results) >= max_profiles:
+                            print("Maximum profile limit reached.")
+                            break
+                    else:
+                        print("REJECT - search-result fallback was incomplete.")
+                    print("Continuing to next candidate...")
                     continue
 
             # -------------------------------------------------
@@ -889,23 +854,6 @@ class SearchWorkflowV2:
 
             if len(results) >= max_profiles:
                 break
-
-            # -------------------------------------------------
-            # Keep CompanyPage on the authoritative employee-search page.
-            # Profile navigation uses temporary tabs and must never become
-            # the page used for pagination.
-            # -------------------------------------------------
-            try:
-                if self.page is not self.company_page.page:
-                    print(
-                        "Restoring workflow page to CompanyPage search page."
-                    )
-                    self.page = self.company_page.page
-            except Exception as ex:
-                print(
-                    "Could not restore CompanyPage search page:",
-                    repr(ex)
-                )
 
             # -------------------------------------------------
             # Only move to the next LinkedIn employee page after
