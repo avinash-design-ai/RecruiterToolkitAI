@@ -1015,85 +1015,443 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # LOCATION AUTOCOMPLETE SELECTION - V5
+        # LOCATION AUTOCOMPLETE SELECTION - V7
         #
-        # The latest run proved that normal text/role/ARIA locators do
-        # not expose the current LinkedIn typeahead suggestion.
-        # V5 therefore uses keyboard navigation first, then bounded DOM
-        # hit-testing immediately below the active location input.
-        # Never perform a page-wide location click.
+        # LinkedIn's typeahead is inconsistent about ARIA attributes.
+        # The previous V5 implementation relied on elementsFromPoint()
+        # hit-testing and therefore missed the rendered suggestion in CI.
+        #
+        # V7:
+        #   1. Retrigger the typeahead with real keyboard events.
+        #   2. Poll instead of waiting a fixed 2.5 seconds.
+        #   3. Inspect ALL visible rendered elements, not just hit-test
+        #      samples.
+        #   4. Accept only an exact/country-qualified location match.
+        #   5. Restrict candidates to the area below the real input.
+        #   6. Never press Enter unless an actual valid option is exposed.
         # ------------------------------------------------------------
 
         requested_location = str(location).strip()
         expected_location = f"{requested_location}, United States"
 
-        print("Selecting LinkedIn location option:", expected_location)
+        print(
+            "Selecting LinkedIn location option:",
+            expected_location
+        )
 
         location_selected = False
 
-        def norm(value):
-            return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+        def normalize_location_text(value):
+            return re.sub(
+                r"\s+",
+                " ",
+                str(value or "")
+            ).strip().lower()
 
-        requested_norm = norm(requested_location)
-        expected_norm = norm(expected_location)
+        requested_norm = normalize_location_text(
+            requested_location
+        )
 
-        def valid_location_text(value):
-            value = norm(value)
+        expected_norm = normalize_location_text(
+            expected_location
+        )
+
+        def matches_location(value):
+            normalized = normalize_location_text(value)
+
+            if not normalized:
+                return False
+
             return (
-                value == expected_norm
+                normalized == expected_norm
                 or (
-                    value.startswith(requested_norm)
-                    and "united states" in value
-                    and len(value) <= 180
+                    normalized.startswith(requested_norm)
+                    and "united states" in normalized
+                    and len(normalized) <= 180
                 )
             )
 
         try:
-            inputs = self.page.locator(
+            location_inputs = self.page.locator(
                 "input[placeholder='Add a location']:visible"
             )
-            count = inputs.count()
-            print("Visible Add a location inputs during selection:", count)
 
-            if count == 0:
-                print("[LOCATION ERROR] Add a location input disappeared.")
+            if location_inputs.count() == 0:
+                print(
+                    "[LOCATION ERROR] Add a location input disappeared."
+                )
                 return False
 
-            location_input = inputs.last
-            input_box = location_input.bounding_box()
-            print("Location input bounding box:", input_box)
+            location_input = location_inputs.last
 
-            if not input_box:
-                print("[LOCATION ERROR] Location input has no bounding box.")
-                return False
+            location_input.scroll_into_view_if_needed(
+                timeout=5000
+            )
 
-            location_input.click(timeout=5000)
+            location_input.click(
+                timeout=5000
+            )
+
+            # Retrigger React's typeahead using keyboard input.
+            location_input.press(
+                "Control+A"
+            )
+
+            location_input.press_sequentially(
+                requested_location,
+                delay=120
+            )
+
+            print(
+                "Autocomplete input confirmed."
+            )
+
+            print(
+                "Autocomplete input aria-controls:",
+                location_input.get_attribute(
+                    "aria-controls"
+                )
+            )
+
+            print(
+                "Autocomplete input aria-owns:",
+                location_input.get_attribute(
+                    "aria-owns"
+                )
+            )
+
         except Exception as ex:
-            print("[LOCATION ERROR] Could not reacquire location input:", repr(ex))
+            print(
+                "[LOCATION ERROR] Could not retrigger location autocomplete:",
+                repr(ex)
+            )
             return False
 
-        self.page.wait_for_timeout(1200)
-
-        # METHOD 1: force LinkedIn to expose the active suggestion.
         try:
-            self.page.keyboard.press("ArrowDown")
-            self.page.wait_for_timeout(400)
-            active_id = location_input.get_attribute("aria-activedescendant")
-            print("aria-activedescendant after ArrowDown:", active_id)
+            input_box = location_input.bounding_box()
+        except Exception:
+            input_box = None
 
-            if active_id:
-                active = self.page.locator(f"#{active_id}")
-                if active.is_visible():
-                    active_text = active.inner_text(timeout=1000).strip()
-                    print("Active autocomplete candidate:", repr(active_text))
-                    if valid_location_text(active_text):
-                        active.click(timeout=5000)
+        print(
+            "Location input bounding box:",
+            input_box
+        )
+
+        if not input_box:
+            print(
+                "[LOCATION ERROR] Location input has no bounding box."
+            )
+            return False
+
+        # Poll for up to 12 seconds.
+        for attempt in range(1, 25):
+
+            if location_selected:
+                break
+
+            self.page.wait_for_timeout(
+                500
+            )
+
+            # --------------------------------------------------------
+            # METHOD 1: active descendant when LinkedIn exposes it.
+            # --------------------------------------------------------
+            try:
+                active_id = location_input.get_attribute(
+                    "aria-activedescendant"
+                )
+
+                if active_id:
+                    active = self.page.locator(
+                        f"#{active_id}"
+                    )
+
+                    if (
+                        active.count() > 0
+                        and active.is_visible()
+                    ):
+                        active_text = (
+                            active.inner_text(
+                                timeout=1000
+                            ).strip()
+                        )
+
+                        print(
+                            "Active autocomplete candidate:",
+                            repr(active_text)
+                        )
+
+                        if matches_location(
+                            active_text
+                        ):
+                            active.click(
+                                timeout=5000
+                            )
+
+                            location_selected = True
+
+                            print(
+                                "Location selected through active descendant."
+                            )
+
+                            break
+
+            except Exception as ex:
+                print(
+                    "Active-descendant lookup failed:",
+                    repr(ex)
+                )
+
+            # --------------------------------------------------------
+            # METHOD 2: rendered DOM scan.
+            #
+            # This is the important V7 change. V5 sampled
+            # document.elementsFromPoint(), which returned zero.
+            # V7 scans visible elements and then applies strict
+            # geometry/text validation.
+            # --------------------------------------------------------
+            try:
+                candidates = self.page.evaluate(
+                    """({box, requested, expected}) => {
+                        const norm = v =>
+                            String(v || "")
+                                .replace(/\\s+/g, " ")
+                                .trim()
+                                .toLowerCase();
+
+                        const req = norm(requested);
+                        const exp = norm(expected);
+
+                        const visible = el => {
+                            if (!el) return false;
+
+                            const s = getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+
+                            return (
+                                s.display !== "none" &&
+                                s.visibility !== "hidden" &&
+                                s.opacity !== "0" &&
+                                r.width > 0 &&
+                                r.height > 0
+                            );
+                        };
+
+                        const getText = el =>
+                            String(
+                                el.innerText ||
+                                el.textContent ||
+                                ""
+                            )
+                            .replace(/\\s+/g, " ")
+                            .trim();
+
+                        const matches = el => {
+                            const t = norm(getText(el));
+
+                            return (
+                                t === exp ||
+                                (
+                                    t.startsWith(req) &&
+                                    t.includes("united states") &&
+                                    t.length <= 180
+                                )
+                            );
+                        };
+
+                        const left = box.x - 150;
+                        const right = box.x + box.width + 150;
+                        const top = box.y + box.height;
+                        const bottom = top + 500;
+
+                        const found = [];
+                        const seen = new Set();
+
+                        for (const el of document.querySelectorAll("*")) {
+                            if (!visible(el) || !matches(el)) {
+                                continue;
+                            }
+
+                            const r = el.getBoundingClientRect();
+
+                            if (
+                                r.right < left ||
+                                r.left > right ||
+                                r.bottom < top ||
+                                r.top > bottom
+                            ) {
+                                continue;
+                            }
+
+                            // Prefer the smallest matching rendered node.
+                            let smallerMatch = false;
+
+                            for (const child of el.children) {
+                                if (
+                                    visible(child) &&
+                                    matches(child)
+                                ) {
+                                    smallerMatch = true;
+                                    break;
+                                }
+                            }
+
+                            if (smallerMatch || seen.has(el)) {
+                                continue;
+                            }
+
+                            seen.add(el);
+
+                            found.push({
+                                text: getText(el),
+                                x: r.x,
+                                y: r.y,
+                                w: r.width,
+                                h: r.height,
+                                cx: r.x + r.width / 2,
+                                cy: r.y + r.height / 2,
+                                tag: el.tagName,
+                                role: el.getAttribute("role"),
+                                testid: el.getAttribute("data-testid"),
+                                aria: el.getAttribute("aria-label")
+                            });
+                        }
+
+                        found.sort(
+                            (a, b) =>
+                                (a.y - b.y) ||
+                                (a.x - b.x)
+                        );
+
+                        return found.slice(0, 10);
+                    }""",
+                    {
+                        "box": input_box,
+                        "requested": requested_location,
+                        "expected": expected_location
+                    }
+                )
+
+                if candidates:
+                    print(
+                        "Rendered autocomplete candidates:",
+                        len(candidates)
+                    )
+
+                    for candidate in candidates:
+                        print(
+                            "Autocomplete candidate:",
+                            repr(candidate["text"]),
+                            "tag=",
+                            candidate["tag"],
+                            "role=",
+                            candidate["role"],
+                            "testid=",
+                            candidate["testid"],
+                            "box=",
+                            (
+                                candidate["x"],
+                                candidate["y"],
+                                candidate["w"],
+                                candidate["h"]
+                            )
+                        )
+
+                    # Click the first strictly validated candidate.
+                    candidate = candidates[0]
+
+                    self.page.mouse.click(
+                        candidate["cx"],
+                        candidate["cy"]
+                    )
+
+                    self.page.wait_for_timeout(
+                        1000
+                    )
+
+                    current_url = self.page.url.lower()
+
+                    if (
+                        "/search/results/people/" in current_url
+                        and "currentcompany=" in current_url
+                        and "/in/" not in current_url
+                    ):
                         location_selected = True
-                        print("Location selected through active descendant.")
-        except Exception as ex:
-            print("Active-descendant selection failed:", repr(ex))
 
-        # METHOD 2: inspect the actual DOM under the popup area.
+                        print(
+                            "Location selected through bounded rendered candidate."
+                        )
+
+                        break
+
+            except Exception as ex:
+                print(
+                    "Rendered DOM autocomplete inspection failed:",
+                    repr(ex)
+                )
+
+            # --------------------------------------------------------
+            # METHOD 3: ArrowDown trigger only.
+            # Never press Enter blindly.
+            # --------------------------------------------------------
+            try:
+                location_input.click(
+                    timeout=3000
+                )
+
+                self.page.keyboard.press(
+                    "ArrowDown"
+                )
+
+                self.page.wait_for_timeout(
+                    400
+                )
+
+                active_id = location_input.get_attribute(
+                    "aria-activedescendant"
+                )
+
+                print(
+                    "Keyboard trigger active descendant:",
+                    active_id
+                )
+
+                if active_id:
+                    active = self.page.locator(
+                        f"#{active_id}"
+                    )
+
+                    if (
+                        active.count() > 0
+                        and active.is_visible()
+                    ):
+                        active_text = (
+                            active.inner_text(
+                                timeout=1000
+                            ).strip()
+                        )
+
+                        if matches_location(
+                            active_text
+                        ):
+                            active.click(
+                                timeout=5000
+                            )
+
+                            location_selected = True
+
+                            print(
+                                "Location selected through keyboard-triggered active option."
+                            )
+
+                            break
+
+            except Exception as ex:
+                print(
+                    "Keyboard autocomplete trigger failed:",
+                    repr(ex)
+                )
+
         if not location_selected:
             try:
                 candidates = self.page.evaluate(
