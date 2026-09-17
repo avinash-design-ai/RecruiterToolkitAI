@@ -849,20 +849,23 @@ class CompanyPage(BasePage):
 
     def apply_location(self, location):
         """
-        Apply the requested LinkedIn location to the CURRENT company-scoped
+        Apply a LinkedIn location filter to the CURRENT company-scoped
         people-search page.
 
-        Safety rule:
-          Never accept a parent/aggregate dropdown container as a location.
-          A location is accepted only when an individual suggestion whose own
-          text represents the requested location is selected.
+        The important part of this method is the dropdown selection:
+        LinkedIn renders the location picker as a list of individual rows.
+        We select an individual row whose OWN visible text represents the
+        requested location. We never click the dropdown container itself.
 
-        This is intentionally generic:
-          - "New Jersey" -> New Jersey
-          - "Clifton, New Jersey" -> Clifton, New Jersey
-          - "Austin, Texas" -> Austin, Texas
-          - "Chicago" -> an individual Chicago suggestion
-        No city/state/geo ID is hard-coded.
+        Examples:
+            New Jersey
+                -> New Jersey, United States
+
+            Clifton, New Jersey
+                -> Clifton, New Jersey, United States
+
+            Austin, Texas
+                -> Austin, Texas, United States
         """
 
         print("=" * 60)
@@ -870,6 +873,7 @@ class CompanyPage(BasePage):
         print("=" * 60)
 
         requested_location = str(location or "").strip()
+
         if not requested_location:
             print("[LOCATION ERROR] Empty location was supplied.")
             return False
@@ -882,60 +886,83 @@ class CompanyPage(BasePage):
         def normalize(value):
             if value is None:
                 return ""
-            return re.sub(
-                r"\s+",
-                " ",
-                str(value).replace("\xa0", " ")
-            ).strip().lower()
+
+            value = (
+                str(value)
+                .replace("\xa0", " ")
+                .replace("\n", " ")
+                .replace("\r", " ")
+            )
+
+            return re.sub(r"\s+", " ", value).strip().lower()
 
         requested_norm = normalize(requested_location)
 
-        def is_people_company_url(url):
+        def query_values(url, key):
+            try:
+                from urllib.parse import urlsplit, parse_qs
+
+                return parse_qs(
+                    urlsplit(url).query,
+                    keep_blank_values=True
+                ).get(key, [])
+
+            except Exception:
+                return []
+
+        def is_company_people_search(url):
             if not url:
                 return False
+
             lower = url.lower()
+
             return (
                 "/search/results/people/" in lower
                 and "currentcompany=" in lower
                 and "/in/" not in lower
             )
 
-        def query_values(url, key):
-            try:
-                from urllib.parse import urlsplit, parse_qs
-                return parse_qs(
-                    urlsplit(url).query,
-                    keep_blank_values=True
-                ).get(key, [])
-            except Exception:
-                return []
-
         def has_location_filter(url):
             try:
                 from urllib.parse import urlsplit, parse_qs
+
                 query = parse_qs(
                     urlsplit(url).query,
                     keep_blank_values=True
                 )
-                return any(
-                    query.get(key)
-                    for key in (
-                        "geoUrn",
-                        "facetGeoRegion",
-                        "geoId",
-                        "geo_id"
-                    )
-                )
+
+                # LinkedIn has used different parameter names for the
+                # geographic filter. Do not hard-code a specific geo ID.
+                for key in (
+                    "geoUrn",
+                    "facetGeoRegion",
+                    "geoId",
+                    "geo_id"
+                ):
+                    values = query.get(key)
+
+                    if values and any(
+                        str(value).strip()
+                        for value in values
+                    ):
+                        return True
+
+                return False
+
             except Exception:
                 return False
 
         # ------------------------------------------------------------
-        # Safety checkpoint: we must already be in the selected company's
-        # people search. Never navigate to generic people search.
+        # SAFETY CHECK #1
+        #
+        # Location must be applied only to the company-scoped people
+        # search that open_employees_page() already established.
         # ------------------------------------------------------------
-        if not is_people_company_url(before_url):
+
+        if not is_company_people_search(before_url):
             print(
-                "[LOCATION ERROR] Not on company-scoped people-search."
+                "[LOCATION ERROR] Current page is not the selected "
+                "company's people-search."
             )
             return False
 
@@ -946,44 +973,61 @@ class CompanyPage(BasePage):
 
         if not original_company_values:
             print(
-                "[LOCATION ERROR] currentCompany value could not be read."
+                "[LOCATION ERROR] currentCompany could not be read "
+                "from the current URL."
             )
             return False
 
+        print(
+            "Original currentCompany:",
+            original_company_values
+        )
+
         # ------------------------------------------------------------
-        # Open Locations.
+        # 1. OPEN LOCATIONS
         # ------------------------------------------------------------
+
         try:
             locations = self.page.get_by_text(
                 "Locations",
                 exact=True
             )
 
-            count = locations.count()
-            print("Exact Locations matches:", count)
+            location_count = locations.count()
+
+            print(
+                "Exact Locations matches:",
+                location_count
+            )
 
             opened = False
 
-            for i in range(count):
+            for index in range(location_count):
                 try:
-                    candidate = locations.nth(i)
+                    item = locations.nth(index)
 
-                    if not candidate.is_visible():
+                    if not item.is_visible():
                         continue
 
-                    candidate.click(timeout=15000)
+                    item.click(timeout=10000)
+
                     opened = True
+
                     print(
-                        f"Clicked Locations match #{i + 1}"
+                        f"Clicked Locations filter #{index + 1}"
                     )
+
                     break
 
-                except Exception:
-                    continue
+                except Exception as ex:
+                    print(
+                        f"Locations click #{index + 1} failed:",
+                        repr(ex)
+                    )
 
             if not opened:
                 print(
-                    "[LOCATION ERROR] Could not click Locations filter."
+                    "[LOCATION ERROR] Could not open Locations filter."
                 )
                 return False
 
@@ -994,23 +1038,25 @@ class CompanyPage(BasePage):
             )
             return False
 
-        self.page.wait_for_timeout(1200)
+        self.page.wait_for_timeout(1000)
 
         # ------------------------------------------------------------
-        # Locate the actual Add a location input.
+        # 2. FIND THE ACTUAL "ADD A LOCATION" INPUT
         # ------------------------------------------------------------
+
         try:
             inputs = self.page.locator(
                 "input[placeholder='Add a location']:visible"
             )
 
-            count = inputs.count()
+            input_count = inputs.count()
+
             print(
                 "Visible Add a location inputs:",
-                count
+                input_count
             )
 
-            if count == 0:
+            if input_count == 0:
                 print(
                     "[LOCATION ERROR] No visible Add a location input found."
                 )
@@ -1022,14 +1068,6 @@ class CompanyPage(BasePage):
                 "Location input placeholder:",
                 location_box.get_attribute("placeholder")
             )
-            print(
-                "Location input aria-controls:",
-                location_box.get_attribute("aria-controls")
-            )
-            print(
-                "Location input aria-owns:",
-                location_box.get_attribute("aria-owns")
-            )
 
         except Exception as ex:
             print(
@@ -1039,18 +1077,67 @@ class CompanyPage(BasePage):
             return False
 
         # ------------------------------------------------------------
-        # Type the requested location.
+        # Helper: keep suggestion candidates inside the autocomplete
+        # area directly below the location input.
+        #
+        # This prevents a matching "New Jersey" text elsewhere on the
+        # page from ever being selected.
         # ------------------------------------------------------------
+
+        def is_dropdown_candidate_box(box):
+            try:
+                input_box = location_box.bounding_box()
+
+                if not input_box or not box:
+                    return False
+
+                input_bottom = (
+                    input_box["y"] +
+                    input_box["height"]
+                )
+
+                return (
+                    box["y"] >= input_bottom - 5
+                    and
+                    box["y"] <= input_bottom + 450
+                    and
+                    box["x"] <= (
+                        input_box["x"] +
+                        input_box["width"] +
+                        350
+                    )
+                    and
+                    (
+                        box["x"] +
+                        box["width"]
+                    ) >= max(
+                        0,
+                        input_box["x"] - 100
+                    )
+                )
+
+            except Exception:
+                return False
+
+        # ------------------------------------------------------------
+        # 3. TYPE LOCATION
+        #
+        # press_sequentially() is intentional. LinkedIn's autocomplete
+        # reacts to keyboard/input events and can fail to populate the
+        # suggestion list when the value is injected too quickly.
+        # ------------------------------------------------------------
+
         try:
             location_box.click(timeout=10000)
             location_box.fill("")
+
             location_box.press_sequentially(
                 requested_location,
-                delay=120
+                delay=100
             )
 
             print(
-                "[LOCATION] Typed location:",
+                "[LOCATION] Typed:",
                 requested_location
             )
 
@@ -1061,1026 +1148,893 @@ class CompanyPage(BasePage):
             )
             return False
 
-        self.page.wait_for_timeout(2200)
+        # Allow LinkedIn autocomplete to render.
+        self.page.wait_for_timeout(2500)
 
         # ------------------------------------------------------------
-        # A suggestion is valid ONLY when the candidate itself represents
-        # the requested location.
+        # 4. LOCATION SUGGESTION MATCHING
         #
-        # Examples accepted:
-        #   New Jersey
+        # Screenshot-confirmed LinkedIn behavior:
+        #
         #   New Jersey, United States
-        #   Clifton, New Jersey
-        #   Clifton, New Jersey, United States
+        #   Jersey City, New Jersey, United States
+        #   Newark, New Jersey, United States
+        #   ...
         #
-        # Examples rejected:
-        #   New Jersey, United States Jersey City, ...
-        #   any container containing multiple suggestions
+        # For "New Jersey", the correct row is therefore:
+        #
+        #   New Jersey, United States
+        #
+        # The old implementation inspected a large parent container.
+        # Its center could land on "Clifton" even though "New Jersey"
+        # was the requested value.
+        #
+        # This implementation NEVER clicks the aggregate dropdown.
+        # It looks for the individual visible text row.
         # ------------------------------------------------------------
-        def candidate_represents_requested(text):
+
+        def represents_requested_location(text):
             value = normalize(text)
 
             if not value:
                 return False
 
+            # Exact match.
             if value == requested_norm:
                 return True
 
+            # State/region/country suggestion.
             if value == requested_norm + ", united states":
                 return True
 
-            # For a city typed without state/country, LinkedIn commonly
-            # returns "City, State, United States". Accept that form only
-            # when the FIRST comma-separated component is exactly the
-            # requested city. This prevents an aggregate list from matching.
+            # City/locality suggestion:
+            #
+            # requested = "clifton"
+            # candidate  = "clifton, new jersey, united states"
+            #
+            # Only accept a candidate whose FIRST component is exactly
+            # the requested value. This prevents:
+            #
+            # "New Jersey, United States Jersey City, ..."
+            #
+            # from ever being accepted as a single suggestion.
             if value.startswith(requested_norm + ","):
-                remainder = value[len(requested_norm) + 1:].strip()
-
-                # Reject obvious aggregate containers containing several
-                # separate location suggestions.
-                if remainder.count(" united states") > 1:
-                    return False
-
-                if remainder.count(",") > 2:
-                    return False
-
-                if len(value) > max(140, len(requested_norm) + 100):
-                    return False
-
-                return True
-
-            return False
-
-        # ------------------------------------------------------------
-        # Find INDIVIDUAL suggestion leaves.
-        #
-        # The previous implementation scanned elementsFromPoint() and then
-        # clicked whichever matching element happened to be returned. The
-        # returned element was the entire dropdown wrapper containing:
-        #
-        #   New Jersey
-        #   Jersey City
-        #   Newark
-        #   Cedar Knolls
-        #   Clifton
-        #   ...
-        #
-        # Its center happened to land on Clifton, so LinkedIn selected
-        # Clifton (geoUrn=104250152).
-        #
-        # This implementation instead finds elements whose OWN text matches
-        # the requested location and rejects any element containing another
-        # matching location descendant.
-        # ------------------------------------------------------------
-        def individual_location_candidates():
-            try:
-                box = location_box.bounding_box()
-
-                if not box:
-                    return []
-
-                result = self.page.evaluate(
-                    """({box, requested}) => {
-                        const norm = value =>
-                            String(value || "")
-                                .replace(/\\s+/g, " ")
-                                .trim()
-                                .toLowerCase();
-
-                        const req = norm(requested);
-
-                        const visible = el => {
-                            if (!el) return false;
-
-                            const style = getComputedStyle(el);
-                            const rect = el.getBoundingClientRect();
-
-                            return (
-                                style.display !== "none" &&
-                                style.visibility !== "hidden" &&
-                                style.opacity !== "0" &&
-                                rect.width > 0 &&
-                                rect.height > 0
-                            );
-                        };
-
-                        const represents = text => {
-                            const value = norm(text);
-
-                            if (!value) return false;
-
-                            if (value === req) return true;
-
-                            if (
-                                value ===
-                                req + ", united states"
-                            ) {
-                                return true;
-                            }
-
-                            if (!value.startsWith(req + ",")) {
-                                return false;
-                            }
-
-                            const remainder =
-                                value.slice(req.length + 1).trim();
-
-                            if (
-                                (remainder.match(/ united states/g) || [])
-                                    .length > 1
-                            ) {
-                                return false;
-                            }
-
-                            if ((value.match(/,/g) || []).length > 3) {
-                                return false;
-                            }
-
-                            if (
-                                value.length >
-                                Math.max(140, req.length + 100)
-                            ) {
-                                return false;
-                            }
-
-                            return true;
-                        };
-
-                        const textOf = el => norm(
-                            el.innerText ||
-                            el.textContent ||
-                            el.getAttribute("aria-label") ||
-                            ""
-                        );
-
-                        const top = box.y + box.height;
-                        const bottom = top + 360;
-                        const left = Math.max(0, box.x - 80);
-                        const right = box.x + box.width + 260;
-
-                        const all = [
-                            ...document.querySelectorAll("*")
-                        ];
-
-                        const candidates = [];
-
-                        for (const el of all) {
-                            if (!visible(el)) continue;
-
-                            const rect = el.getBoundingClientRect();
-
-                            if (
-                                rect.bottom < top ||
-                                rect.top > bottom ||
-                                rect.right < left ||
-                                rect.left > right
-                            ) {
-                                continue;
-                            }
-
-                            const ownText = textOf(el);
-
-                            if (!represents(ownText)) {
-                                continue;
-                            }
-
-                            // Critical rule:
-                            // if a descendant also represents the requested
-                            // location, this element is a wrapper. Keep the
-                            // smaller descendant instead.
-                            let containsMatchingDescendant = false;
-
-                            for (const child of el.querySelectorAll("*")) {
-                                if (!visible(child)) continue;
-
-                                const childText = textOf(child);
-
-                                if (
-                                    child !== el &&
-                                    represents(childText)
-                                ) {
-                                    containsMatchingDescendant = true;
-                                    break;
-                                }
-                            }
-
-                            if (containsMatchingDescendant) {
-                                continue;
-                            }
-
-                            // Reject very large dropdown/list containers.
-                            if (
-                                rect.width >
-                                Math.max(650, box.width * 3.5) ||
-                                rect.height > 90
-                            ) {
-                                continue;
-                            }
-
-                            candidates.push({
-                                text: (
-                                    el.innerText ||
-                                    el.textContent ||
-                                    el.getAttribute("aria-label") ||
-                                    ""
-                                )
-                                    .replace(/\\s+/g, " ")
-                                    .trim(),
-
-                                x: rect.x,
-                                y: rect.y,
-                                w: rect.width,
-                                h: rect.height,
-
-                                cx: rect.x + rect.width / 2,
-                                cy: rect.y + rect.height / 2,
-
-                                area: rect.width * rect.height,
-
-                                tag: el.tagName,
-                                role: el.getAttribute("role"),
-                                testid: el.getAttribute("data-testid"),
-
-                                html: el.outerHTML.slice(0, 4000)
-                            });
-                        }
-
-                        // Exact text first, then smallest clickable-looking
-                        // element. Never prefer the aggregate parent.
-                        candidates.sort((a, b) => {
-                            const ae =
-                                norm(a.text) === req ? 0 : 1;
-                            const be =
-                                norm(b.text) === req ? 0 : 1;
-
-                            if (ae !== be) return ae - be;
-
-                            if (a.area !== b.area) {
-                                return a.area - b.area;
-                            }
-
-                            return a.y - b.y;
-                        });
-
-                        return candidates.slice(0, 20);
-                    }""",
-                    {
-                        "box": box,
-                        "requested": requested_location
-                    }
-                )
-
-                return result or []
-
-            except Exception as ex:
-                print(
-                    "[LOCATION] Individual suggestion scan failed:",
-                    repr(ex)
-                )
-                return []
-
-        # ------------------------------------------------------------
-        # Validate that a selection is REAL.
-        #
-        # IMPORTANT: an empty input alone is NOT considered selection.
-        # The previous implementation used that as proof and could therefore
-        # accept a bad click.
-        # ------------------------------------------------------------
-        def selected_location_visible():
-            try:
-                # First look for a selected chip/button/tag containing the
-                # requested location near the Locations filter panel.
-                exact = self.page.locator(
-                    "button:visible, "
-                    "[role='button']:visible, "
-                    "[role='option']:visible, "
-                    "li:visible, "
-                    "span:visible, "
-                    "div:visible"
-                )
-
-                count = min(exact.count(), 1600)
-
-                for i in range(count):
-                    try:
-                        el = exact.nth(i)
-
-                        if not el.is_visible():
-                            continue
-
-                        value = normalize(
-                            el.inner_text(timeout=500)
-                        )
-
-                        if not candidate_represents_requested(value):
-                            continue
-
-                        box = el.bounding_box()
-
-                        if not box:
-                            continue
-
-                        # Ignore the suggestion dropdown itself. A selected
-                        # chip is normally at/above the input or remains as a
-                        # compact element; a suggestion is below the input.
-                        input_box = location_box.bounding_box()
-
-                        if (
-                            input_box and
-                            box["y"] >
-                            input_box["y"] + input_box["height"] + 8
-                        ):
-                            continue
-
-                        # If the element contains another matching descendant,
-                        # it is a wrapper, not the selected item.
-                        try:
-                            has_child = el.evaluate(
-                                """el => {
-                                    const norm = v =>
-                                        String(v || "")
-                                            .replace(/\\s+/g, " ")
-                                            .trim()
-                                            .toLowerCase();
-
-                                    const req = norm(
-                                        arguments[0]
-                                    );
-
-                                    return [...el.querySelectorAll("*")]
-                                        .some(child =>
-                                            norm(
-                                                child.innerText ||
-                                                child.textContent ||
-                                                child.getAttribute(
-                                                    "aria-label"
-                                                ) ||
-                                                ""
-                                            ) === req
-                                        );
-                                }""",
-                                requested_location
-                            )
-                        except Exception:
-                            has_child = False
-
-                        if has_child:
-                            continue
-
-                        return True
-
-                    except Exception:
-                        continue
-
-            except Exception:
-                pass
-
-            # A URL geo filter is also a concrete confirmation.
-            if has_location_filter(self.page.url):
-                return True
-
-            return False
-
-        # ------------------------------------------------------------
-        # Strategy 1: click the smallest INDIVIDUAL exact suggestion.
-        # ------------------------------------------------------------
-        location_selected = False
-        candidates = individual_location_candidates()
-
-        print(
-            "[LOCATION] Individual location candidates:",
-            len(candidates)
-        )
-
-        for index, candidate in enumerate(candidates):
-            print(
-                f"[LOCATION] Candidate #{index + 1}:",
-                repr(candidate.get("text")),
-                "tag=",
-                candidate.get("tag"),
-                "role=",
-                candidate.get("role"),
-                "area=",
-                candidate.get("area")
-            )
-
-        for candidate in candidates:
-            candidate_text = candidate.get("text", "")
-
-            if not candidate_represents_requested(candidate_text):
-                continue
-
-            try:
-                print(
-                    "[LOCATION] Clicking INDIVIDUAL suggestion:",
-                    repr(candidate_text),
-                    "at",
-                    (
-                        candidate["cx"],
-                        candidate["cy"]
-                    )
-                )
-
-                self.page.mouse.click(
-                    candidate["cx"],
-                    candidate["cy"]
-                )
-
-                self.page.wait_for_timeout(1400)
-
-                current = self.page.url
-
-                if (
-                    is_people_company_url(current) and
-                    query_values(
-                        current,
-                        "currentCompany"
-                    ) == original_company_values and
-                    (
-                        has_location_filter(current) or
-                        selected_location_visible()
-                    )
-                ):
-                    location_selected = True
-
-                    print(
-                        "[LOCATION] Individual requested location "
-                        "selected successfully."
-                    )
-                    break
-
-                print(
-                    "[LOCATION] Candidate click did not produce a "
-                    "verified requested-location selection."
-                )
-
-            except Exception as ex:
-                print(
-                    "[LOCATION] Individual candidate click failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # Strategy 2: role=option, but ONLY exact/individual text.
-        # ------------------------------------------------------------
-        if not location_selected:
-            try:
-                options = self.page.locator(
-                    "[role='option']:visible"
-                )
-
-                count = options.count()
-
-                print(
-                    "[LOCATION] Visible role=option candidates:",
-                    count
-                )
-
-                for i in range(count):
-                    try:
-                        option = options.nth(i)
-
-                        if not option.is_visible():
-                            continue
-
-                        option_text = option.inner_text(
-                            timeout=1200
-                        ).strip()
-
-                        if not candidate_represents_requested(
-                            option_text
-                        ):
-                            continue
-
-                        print(
-                            "[LOCATION] Clicking exact role=option:",
-                            repr(option_text)
-                        )
-
-                        option.click(timeout=10000)
-                        self.page.wait_for_timeout(1400)
-
-                        current = self.page.url
-
-                        if (
-                            is_people_company_url(current) and
-                            query_values(
-                                current,
-                                "currentCompany"
-                            ) == original_company_values and
-                            (
-                                has_location_filter(current) or
-                                selected_location_visible()
-                            )
-                        ):
-                            location_selected = True
-                            print(
-                                "[LOCATION] Requested role=option "
-                                "selected successfully."
-                            )
-                            break
-
-                    except Exception:
-                        continue
-
-            except Exception as ex:
-                print(
-                    "[LOCATION] role=option strategy failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # Strategy 3: keyboard selection.
-        #
-        # We NEVER press Enter blindly. First inspect the currently
-        # highlighted/visible individual suggestion and require that it
-        # represents the requested location.
-        # ------------------------------------------------------------
-        if not location_selected:
-            try:
-                location_box.click(timeout=5000)
-
-                self.page.keyboard.press("ArrowDown")
-                self.page.wait_for_timeout(500)
-
-                active_id = location_box.get_attribute(
-                    "aria-activedescendant"
-                )
-
-                active_text = ""
-
-                if active_id:
-                    try:
-                        active = self.page.locator(
-                            f"#{active_id}"
-                        )
-
-                        active_text = active.inner_text(
-                            timeout=1200
-                        )
-                    except Exception:
-                        active_text = ""
-
-                print(
-                    "[LOCATION] Keyboard active descendant:",
-                    active_id
-                )
-                print(
-                    "[LOCATION] Keyboard active text:",
-                    repr(active_text)
-                )
-
-                if candidate_represents_requested(
-                    active_text
-                ):
-                    self.page.keyboard.press("Enter")
-                    self.page.wait_for_timeout(1400)
-
-                    current = self.page.url
-
-                    if (
-                        is_people_company_url(current) and
-                        query_values(
-                            current,
-                            "currentCompany"
-                        ) == original_company_values and
-                        (
-                            has_location_filter(current) or
-                            selected_location_visible()
-                        )
+                parts = [
+                    part.strip()
+                    for part in value.split(",")
+                ]
+
+                if len(parts) >= 2:
+                    first_part = parts[0]
+
+                    if first_part != requested_norm:
+                        return False
+
+                    # A normal LinkedIn location suggestion is short.
+                    # Reject giant aggregate/container text.
+                    if len(value) > max(
+                        160,
+                        len(requested_norm) + 120
                     ):
-                        location_selected = True
-                        print(
-                            "[LOCATION] Requested location selected "
-                            "through verified keyboard selection."
-                        )
+                        return False
 
-            except Exception as ex:
-                print(
-                    "[LOCATION] Keyboard selection failed:",
-                    repr(ex)
-                )
+                    # If country is present, it must be the final
+                    # component. This is deliberately permissive about
+                    # the middle state/region component.
+                    if "united states" in parts:
+                        if parts[-1] != "united states":
+                            return False
 
-        # ------------------------------------------------------------
-        # Final retry of INDIVIDUAL DOM candidates.
-        #
-        # This is intentionally not a generic page click. If LinkedIn
-        # populated the dropdown after a delay, rediscover only individual
-        # requested-location leaves.
-        # ------------------------------------------------------------
-        if not location_selected:
-            try:
-                self.page.wait_for_timeout(1000)
-
-                retry_candidates = individual_location_candidates()
-
-                print(
-                    "[LOCATION] Final individual candidate retry:",
-                    len(retry_candidates)
-                )
-
-                for candidate in retry_candidates:
-                    candidate_text = candidate.get("text", "")
-
-                    if not candidate_represents_requested(
-                        candidate_text
-                    ):
-                        continue
-
-                    print(
-                        "[LOCATION] Final individual click:",
-                        repr(candidate_text),
-                        "at",
-                        (
-                            candidate["cx"],
-                            candidate["cy"]
-                        )
-                    )
-
-                    self.page.mouse.click(
-                        candidate["cx"],
-                        candidate["cy"]
-                    )
-
-                    self.page.wait_for_timeout(1400)
-
-                    current = self.page.url
-
-                    if (
-                        is_people_company_url(current) and
-                        query_values(
-                            current,
-                            "currentCompany"
-                        ) == original_company_values and
-                        (
-                            has_location_filter(current) or
-                            selected_location_visible()
-                        )
-                    ):
-                        location_selected = True
-                        print(
-                            "[LOCATION] Final individual location "
-                            "selection verified."
-                        )
-                        break
-
-            except Exception as ex:
-                print(
-                    "[LOCATION] Final individual candidate retry failed:",
-                    repr(ex)
-                )
-
-        # ------------------------------------------------------------
-        # Never guess a geo ID.
-        #
-        # If the UI cannot expose/select an individual requested-location
-        # suggestion, stop safely rather than accidentally selecting another
-        # city such as Clifton.
-        # ------------------------------------------------------------
-        if not location_selected:
-            print(
-                "[LOCATION ERROR] Could not safely select the requested "
-                "individual location."
-            )
-            print(
-                "[LOCATION ERROR] No aggregate dropdown container will "
-                "ever be accepted as a location."
-            )
-
-            try:
-                print(
-                    "[LOCATION] Current URL:",
-                    self.page.url
-                )
-
-                print(
-                    "[LOCATION] Current input value:",
-                    location_box.input_value()
-                )
-
-                print(
-                    "[LOCATION] aria-activedescendant:",
-                    location_box.get_attribute(
-                        "aria-activedescendant"
-                    )
-                )
-
-                print(
-                    "[LOCATION] aria-expanded:",
-                    location_box.get_attribute(
-                        "aria-expanded"
-                    )
-                )
-
-            except Exception:
-                pass
-
-            try:
-                self.page.screenshot(
-                    path="location_autocomplete_failure_foolproof.png",
-                    full_page=False
-                )
-                print(
-                    "Saved location_autocomplete_failure_foolproof.png"
-                )
-            except Exception:
-                pass
+                    return True
 
             return False
 
-        # ------------------------------------------------------------
-        # Confirm company scope before Show results.
-        # ------------------------------------------------------------
-        current = self.page.url
+        def get_location_candidates():
+            """
+            Return visible individual autocomplete rows.
 
-        if not is_people_company_url(current):
-            print(
-                "[LOCATION ERROR] Location selection left "
-                "company-scoped people-search."
+            We first use semantic/accessibility locators and then use a
+            DOM fallback. In both cases the candidate's OWN rendered text
+            must match the requested location.
+            """
+
+            candidates = []
+
+            # --------------------------------------------------------
+            # Candidate labels that LinkedIn commonly renders.
+            #
+            # For the screenshot:
+            #     requested = "New Jersey"
+            #     exact_label = "New Jersey, United States"
+            # --------------------------------------------------------
+
+            exact_labels = [
+                requested_norm,
+                requested_norm + ", united states"
+            ]
+
+            # Remove duplicates while preserving order.
+            exact_labels = list(
+                dict.fromkeys(exact_labels)
             )
-            return False
 
-        if query_values(
-            current,
-            "currentCompany"
-        ) != original_company_values:
-            print(
-                "[LOCATION ERROR] currentCompany changed before "
-                "Show results."
+            # --------------------------------------------------------
+            # A. Accessibility / text locators.
+            #
+            # get_by_text() is intentionally used with exact=True.
+            # This prevents "New Jersey" from matching the entire
+            # dropdown containing Jersey City, Newark, Clifton, etc.
+            # --------------------------------------------------------
+
+            # Playwright exact text matching is case-sensitive, so keep
+            # the user's original capitalization for the locator itself.
+            display_labels = [
+                requested_location,
+                requested_location + ", United States"
+            ]
+
+            display_labels = list(
+                dict.fromkeys(display_labels)
             )
-            return False
 
-        # ------------------------------------------------------------
-        # Show results.
-        # ------------------------------------------------------------
-        if not has_location_filter(current):
-            print("=" * 60)
-            print("LOCATING SHOW RESULTS BUTTON")
-            print("=" * 60)
-
-            show_results = None
-
-            # First: normal accessible button.
-            try:
-                buttons = self.page.get_by_role(
-                    "button",
-                    name="Show results",
-                    exact=True
-                )
-
-                count = buttons.count()
-
-                print(
-                    "Exact accessible Show results BUTTONS:",
-                    count
-                )
-
-                for i in range(count):
-                    try:
-                        button = buttons.nth(i)
-
-                        if (
-                            button.is_visible() and
-                            button.is_enabled()
-                        ):
-                            show_results = button
-                            break
-
-                    except Exception:
-                        continue
-
-            except Exception as ex:
-                print(
-                    "[LOCATION] Show results button lookup failed:",
-                    repr(ex)
-                )
-
-            # Second: exact visible text.
-            if show_results is None:
+            for label in display_labels:
                 try:
-                    text_matches = self.page.get_by_text(
-                        "Show results",
+                    locator = self.page.get_by_text(
+                        label,
                         exact=True
                     )
 
-                    count = text_matches.count()
+                    count = locator.count()
 
                     print(
-                        "[LOCATION] Exact visible Show results text matches:",
+                        f'Exact suggestion text "{label}" matches:',
                         count
                     )
 
-                    for i in range(count):
+                    for index in range(count):
                         try:
-                            candidate = text_matches.nth(i)
+                            item = locator.nth(index)
 
-                            if (
-                                candidate.is_visible() and
-                                candidate.bounding_box()
-                            ):
-                                show_results = candidate
-                                print(
-                                    "[LOCATION] Selected exact visible "
-                                    "Show results text #",
-                                    i + 1
-                                )
-                                break
+                            if not item.is_visible():
+                                continue
+
+                            text = normalize(
+                                item.inner_text(timeout=1000)
+                            )
+
+                            if not represents_requested_location(text):
+                                continue
+
+                            box = item.bounding_box()
+
+                            if not box:
+                                continue
+
+                            if not is_dropdown_candidate_box(box):
+                                continue
+
+                            candidates.append(
+                                {
+                                    "locator": item,
+                                    "text": text,
+                                    "x": box["x"],
+                                    "y": box["y"],
+                                    "width": box["width"],
+                                    "height": box["height"],
+                                    "area": (
+                                        box["width"]
+                                        * box["height"]
+                                    ),
+                                    "source": (
+                                        "get_by_text_exact"
+                                    )
+                                }
+                            )
 
                         except Exception:
                             continue
 
                 except Exception as ex:
                     print(
-                        "[LOCATION] Show results text lookup failed:",
+                        "Exact text candidate scan failed:",
                         repr(ex)
                     )
 
-            if show_results is None:
-                print(
-                    "[LOCATION ERROR] Could not locate Show results."
-                )
-                return False
-
-            # Company scope must still be intact.
-            before_show_url = self.page.url
-
-            if not is_people_company_url(before_show_url):
-                print(
-                    "[LOCATION ERROR] Before Show results, page is not "
-                    "company-scoped people-search."
-                )
-                return False
-
-            if query_values(
-                before_show_url,
-                "currentCompany"
-            ) != original_company_values:
-                print(
-                    "[LOCATION ERROR] Before Show results, currentCompany "
-                    "does not match the selected company."
-                )
-                return False
+            # --------------------------------------------------------
+            # A2. REGEX TEXT FALLBACK
+            #
+            # This handles a city typed without a state:
+            #
+            #     requested = "Clifton"
+            #     LinkedIn   = "Clifton, New Jersey, United States"
+            #
+            # It is still filtered through represents_requested_location()
+            # before it can be clicked.
+            # --------------------------------------------------------
 
             try:
-                print(
-                    "Show results text:",
-                    repr(
-                        show_results.inner_text(
-                            timeout=2000
-                        ).strip()
+                escaped_requested = re.escape(
+                    requested_location
+                )
+
+                regex_locator = self.page.get_by_text(
+                    re.compile(
+                        rf"^\s*{escaped_requested}"
+                        rf"(?:\s*,\s*[^,]+)?"
+                        rf"(?:\s*,\s*United States)?"
+                        rf"\s*$",
+                        re.IGNORECASE
                     )
                 )
 
-                show_results.scroll_into_view_if_needed(
-                    timeout=5000
-                )
-
-                try:
-                    show_results.click(
-                        timeout=15000
-                    )
-                except Exception as click_ex:
-                    print(
-                        "[LOCATION] Normal Show results click failed; "
-                        "using DOM click fallback:",
-                        repr(click_ex)
-                    )
-
-                    show_results.evaluate(
-                        """el => {
-                            el.scrollIntoView({block: "center"});
-                            el.click();
-                        }"""
-                    )
+                count = regex_locator.count()
 
                 print(
-                    "Show results control clicked successfully."
+                    "Regex location suggestion matches:",
+                    count
                 )
+
+                for index in range(count):
+                    try:
+                        item = regex_locator.nth(index)
+
+                        if not item.is_visible():
+                            continue
+
+                        text = normalize(
+                            item.inner_text(timeout=1000)
+                        )
+
+                        if not represents_requested_location(text):
+                            continue
+
+                        box = item.bounding_box()
+
+                        if not box:
+                            continue
+
+                        candidates.append(
+                            {
+                                "locator": item,
+                                "text": text,
+                                "x": box["x"],
+                                "y": box["y"],
+                                "width": box["width"],
+                                "height": box["height"],
+                                "area": (
+                                    box["width"]
+                                    * box["height"]
+                                ),
+                                "source": (
+                                    "get_by_text_regex"
+                                )
+                            }
+                        )
+
+                    except Exception:
+                        continue
 
             except Exception as ex:
                 print(
-                    "[LOCATION ERROR] Show results click failed:",
+                    "Regex location candidate scan failed:",
                     repr(ex)
                 )
-                return False
 
-            # Wait for LinkedIn to apply the filter.
-            final_url = None
+            # --------------------------------------------------------
+            # B. Role-based fallback.
+            #
+            # Depending on LinkedIn's current DOM, the row can be
+            # exposed as role=option, listitem, button, or a normal
+            # clickable div.
+            # --------------------------------------------------------
 
-            for attempt in range(15):
-                self.page.wait_for_timeout(1000)
+            for selector in (
+                "[role='option']:visible",
+                "li:visible",
+                "button:visible"
+            ):
+                try:
+                    locator = self.page.locator(selector)
 
-                current = self.page.url
+                    count = locator.count()
 
+                    for index in range(count):
+                        try:
+                            item = locator.nth(index)
+
+                            if not item.is_visible():
+                                continue
+
+                            text = normalize(
+                                item.inner_text(timeout=500)
+                            )
+
+                            if not represents_requested_location(text):
+                                continue
+
+                            box = item.bounding_box()
+
+                            if not box:
+                                continue
+
+                            if not is_dropdown_candidate_box(box):
+                                continue
+
+                            candidates.append(
+                                {
+                                    "locator": item,
+                                    "text": text,
+                                    "x": box["x"],
+                                    "y": box["y"],
+                                    "width": box["width"],
+                                    "height": box["height"],
+                                    "area": (
+                                        box["width"]
+                                        * box["height"]
+                                    ),
+                                    "source": selector
+                                }
+                            )
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+            # --------------------------------------------------------
+            # C. DOM fallback.
+            #
+            # This is intentionally simple:
+            # inspect visible elements near the input and accept only
+            # elements whose OWN innerText is the location.
+            #
+            # We do NOT inspect the center of the dropdown and we do
+            # NOT click a parent that contains multiple locations.
+            # --------------------------------------------------------
+
+            try:
+                input_box = location_box.bounding_box()
+
+                if input_box:
+                    dom_candidates = self.page.evaluate(
+                        """
+                        ({inputBox, requested}) => {
+                            const norm = value =>
+                                String(value || "")
+                                    .replace(/\\s+/g, " ")
+                                    .trim()
+                                    .toLowerCase();
+
+                            const req = norm(requested);
+
+                            const represents = text => {
+                                const value = norm(text);
+
+                                if (!value) {
+                                    return false;
+                                }
+
+                                if (value === req) {
+                                    return true;
+                                }
+
+                                if (
+                                    value ===
+                                    req + ", united states"
+                                ) {
+                                    return true;
+                                }
+
+                                if (
+                                    !value.startsWith(
+                                        req + ","
+                                    )
+                                ) {
+                                    return false;
+                                }
+
+                                const parts = value
+                                    .split(",")
+                                    .map(x => x.trim());
+
+                                if (parts.length < 2) {
+                                    return false;
+                                }
+
+                                if (parts[0] !== req) {
+                                    return false;
+                                }
+
+                                if (
+                                    value.length >
+                                    Math.max(
+                                        160,
+                                        req.length + 120
+                                    )
+                                ) {
+                                    return false;
+                                }
+
+                                if (
+                                    parts.includes(
+                                        "united states"
+                                    ) &&
+                                    parts[
+                                        parts.length - 1
+                                    ] !== "united states"
+                                ) {
+                                    return false;
+                                }
+
+                                return true;
+                            };
+
+                            const visible = el => {
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const style =
+                                    getComputedStyle(el);
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                return (
+                                    style.display !== "none" &&
+                                    style.visibility !== "hidden" &&
+                                    style.opacity !== "0" &&
+                                    rect.width > 0 &&
+                                    rect.height > 0
+                                );
+                            };
+
+                            const top =
+                                inputBox.y +
+                                inputBox.height;
+
+                            const bottom =
+                                top + 450;
+
+                            const left =
+                                Math.max(
+                                    0,
+                                    inputBox.x - 100
+                                );
+
+                            const right =
+                                inputBox.x +
+                                inputBox.width +
+                                350;
+
+                            const result = [];
+
+                            for (
+                                const el of
+                                document.querySelectorAll("*")
+                            ) {
+                                if (!visible(el)) {
+                                    continue;
+                                }
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                if (
+                                    rect.bottom < top ||
+                                    rect.top > bottom ||
+                                    rect.right < left ||
+                                    rect.left > right
+                                ) {
+                                    continue;
+                                }
+
+                                const text = norm(
+                                    el.innerText ||
+                                    el.textContent ||
+                                    el.getAttribute(
+                                        "aria-label"
+                                    ) ||
+                                    ""
+                                );
+
+                                if (!represents(text)) {
+                                    continue;
+                                }
+
+                                result.push({
+                                    text: text,
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                    area:
+                                        rect.width *
+                                        rect.height,
+                                    tag:
+                                        el.tagName,
+                                    role:
+                                        el.getAttribute(
+                                            "role"
+                                        ),
+                                    html:
+                                        el.outerHTML.slice(
+                                            0,
+                                            2000
+                                        )
+                                });
+                            }
+
+                            return result;
+                        }
+                        """,
+                        {
+                            "inputBox": input_box,
+                            "requested": requested_location
+                        }
+                    )
+
+                    print(
+                        "DOM exact location candidates:",
+                        len(dom_candidates or [])
+                    )
+
+                    # DOM results cannot be clicked directly because
+                    # evaluate() returns serializable data. We use them
+                    # only as diagnostics / confirmation that LinkedIn
+                    # rendered the correct row.
+                    for item in dom_candidates or []:
+                        print(
+                            "DOM candidate:",
+                            item.get("text"),
+                            item.get("tag"),
+                            item.get("role"),
+                            item.get("width"),
+                            item.get("height")
+                        )
+
+            except Exception as ex:
                 print(
-                    f"Post-Show-results URL check {attempt + 1}/15:",
-                    current
+                    "DOM location scan failed:",
+                    repr(ex)
                 )
 
-                current_lower = current.lower()
+            # --------------------------------------------------------
+            # Deduplicate Playwright candidates.
+            # Prefer the smallest exact element. This normally means
+            # the inner <span> containing the suggestion text rather
+            # than the entire autocomplete list.
+            # --------------------------------------------------------
 
-                if (
-                    current_lower.rstrip("/") ==
-                    "https://www.linkedin.com"
-                ):
-                    print(
-                        "[LOCATION ERROR] Show results navigated to root."
-                    )
-                    return False
+            unique = []
 
-                if "/in/" in current_lower:
-                    print(
-                        "[LOCATION ERROR] Show results navigated to profile."
-                    )
-                    return False
+            seen = set()
 
-                if is_people_company_url(current):
-                    final_url = current
+            for candidate in candidates:
+                key = (
+                    candidate["text"],
+                    round(candidate["x"], 1),
+                    round(candidate["y"], 1),
+                    round(candidate["width"], 1),
+                    round(candidate["height"], 1)
+                )
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                unique.append(candidate)
+
+            unique.sort(
+                key=lambda item: (
+                    0
+                    if item["text"] ==
+                    requested_norm
+                    else 1,
+                    item["area"],
+                    item["y"]
+                )
+            )
+
+            return unique
+
+        # ------------------------------------------------------------
+        # 5. WAIT FOR AND SELECT THE CORRECT INDIVIDUAL ROW
+        # ------------------------------------------------------------
+
+        selected = False
+
+        # Autocomplete can take a little longer on a busy LinkedIn
+        # session. Poll instead of performing one fragile scan.
+        for attempt in range(1, 9):
+            candidates = get_location_candidates()
+
+            print(
+                f"[LOCATION] Suggestion scan {attempt}/8:",
+                len(candidates),
+                "candidate(s)"
+            )
+
+            if candidates:
+                for candidate in candidates:
+                    try:
+                        item = candidate["locator"]
+
+                        if not item.is_visible():
+                            continue
+
+                        print(
+                            "[LOCATION] Selecting exact row:",
+                            candidate["text"],
+                            "| source:",
+                            candidate["source"],
+                            "| area:",
+                            candidate["area"]
+                        )
+
+                        # Scroll the individual row into view.
+                        item.scroll_into_view_if_needed(
+                            timeout=3000
+                        )
+
+                        # Normal click first. This bubbles naturally
+                        # from a text span to LinkedIn's clickable row.
+                        try:
+                            item.click(
+                                timeout=10000
+                            )
+                        except Exception as click_ex:
+                            # The visible text may be a child <span> inside
+                            # LinkedIn's clickable suggestion row. A normal
+                            # click is preferred; if Playwright reports an
+                            # interception/overlay issue, dispatch the click
+                            # on that SAME exact text element. We never click
+                            # the dropdown container or an arbitrary point.
+                            print(
+                                "[LOCATION] Normal exact-row click failed; "
+                                "using DOM click on the same element:",
+                                repr(click_ex)
+                            )
+
+                            item.evaluate(
+                                """el => {
+                                    el.scrollIntoView({
+                                        block: "center",
+                                        inline: "nearest"
+                                    });
+                                    el.click();
+                                }"""
+                            )
+
+                        selected = True
+
+                        print(
+                            "[LOCATION] Exact location row clicked."
+                        )
+
+                        break
+
+                    except Exception as ex:
+                        print(
+                            "[LOCATION] Candidate click failed:",
+                            repr(ex)
+                        )
+
+                if selected:
                     break
 
-            if not final_url:
-                final_url = self.page.url
+            self.page.wait_for_timeout(750)
 
-            if not is_people_company_url(final_url):
-                print(
-                    "[LOCATION ERROR] Final page is not company "
-                    "people-search."
-                )
-                return False
+        if not selected:
+            print("=" * 60)
+            print("LOCATION SUGGESTION NOT SAFELY FOUND")
+            print("=" * 60)
+            print(
+                "Requested:",
+                requested_location
+            )
+            print(
+                "No individual LinkedIn autocomplete row whose "
+                "own text represents the requested location was found."
+            )
+            print(
+                "Refusing to click the aggregate dropdown or another city."
+            )
+            return False
 
-            if query_values(
-                final_url,
-                "currentCompany"
-            ) != original_company_values:
-                print(
-                    "[LOCATION ERROR] Final URL lost or changed "
-                    "currentCompany."
-                )
-                return False
+        # Give LinkedIn time to update the selected chip/state.
+        self.page.wait_for_timeout(1000)
 
         # ------------------------------------------------------------
-        # Final validation.
+        # 6. CLICK SHOW RESULTS
+        # ------------------------------------------------------------
+
+        try:
+            show_results = self.page.get_by_role(
+                "button",
+                name=re.compile(
+                    r"^\s*show\s+results\s*$",
+                    re.IGNORECASE
+                )
+            )
+
+            count = show_results.count()
+
+            print(
+                "Show Results buttons:",
+                count
+            )
+
+            clicked = False
+
+            for index in range(count):
+                try:
+                    button = show_results.nth(index)
+
+                    if not button.is_visible():
+                        continue
+
+                    button.click(timeout=10000)
+
+                    clicked = True
+
+                    print(
+                        "Clicked Show Results."
+                    )
+
+                    break
+
+                except Exception as ex:
+                    print(
+                        f"Show Results click #{index + 1} failed:",
+                        repr(ex)
+                    )
+
+            # Text fallback for LinkedIn DOM variants that do not expose
+            # the control as a normal accessible button.
+            if not clicked:
+                text_buttons = self.page.get_by_text(
+                    "Show results",
+                    exact=True
+                )
+
+                count = text_buttons.count()
+
+                print(
+                    "Exact Show results text matches:",
+                    count
+                )
+
+                for index in range(count):
+                    try:
+                        item = text_buttons.nth(index)
+
+                        if not item.is_visible():
+                            continue
+
+                        item.click(timeout=10000)
+
+                        clicked = True
+
+                        print(
+                            "Clicked Show results text control."
+                        )
+
+                        break
+
+                    except Exception:
+                        continue
+
+            if not clicked:
+                print(
+                    "[LOCATION ERROR] Show Results control could not be clicked."
+                )
+                return False
+
+        except Exception as ex:
+            print(
+                "[LOCATION ERROR] Show Results handling failed:",
+                repr(ex)
+            )
+            return False
+
+        # ------------------------------------------------------------
+        # 7. WAIT FOR THE REAL FILTERED URL
         #
-        # The resulting URL MUST contain a location filter. This prevents
-        # reporting success when the picker merely closed without applying
-        # a location.
+        # Do not treat closing the popup as success.
+        # Success requires:
+        #   - people search page
+        #   - SAME currentCompany
+        #   - actual location filter in URL
         # ------------------------------------------------------------
-        final_url = self.page.url
+
+        final_url = ""
+
+        for attempt in range(1, 21):
+            try:
+                current = self.page.url
+
+                if "/in/" in current.lower():
+                    print(
+                        "[LOCATION ERROR] Show Results navigated to a profile."
+                    )
+                    return False
+
+                current_company_values = query_values(
+                    current,
+                    "currentCompany"
+                )
+
+                if (
+                    is_company_people_search(current)
+                    and
+                    current_company_values ==
+                    original_company_values
+                    and
+                    has_location_filter(current)
+                ):
+                    final_url = current
+
+                    print(
+                        "[LOCATION] Filtered company people-search URL confirmed."
+                    )
+
+                    break
+
+            except Exception as ex:
+                print(
+                    "[LOCATION] URL validation attempt failed:",
+                    repr(ex)
+                )
+
+            self.page.wait_for_timeout(750)
+
+        # ------------------------------------------------------------
+        # 8. FINAL SAFETY VALIDATION
+        # ------------------------------------------------------------
+
+        if not final_url:
+            final_url = self.page.url
 
         print("=" * 60)
         print("FINAL LOCATION FILTER VALIDATION")
         print("=" * 60)
         print("Final URL:", final_url)
 
-        if not is_people_company_url(final_url):
+        if not is_company_people_search(final_url):
             print(
-                "[LOCATION ERROR] Final URL is not company people-search."
+                "[LOCATION ERROR] Final page is not company people-search."
             )
             return False
 
-        if query_values(
-            final_url,
-            "currentCompany"
-        ) != original_company_values:
+        if (
+            query_values(
+                final_url,
+                "currentCompany"
+            )
+            != original_company_values
+        ):
             print(
-                "[LOCATION ERROR] Final URL currentCompany mismatch."
+                "[LOCATION ERROR] currentCompany was lost or changed."
             )
             return False
 
         if "/in/" in final_url.lower():
             print(
-                "[LOCATION ERROR] Final URL is a profile."
+                "[LOCATION ERROR] Final page is a profile."
             )
             return False
 
         if not has_location_filter(final_url):
             print(
-                "[LOCATION ERROR] Final URL does not expose a location "
-                "filter."
+                "[LOCATION ERROR] LinkedIn did not apply a location "
+                "filter to the URL."
             )
             return False
 
-        try:
-            self.page.locator(
-                "a[href*='/in/']:visible"
-            ).first.wait_for(
-                state="visible",
-                timeout=30000
-            )
-        except Exception:
-            self.page.wait_for_timeout(5000)
-
-        profile_count = self.page.locator(
-            "a[href*='/in/']:visible"
-        ).count()
-
         print(
-            "Visible profile links after location filter:",
-            profile_count
-        )
-
-        print(
-            "Location applied successfully."
+            "Location filter applied successfully."
         )
 
         return True
@@ -2282,9 +2236,83 @@ class CompanyPage(BasePage):
             total_links
         )
 
+        # LinkedIn can render a valid zero-result page without any /in/
+        # anchors. Give the results page a short opportunity to finish
+        # rendering before deciding that the result set is empty.
         if total_links == 0:
+            zero_result_detected = False
+
+            for attempt in range(1, 11):
+                try:
+                    page_text = normalize_text(
+                        search_area.inner_text(
+                            timeout=1500
+                        )
+                    )
+
+                    zero_markers = (
+                        "no results found",
+                        "no results",
+                        "no people found",
+                        "we couldn't find",
+                        "try adjusting your search"
+                    )
+
+                    if any(
+                        marker in page_text
+                        for marker in zero_markers
+                    ):
+                        zero_result_detected = True
+                        print(
+                            "LinkedIn zero-result state detected."
+                        )
+                        break
+
+                    links = search_area.locator(
+                        "a[href*='/in/']:visible"
+                    )
+
+                    total_links = links.count()
+
+                    if total_links > 0:
+                        print(
+                            "Profile links appeared after initial wait:",
+                            total_links
+                        )
+                        break
+
+                except Exception as ex:
+                    print(
+                        f"Zero-result/profile wait {attempt}/10 failed:",
+                        repr(ex)
+                    )
+
+                self.page.wait_for_timeout(750)
+
+            if total_links == 0:
+                # Whether LinkedIn exposed an explicit "no results" message
+                # or simply rendered an empty result set, an empty list is
+                # the correct data result. Do not throw and do not fabricate
+                # profiles.
+                if zero_result_detected:
+                    print(
+                        "Valid zero-profile result: LinkedIn reports no matches."
+                    )
+                else:
+                    print(
+                        "Valid zero-profile result: no profile links "
+                        "were rendered."
+                    )
+
+                return profiles
+            # Zero profiles is a valid search result. It must not be
+            # treated as an exception or as a reason to remove the
+            # requested company/location filters.
             print(
-                "ERROR: No visible LinkedIn profile links found."
+                "No visible LinkedIn profile links found."
+            )
+            print(
+                "Valid zero-profile result: returning an empty profile list."
             )
             return profiles
 
