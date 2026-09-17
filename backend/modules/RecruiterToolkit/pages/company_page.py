@@ -899,322 +899,322 @@ class CompanyPage(BasePage):
 
         return True
 
-def get_profiles(self, company="", location=""):
-        """Extract location-matching employee /in/ links without connection-degree filtering."""
-        print("=" * 60)
-        print("EXTRACTING EMPLOYEE PROFILES")
-        print("=" * 60)
-        print("Requested company:", company)
-        print("Requested location:", location)
-
-        profiles = []
-        search_area = None
-
-        for selector in (
-            "main:visible",
-            "div.scaffold-finite-scroll__content:visible",
-            "div.search-results-container:visible",
-            "div[role='main']:visible",
-        ):
-            try:
-                candidate = self.page.locator(selector).first
-                if candidate.count() and candidate.is_visible():
-                    search_area = candidate
-                    print("Using bounded employee search area:", selector)
-                    break
-            except Exception as ex:
-                print("Search-area inspection failed:", selector, repr(ex))
-
-        if search_area is None:
-            print("ERROR: No bounded LinkedIn employee search area found.")
-            return profiles
-
-        def canonical_profile_url(href):
-            if not href:
-                return ""
-            value = str(href).strip()
-            if value.startswith("/"):
-                value = "https://www.linkedin.com" + value
-            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-            return value.lower() if "/in/" in value.lower() else ""
-
-        def normalize_text(value):
-            if not value:
-                return ""
-            value = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
-            return re.sub(r"\s+", " ", value).strip().lower()
-
-        requested_location_normalized = normalize_text(location)
-        location_tokens = [
-            t for t in re.findall(r"[a-z0-9]+", requested_location_normalized)
-            if len(t) >= 3
-        ]
-
-        try:
-            links = search_area.locator("a[href*='/in/']:visible")
-            total_links = links.count()
-        except Exception as ex:
-            print("Visible profile-link lookup failed:", repr(ex))
-            return profiles
-
-        print("Visible /in/ links available:", total_links)
-        if total_links == 0:
-            return profiles
-
-        best_by_url = {}
-
-        for index in range(total_links):
-            try:
-                link = links.nth(index)
-                profile_url = canonical_profile_url(link.get_attribute("href"))
-                if not profile_url:
-                    continue
-
-                raw_text = ""
-                try:
-                    raw_text = link.inner_text(timeout=2000).strip()
-                except Exception:
-                    pass
-
-                # Prefer the nearest result-like ancestor when it contains
-                # richer text than the anchor itself. This avoids selecting
-                # nested mutual-connection links as separate employees.
-                card_text = raw_text
-                try:
-                    ancestor_text = link.evaluate("""
-                        (el) => {
-                            let node = el;
-                            for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
-                                const tag = (node.tagName || '').toLowerCase();
-                                const cls = (node.className || '').toString().toLowerCase();
-                                if (
-                                    tag === 'li' ||
-                                    cls.includes('entity-result') ||
-                                    cls.includes('reusable-search__result') ||
-                                    cls.includes('search-result')
-                                ) {
-                                    return node.innerText || '';
-                                }
-                            }
-                            return '';
-                        }
-                    """)
-                    if ancestor_text and len(str(ancestor_text).strip()) > len(raw_text):
-                        card_text = str(ancestor_text).strip()
-                except Exception:
-                    pass
-
-                text = normalize_text(card_text)
-                if not text:
-                    continue
-
-                location_match = False
-                if requested_location_normalized:
-                    location_match = requested_location_normalized in text
-                    if not location_match and location_tokens:
-                        location_match = all(token in text for token in location_tokens)
-
-                    if not location_match:
-                        print("SKIP outside requested location:", profile_url,
-                              "| requested:", location, "| text:", card_text[:400])
-                        continue
-
-                # Score ONLY to select the richest duplicate representation.
-                # Connection degree (1st/2nd/3rd) is deliberately ignored.
-                score = min(len(text), 300) // 10
-                if requested_location_normalized in text:
-                    score += 100
-                if "connect" in text:
-                    score += 10
-                if "message" in text:
-                    score += 10
-                if "follow" in text:
-                    score += 5
-
-                candidate = {
-                    "url": profile_url,
-                    "text": card_text.replace("\n", " ").strip(),
-                    "score": score,
-                    "dom_index": index,
-                }
-
-                old = best_by_url.get(profile_url)
-                if old is None or score > old["score"]:
-                    best_by_url[profile_url] = candidate
-
-                print("-" * 60)
-                print("PROFILE LINK:", index + 1)
-                print("URL:", profile_url)
-                print("Text:", candidate["text"][:500])
-                print("Score:", score)
-                print("Connection degree is NOT used as a filter.")
-
-            except Exception as ex:
-                print("Profile-link inspection failed:", repr(ex))
-
-        ranked = sorted(best_by_url.values(), key=lambda x: x["dom_index"])
-
-        print("=" * 60)
-        print("UNIQUE LOCATION-MATCHING PROFILE URLs:", len(ranked))
-        print("=" * 60)
-
-        for item in ranked:
-            profiles.append({
-                "full_name": item["text"],
-                "profile_url": item["url"],
-                "company": company,
-                "location": location,
-                "search_result_text": item["text"],
-            })
-            print("EMPLOYEE CANDIDATE:", item["url"], "|", item["text"][:300])
-
-        print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
-        return profiles
-
-def next_page(self):
-        """Click Next and only report success if the same company people-search remains active."""
-        try:
-            before_url = str(self.page.url or "").strip()
-            qs = parse_qs(urlparse(before_url).query)
-            company_ids = qs.get("currentCompany", []) or qs.get("currentcompany", [])
-
+    def get_profiles(self, company="", location=""):
+            """Extract location-matching employee /in/ links without connection-degree filtering."""
             print("=" * 60)
-            print("PAGINATION DIAGNOSTICS")
-            print("Current URL:", before_url)
-            print("Current company ID:", company_ids)
+            print("EXTRACTING EMPLOYEE PROFILES")
             print("=" * 60)
+            print("Requested company:", company)
+            print("Requested location:", location)
 
-            if "/search/results/people/" not in before_url.lower():
-                print("NEXT ABORTED - not on people search.")
-                return False
+            profiles = []
+            search_area = None
 
-            before_profiles = set()
-            try:
-                links = self.page.locator("a[href*='/in/']:visible")
-                for i in range(min(links.count(), 200)):
-                    href = links.nth(i).get_attribute("href")
-                    if href and "/in/" in href.lower():
-                        before_profiles.add(
-                            str(href).split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
-                        )
-            except Exception as ex:
-                print("Pre-next profile snapshot failed:", repr(ex))
-
-            next_control = None
-            control_info = None
-
-            selectors = [
-                "nav[aria-label*='Pagination' i] button:visible",
-                "nav[aria-label*='Pagination' i] a:visible",
-                "div.artdeco-pagination button:visible",
-                "div.artdeco-pagination a:visible",
-                "button:visible",
-                "[role='button']:visible",
-                "a:visible",
-            ]
-
-            for selector in selectors:
+            for selector in (
+                "main:visible",
+                "div.scaffold-finite-scroll__content:visible",
+                "div.search-results-container:visible",
+                "div[role='main']:visible",
+            ):
                 try:
-                    controls = self.page.locator(selector)
-                    for i in range(controls.count()):
-                        c = controls.nth(i)
-                        try: text = c.inner_text(timeout=1000).strip()
-                        except Exception: text = ""
-                        try: aria = (c.get_attribute("aria-label") or "").strip()
-                        except Exception: aria = ""
-                        try: title = (c.get_attribute("title") or "").strip()
-                        except Exception: title = ""
-                        try: href = (c.get_attribute("href") or "").strip()
-                        except Exception: href = ""
-                        try:
-                            if c.is_disabled():
-                                continue
-                        except Exception:
-                            pass
-
-                        label = " ".join(x for x in (text, aria, title) if x).lower().strip()
-                        if label == "next" or "next page" in label or aria.lower() == "next":
-                            next_control = c
-                            control_info = (selector, text, aria, title, href)
-                            break
-                    if next_control is not None:
+                    candidate = self.page.locator(selector).first
+                    if candidate.count() and candidate.is_visible():
+                        search_area = candidate
+                        print("Using bounded employee search area:", selector)
                         break
                 except Exception as ex:
-                    print("Next-control inspection failed:", selector, repr(ex))
+                    print("Search-area inspection failed:", selector, repr(ex))
 
-            if next_control is None:
-                print("NEXT CONTROL NOT FOUND.")
-                return False
+            if search_area is None:
+                print("ERROR: No bounded LinkedIn employee search area found.")
+                return profiles
 
-            print("NEXT CONTROL FOUND")
-            print("Selector:", control_info[0])
-            print("Text:", control_info[1])
-            print("aria-label:", control_info[2])
-            print("title:", control_info[3])
-            print("href:", control_info[4])
+            def canonical_profile_url(href):
+                if not href:
+                    return ""
+                value = str(href).strip()
+                if value.startswith("/"):
+                    value = "https://www.linkedin.com" + value
+                value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+                return value.lower() if "/in/" in value.lower() else ""
+
+            def normalize_text(value):
+                if not value:
+                    return ""
+                value = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
+                return re.sub(r"\s+", " ", value).strip().lower()
+
+            requested_location_normalized = normalize_text(location)
+            location_tokens = [
+                t for t in re.findall(r"[a-z0-9]+", requested_location_normalized)
+                if len(t) >= 3
+            ]
+
             try:
-                print("outerHTML:", next_control.evaluate("(el) => el.outerHTML")[:2000])
-            except Exception:
-                pass
+                links = search_area.locator("a[href*='/in/']:visible")
+                total_links = links.count()
+            except Exception as ex:
+                print("Visible profile-link lookup failed:", repr(ex))
+                return profiles
 
-            print("Clicking Next...")
-            next_control.click()
+            print("Visible /in/ links available:", total_links)
+            if total_links == 0:
+                return profiles
 
-            last_url = before_url
-            for wait_ms in (250, 750, 1500, 3000, 5000, 8000):
-                self.page.wait_for_timeout(wait_ms if wait_ms == 250 else wait_ms - (250 if wait_ms > 250 else 0))
-                now = str(self.page.url or "").strip()
-                if now != last_url:
-                    print(f"URL after {wait_ms} ms:", now)
-                    last_url = now
+            best_by_url = {}
 
-                low = now.lower()
-                if "/ssr-login/" in low or "/authwall" in low or "/login" in low:
-                    print("=" * 60)
-                    print("NEXT NAVIGATION DIAGNOSIS: LINKEDIN REDIRECTED TO LOGIN/AUTHWALL.")
-                    print("Before Next:", before_url)
-                    print("After Next:", now)
-                    print("This is NOT counted as a successful next page.")
-                    print("=" * 60)
+            for index in range(total_links):
+                try:
+                    link = links.nth(index)
+                    profile_url = canonical_profile_url(link.get_attribute("href"))
+                    if not profile_url:
+                        continue
+
+                    raw_text = ""
+                    try:
+                        raw_text = link.inner_text(timeout=2000).strip()
+                    except Exception:
+                        pass
+
+                    # Prefer the nearest result-like ancestor when it contains
+                    # richer text than the anchor itself. This avoids selecting
+                    # nested mutual-connection links as separate employees.
+                    card_text = raw_text
+                    try:
+                        ancestor_text = link.evaluate("""
+                            (el) => {
+                                let node = el;
+                                for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
+                                    const tag = (node.tagName || '').toLowerCase();
+                                    const cls = (node.className || '').toString().toLowerCase();
+                                    if (
+                                        tag === 'li' ||
+                                        cls.includes('entity-result') ||
+                                        cls.includes('reusable-search__result') ||
+                                        cls.includes('search-result')
+                                    ) {
+                                        return node.innerText || '';
+                                    }
+                                }
+                                return '';
+                            }
+                        """)
+                        if ancestor_text and len(str(ancestor_text).strip()) > len(raw_text):
+                            card_text = str(ancestor_text).strip()
+                    except Exception:
+                        pass
+
+                    text = normalize_text(card_text)
+                    if not text:
+                        continue
+
+                    location_match = False
+                    if requested_location_normalized:
+                        location_match = requested_location_normalized in text
+                        if not location_match and location_tokens:
+                            location_match = all(token in text for token in location_tokens)
+
+                        if not location_match:
+                            print("SKIP outside requested location:", profile_url,
+                                  "| requested:", location, "| text:", card_text[:400])
+                            continue
+
+                    # Score ONLY to select the richest duplicate representation.
+                    # Connection degree (1st/2nd/3rd) is deliberately ignored.
+                    score = min(len(text), 300) // 10
+                    if requested_location_normalized in text:
+                        score += 100
+                    if "connect" in text:
+                        score += 10
+                    if "message" in text:
+                        score += 10
+                    if "follow" in text:
+                        score += 5
+
+                    candidate = {
+                        "url": profile_url,
+                        "text": card_text.replace("\n", " ").strip(),
+                        "score": score,
+                        "dom_index": index,
+                    }
+
+                    old = best_by_url.get(profile_url)
+                    if old is None or score > old["score"]:
+                        best_by_url[profile_url] = candidate
+
+                    print("-" * 60)
+                    print("PROFILE LINK:", index + 1)
+                    print("URL:", profile_url)
+                    print("Text:", candidate["text"][:500])
+                    print("Score:", score)
+                    print("Connection degree is NOT used as a filter.")
+
+                except Exception as ex:
+                    print("Profile-link inspection failed:", repr(ex))
+
+            ranked = sorted(best_by_url.values(), key=lambda x: x["dom_index"])
+
+            print("=" * 60)
+            print("UNIQUE LOCATION-MATCHING PROFILE URLs:", len(ranked))
+            print("=" * 60)
+
+            for item in ranked:
+                profiles.append({
+                    "full_name": item["text"],
+                    "profile_url": item["url"],
+                    "company": company,
+                    "location": location,
+                    "search_result_text": item["text"],
+                })
+                print("EMPLOYEE CANDIDATE:", item["url"], "|", item["text"][:300])
+
+            print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
+            return profiles
+
+    def next_page(self):
+            """Click Next and only report success if the same company people-search remains active."""
+            try:
+                before_url = str(self.page.url or "").strip()
+                qs = parse_qs(urlparse(before_url).query)
+                company_ids = qs.get("currentCompany", []) or qs.get("currentcompany", [])
+
+                print("=" * 60)
+                print("PAGINATION DIAGNOSTICS")
+                print("Current URL:", before_url)
+                print("Current company ID:", company_ids)
+                print("=" * 60)
+
+                if "/search/results/people/" not in before_url.lower():
+                    print("NEXT ABORTED - not on people search.")
                     return False
 
-                if "/search/results/people/" not in low:
-                    continue
-
-                new_qs = parse_qs(urlparse(now).query)
-                new_company_ids = new_qs.get("currentCompany", []) or new_qs.get("currentcompany", [])
-                same_company = (not company_ids) or any(
-                    str(x) in [str(y) for y in company_ids] for x in new_company_ids
-                )
-                if not same_company:
-                    print("NEXT REJECTED - company scope changed.")
-                    print("Expected:", company_ids, "Actual:", new_company_ids)
-                    return False
-
-                if now != before_url:
-                    print("NEXT PAGE VALIDATED - same company people-search URL changed.")
-                    return True
-
-                after_profiles = set()
+                before_profiles = set()
                 try:
                     links = self.page.locator("a[href*='/in/']:visible")
                     for i in range(min(links.count(), 200)):
                         href = links.nth(i).get_attribute("href")
                         if href and "/in/" in href.lower():
-                            after_profiles.add(
+                            before_profiles.add(
                                 str(href).split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
                             )
+                except Exception as ex:
+                    print("Pre-next profile snapshot failed:", repr(ex))
+
+                next_control = None
+                control_info = None
+
+                selectors = [
+                    "nav[aria-label*='Pagination' i] button:visible",
+                    "nav[aria-label*='Pagination' i] a:visible",
+                    "div.artdeco-pagination button:visible",
+                    "div.artdeco-pagination a:visible",
+                    "button:visible",
+                    "[role='button']:visible",
+                    "a:visible",
+                ]
+
+                for selector in selectors:
+                    try:
+                        controls = self.page.locator(selector)
+                        for i in range(controls.count()):
+                            c = controls.nth(i)
+                            try: text = c.inner_text(timeout=1000).strip()
+                            except Exception: text = ""
+                            try: aria = (c.get_attribute("aria-label") or "").strip()
+                            except Exception: aria = ""
+                            try: title = (c.get_attribute("title") or "").strip()
+                            except Exception: title = ""
+                            try: href = (c.get_attribute("href") or "").strip()
+                            except Exception: href = ""
+                            try:
+                                if c.is_disabled():
+                                    continue
+                            except Exception:
+                                pass
+
+                            label = " ".join(x for x in (text, aria, title) if x).lower().strip()
+                            if label == "next" or "next page" in label or aria.lower() == "next":
+                                next_control = c
+                                control_info = (selector, text, aria, title, href)
+                                break
+                        if next_control is not None:
+                            break
+                    except Exception as ex:
+                        print("Next-control inspection failed:", selector, repr(ex))
+
+                if next_control is None:
+                    print("NEXT CONTROL NOT FOUND.")
+                    return False
+
+                print("NEXT CONTROL FOUND")
+                print("Selector:", control_info[0])
+                print("Text:", control_info[1])
+                print("aria-label:", control_info[2])
+                print("title:", control_info[3])
+                print("href:", control_info[4])
+                try:
+                    print("outerHTML:", next_control.evaluate("(el) => el.outerHTML")[:2000])
                 except Exception:
                     pass
 
-                if after_profiles and after_profiles != before_profiles:
-                    print("NEXT PAGE VALIDATED - result set changed in-place.")
-                    return True
+                print("Clicking Next...")
+                next_control.click()
 
-            print("NEXT CLICK DID NOT PRODUCE A VALIDATED NEXT PAGE.")
-            return False
+                last_url = before_url
+                for wait_ms in (250, 750, 1500, 3000, 5000, 8000):
+                    self.page.wait_for_timeout(wait_ms if wait_ms == 250 else wait_ms - (250 if wait_ms > 250 else 0))
+                    now = str(self.page.url or "").strip()
+                    if now != last_url:
+                        print(f"URL after {wait_ms} ms:", now)
+                        last_url = now
 
-        except Exception as ex:
-            print("Next page failed:", repr(ex))
-            return False
+                    low = now.lower()
+                    if "/ssr-login/" in low or "/authwall" in low or "/login" in low:
+                        print("=" * 60)
+                        print("NEXT NAVIGATION DIAGNOSIS: LINKEDIN REDIRECTED TO LOGIN/AUTHWALL.")
+                        print("Before Next:", before_url)
+                        print("After Next:", now)
+                        print("This is NOT counted as a successful next page.")
+                        print("=" * 60)
+                        return False
+
+                    if "/search/results/people/" not in low:
+                        continue
+
+                    new_qs = parse_qs(urlparse(now).query)
+                    new_company_ids = new_qs.get("currentCompany", []) or new_qs.get("currentcompany", [])
+                    same_company = (not company_ids) or any(
+                        str(x) in [str(y) for y in company_ids] for x in new_company_ids
+                    )
+                    if not same_company:
+                        print("NEXT REJECTED - company scope changed.")
+                        print("Expected:", company_ids, "Actual:", new_company_ids)
+                        return False
+
+                    if now != before_url:
+                        print("NEXT PAGE VALIDATED - same company people-search URL changed.")
+                        return True
+
+                    after_profiles = set()
+                    try:
+                        links = self.page.locator("a[href*='/in/']:visible")
+                        for i in range(min(links.count(), 200)):
+                            href = links.nth(i).get_attribute("href")
+                            if href and "/in/" in href.lower():
+                                after_profiles.add(
+                                    str(href).split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
+                                )
+                    except Exception:
+                        pass
+
+                    if after_profiles and after_profiles != before_profiles:
+                        print("NEXT PAGE VALIDATED - result set changed in-place.")
+                        return True
+
+                print("NEXT CLICK DID NOT PRODUCE A VALIDATED NEXT PAGE.")
+                return False
+
+            except Exception as ex:
+                print("Next page failed:", repr(ex))
+                return False
 
