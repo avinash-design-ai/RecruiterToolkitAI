@@ -900,176 +900,283 @@ class CompanyPage(BasePage):
         return True
 
     def get_profiles(self, company="", location=""):
-            """Extract location-matching employee /in/ links without connection-degree filtering."""
-            print("=" * 60)
-            print("EXTRACTING EMPLOYEE PROFILES")
-            print("=" * 60)
-            print("Requested company:", company)
-            print("Requested location:", location)
+        """
+        Extract actual employee result-card profile links.
 
-            profiles = []
-            search_area = None
+        IMPORTANT:
+        - Connection degree (1st/2nd/3rd) is NEVER an eligibility criterion.
+        - We do not treat every nested /in/ link as an employee. LinkedIn result
+          cards contain /in/ links for mutual connections as well.
+        - Location is enforced from the rendered result-card text.
+        - The existing company-search, employee-search, profile-opening and
+          pagination flow is intentionally left untouched.
+        """
+        print("=" * 60)
+        print("EXTRACTING EMPLOYEE PROFILES")
+        print("=" * 60)
+        print("Requested company:", company)
+        print("Requested location:", location)
 
-            for selector in (
-                "main:visible",
-                "div.scaffold-finite-scroll__content:visible",
-                "div.search-results-container:visible",
-                "div[role='main']:visible",
-            ):
-                try:
-                    candidate = self.page.locator(selector).first
-                    if candidate.count() and candidate.is_visible():
-                        search_area = candidate
-                        print("Using bounded employee search area:", selector)
-                        break
-                except Exception as ex:
-                    print("Search-area inspection failed:", selector, repr(ex))
+        profiles = []
 
-            if search_area is None:
-                print("ERROR: No bounded LinkedIn employee search area found.")
-                return profiles
+        def normalize_text(value):
+            if not value:
+                return ""
+            value = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
+            return re.sub(r"\s+", " ", value).strip().lower()
 
-            def canonical_profile_url(href):
-                if not href:
-                    return ""
-                value = str(href).strip()
-                if value.startswith("/"):
-                    value = "https://www.linkedin.com" + value
-                value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-                return value.lower() if "/in/" in value.lower() else ""
+        def canonical_profile_url(href):
+            if not href:
+                return ""
+            value = str(href).strip()
+            if value.startswith("/"):
+                value = "https://www.linkedin.com" + value
+            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            if "/in/" not in value.lower():
+                return ""
+            return value.lower()
 
-            def normalize_text(value):
-                if not value:
-                    return ""
-                value = str(value).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
-                return re.sub(r"\s+", " ", value).strip().lower()
+        requested_location = normalize_text(location)
+        location_tokens = [
+            token for token in re.findall(r"[a-z0-9]+", requested_location)
+            if len(token) >= 3
+        ]
 
-            requested_location_normalized = normalize_text(location)
-            location_tokens = [
-                t for t in re.findall(r"[a-z0-9]+", requested_location_normalized)
-                if len(t) >= 3
-            ]
+        # Give LinkedIn a short moment to finish replacing the result DOM after
+        # pagination. This is only a DOM-readiness wait; it does not navigate.
+        try:
+            self.page.wait_for_timeout(1000)
+        except Exception:
+            pass
 
+        # Prefer the known search-result containers, but do NOT fail the whole
+        # extraction if LinkedIn changes/omits the outer <main> on a later page.
+        search_area = None
+        for selector in (
+            "main:visible",
+            "div.scaffold-finite-scroll__content:visible",
+            "div.search-results-container:visible",
+            "div[role='main']:visible",
+        ):
             try:
-                links = search_area.locator("a[href*='/in/']:visible")
-                total_links = links.count()
+                candidate = self.page.locator(selector).first
+                if candidate.count() and candidate.is_visible():
+                    search_area = candidate
+                    print("Using bounded employee search area:", selector)
+                    break
             except Exception as ex:
-                print("Visible profile-link lookup failed:", repr(ex))
-                return profiles
+                print("Search-area inspection failed:", selector, repr(ex))
 
-            print("Visible /in/ links available:", total_links)
-            if total_links == 0:
-                return profiles
+        if search_area is None:
+            print("WARNING: No bounded employee search area found.")
+            print("Falling back to visible LinkedIn /in/ links on the current page.")
+            link_scope = self.page
+        else:
+            link_scope = search_area
 
-            best_by_url = {}
-
-            for index in range(total_links):
-                try:
-                    link = links.nth(index)
-                    profile_url = canonical_profile_url(link.get_attribute("href"))
-                    if not profile_url:
-                        continue
-
-                    raw_text = ""
-                    try:
-                        raw_text = link.inner_text(timeout=2000).strip()
-                    except Exception:
-                        pass
-
-                    # Prefer the nearest result-like ancestor when it contains
-                    # richer text than the anchor itself. This avoids selecting
-                    # nested mutual-connection links as separate employees.
-                    card_text = raw_text
-                    try:
-                        ancestor_text = link.evaluate("""
-                            (el) => {
-                                let node = el;
-                                for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
-                                    const tag = (node.tagName || '').toLowerCase();
-                                    const cls = (node.className || '').toString().toLowerCase();
-                                    if (
-                                        tag === 'li' ||
-                                        cls.includes('entity-result') ||
-                                        cls.includes('reusable-search__result') ||
-                                        cls.includes('search-result')
-                                    ) {
-                                        return node.innerText || '';
-                                    }
-                                }
-                                return '';
-                            }
-                        """)
-                        if ancestor_text and len(str(ancestor_text).strip()) > len(raw_text):
-                            card_text = str(ancestor_text).strip()
-                    except Exception:
-                        pass
-
-                    text = normalize_text(card_text)
-                    if not text:
-                        continue
-
-                    location_match = False
-                    if requested_location_normalized:
-                        location_match = requested_location_normalized in text
-                        if not location_match and location_tokens:
-                            location_match = all(token in text for token in location_tokens)
-
-                        if not location_match:
-                            print("SKIP outside requested location:", profile_url,
-                                  "| requested:", location, "| text:", card_text[:400])
-                            continue
-
-                    # Score ONLY to select the richest duplicate representation.
-                    # Connection degree (1st/2nd/3rd) is deliberately ignored.
-                    score = min(len(text), 300) // 10
-                    if requested_location_normalized in text:
-                        score += 100
-                    if "connect" in text:
-                        score += 10
-                    if "message" in text:
-                        score += 10
-                    if "follow" in text:
-                        score += 5
-
-                    candidate = {
-                        "url": profile_url,
-                        "text": card_text.replace("\n", " ").strip(),
-                        "score": score,
-                        "dom_index": index,
-                    }
-
-                    old = best_by_url.get(profile_url)
-                    if old is None or score > old["score"]:
-                        best_by_url[profile_url] = candidate
-
-                    print("-" * 60)
-                    print("PROFILE LINK:", index + 1)
-                    print("URL:", profile_url)
-                    print("Text:", candidate["text"][:500])
-                    print("Score:", score)
-                    print("Connection degree is NOT used as a filter.")
-
-                except Exception as ex:
-                    print("Profile-link inspection failed:", repr(ex))
-
-            ranked = sorted(best_by_url.values(), key=lambda x: x["dom_index"])
-
-            print("=" * 60)
-            print("UNIQUE LOCATION-MATCHING PROFILE URLs:", len(ranked))
-            print("=" * 60)
-
-            for item in ranked:
-                profiles.append({
-                    "full_name": item["text"],
-                    "profile_url": item["url"],
-                    "company": company,
-                    "location": location,
-                    "search_result_text": item["text"],
-                })
-                print("EMPLOYEE CANDIDATE:", item["url"], "|", item["text"][:300])
-
-            print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
+        try:
+            links = link_scope.locator("a[href*='/in/']:visible")
+            total_links = links.count()
+        except Exception as ex:
+            print("Visible profile-link lookup failed:", repr(ex))
             return profiles
+
+        print("Visible /in/ links available:", total_links)
+
+        if total_links == 0:
+            print("No visible /in/ links found.")
+            return profiles
+
+        # Build candidate records around actual LinkedIn result cards.
+        # Each card is identified by a nearby <li> or LinkedIn result-container
+        # class. Mutual-connection /in/ links inside the same card are NOT
+        # independently returned.
+        cards = {}
+        fallback = []
+
+        for index in range(total_links):
+            try:
+                link = links.nth(index)
+                href = canonical_profile_url(link.get_attribute("href"))
+                if not href:
+                    continue
+
+                raw_anchor_text = ""
+                try:
+                    raw_anchor_text = link.inner_text(timeout=2000).strip()
+                except Exception:
+                    pass
+
+                info = link.evaluate("""
+                    (el) => {
+                        function isResultContainer(node) {
+                            if (!node) return false;
+                            const tag = (node.tagName || '').toLowerCase();
+                            const cls = (node.className || '').toString().toLowerCase();
+                            return (
+                                tag === 'li' ||
+                                cls.includes('entity-result') ||
+                                cls.includes('reusable-search__result') ||
+                                cls.includes('search-result') ||
+                                cls.includes('search-results__result')
+                            );
+                        }
+
+                        let node = el;
+                        let container = null;
+
+                        for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
+                            if (isResultContainer(node)) {
+                                container = node;
+                                break;
+                            }
+                        }
+
+                        if (!container) {
+                            return {
+                                has_container: false,
+                                container_key: '',
+                                container_text: el.innerText || '',
+                                anchor_index: -1
+                            };
+                        }
+
+                        const anchors = Array.from(
+                            container.querySelectorAll("a[href*='/in/']")
+                        ).filter(a => {
+                            const r = a.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        });
+
+                        const anchorIndex = anchors.indexOf(el);
+
+                        // Use the DOM identity of the container where available.
+                        // Falling back to its position/text is only for grouping.
+                        const key =
+                            container.getAttribute('data-chameleon-result-urn') ||
+                            container.getAttribute('data-view-name') ||
+                            container.getAttribute('data-id') ||
+                            ('container:' + Array.from(document.querySelectorAll('li, div')).indexOf(container));
+
+                        return {
+                            has_container: true,
+                            container_key: key,
+                            container_text: container.innerText || '',
+                            anchor_index: anchorIndex
+                        };
+                    }
+                """)
+
+                card_text = str(info.get("container_text") or raw_anchor_text).strip()
+                normalized_card_text = normalize_text(card_text)
+
+                # Location is the primary hard filter. Connection degree is
+                # intentionally not inspected at all.
+                location_match = False
+                if requested_location:
+                    location_match = requested_location in normalized_card_text
+                    if not location_match and location_tokens:
+                        location_match = all(
+                            token in normalized_card_text for token in location_tokens
+                        )
+
+                if not location_match:
+                    print(
+                        "SKIP outside requested location:",
+                        href,
+                        "| requested:",
+                        location,
+                        "| text:",
+                        card_text[:300],
+                    )
+                    continue
+
+                has_container = bool(info.get("has_container"))
+                container_key = str(info.get("container_key") or "")
+
+                record = {
+                    "url": href,
+                    "anchor_text": raw_anchor_text,
+                    "card_text": card_text,
+                    "anchor_index": int(info.get("anchor_index", -1)),
+                    "dom_index": index,
+                }
+
+                if has_container and container_key:
+                    existing = cards.get(container_key)
+
+                    # The first profile anchor in a result card is normally the
+                    # employee's primary name link. Nested mutual-connection
+                    # links occur later in the same card. Prefer the earliest
+                    # /in/ anchor, while retaining the richest card text.
+                    if existing is None or record["anchor_index"] < existing["anchor_index"]:
+                        cards[container_key] = record
+                else:
+                    fallback.append(record)
+
+            except Exception as ex:
+                print("Profile-card inspection failed:", repr(ex))
+
+        # If result containers were detected, use exactly one primary profile
+        # per card. This is the critical distinction between employees and
+        # nested mutual connections.
+        selected = list(cards.values())
+
+        # For unusual LinkedIn DOM variants where no result container can be
+        # identified, use a conservative fallback: only links whose immediate
+        # ancestor context itself contains the requested location, and dedupe.
+        if not selected:
+            print("No recognizable result-card containers found.")
+            print("Using conservative location-matched fallback candidates.")
+            seen = set()
+
+            for record in fallback:
+                url = record["url"]
+                if url in seen:
+                    continue
+
+                # A bare name-only anchor is not safe as an employee candidate.
+                # Require meaningful surrounding card text.
+                text = normalize_text(record["card_text"])
+                if len(text) < 40:
+                    continue
+
+                seen.add(url)
+                selected.append(record)
+
+        # Keep DOM order, dedupe by canonical URL, and do not rank by degree.
+        unique = []
+        seen_urls = set()
+
+        for record in sorted(selected, key=lambda item: item["dom_index"]):
+            url = record["url"]
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            unique.append(record)
+
+        print("=" * 60)
+        print("UNIQUE LOCATION-MATCHING EMPLOYEE CARDS:", len(unique))
+        print("=" * 60)
+
+        for record in unique:
+            # Keep the existing output shape used by SearchWorkflowV2.
+            profiles.append({
+                "full_name": record["anchor_text"] or record["card_text"],
+                "profile_url": record["url"],
+                "company": company,
+                "location": location,
+                "search_result_text": record["card_text"],
+            })
+
+            print("-" * 60)
+            print("EMPLOYEE CANDIDATE:", record["url"])
+            print("Primary anchor text:", record["anchor_text"][:200])
+            print("Result card text:", record["card_text"][:500])
+            print("Connection degree: IGNORED")
+
+        print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
+        return profiles
 
     def next_page(self):
             """Click Next and only report success if the same company people-search remains active."""
