@@ -1015,442 +1015,288 @@ class CompanyPage(BasePage):
         )
 
         # ------------------------------------------------------------
-        # LOCATION AUTOCOMPLETE SELECTION - V7
+        # LOCATION AUTOCOMPLETE SELECTION - V8
         #
-        # LinkedIn's typeahead is inconsistent about ARIA attributes.
-        # The previous V5 implementation relied on elementsFromPoint()
-        # hit-testing and therefore missed the rendered suggestion in CI.
+        # LinkedIn's location typeahead can render without role=option or
+        # aria-activedescendant in CI. V7 therefore has nothing to click.
         #
-        # V7:
-        #   1. Retrigger the typeahead with real keyboard events.
-        #   2. Poll instead of waiting a fixed 2.5 seconds.
-        #   3. Inspect ALL visible rendered elements, not just hit-test
-        #      samples.
-        #   4. Accept only an exact/country-qualified location match.
-        #   5. Restrict candidates to the area below the real input.
-        #   6. Never press Enter unless an actual valid option is exposed.
+        # V8 captures LinkedIn's own XHR/fetch responses while typing,
+        # extracts the location geo id, and applies geoUrn to the existing
+        # company-scoped people-search URL. currentCompany is preserved.
+        # No blind Enter and no page-wide text click.
         # ------------------------------------------------------------
 
         requested_location = str(location).strip()
         expected_location = f"{requested_location}, United States"
 
-        print(
-            "Selecting LinkedIn location option:",
-            expected_location
-        )
+        print("Selecting LinkedIn location option:", expected_location)
 
         location_selected = False
+        location_geo_id = None
+        captured_typeahead = []
 
-        def normalize_location_text(value):
-            return re.sub(
-                r"\s+",
-                " ",
-                str(value or "")
-            ).strip().lower()
+        def _find_geo_ids(value):
+            found = []
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    key_lower = str(key).lower()
+                    if isinstance(item, str):
+                        raw = item.strip()
+                        if "geo:" in raw.lower():
+                            tail = raw.rsplit(":", 1)[-1]
+                            if tail.isdigit():
+                                found.append(tail)
+                        if key_lower in {
+                            "geoid", "geo_id", "geo_urn", "geourn",
+                            "locationid", "location_id"
+                        } and raw.isdigit():
+                            found.append(raw)
+                    found.extend(_find_geo_ids(item))
+            elif isinstance(value, list):
+                for item in value:
+                    found.extend(_find_geo_ids(item))
+            return found
 
-        requested_norm = normalize_location_text(
-            requested_location
-        )
+        def _capture_typeahead_response(response):
+            try:
+                if "linkedin.com" not in response.url.lower():
+                    return
 
-        expected_norm = normalize_location_text(
-            expected_location
-        )
+                try:
+                    resource_type = response.request.resource_type
+                    if resource_type not in {"xhr", "fetch"}:
+                        return
+                except Exception:
+                    pass
 
-        def matches_location(value):
-            normalized = normalize_location_text(value)
-
-            if not normalized:
-                return False
-
-            return (
-                normalized == expected_norm
-                or (
-                    normalized.startswith(requested_norm)
-                    and "united states" in normalized
-                    and len(normalized) <= 180
+                content_type = (
+                    response.headers.get("content-type", "").lower()
                 )
-            )
+                if (
+                    "json" not in content_type
+                    and "javascript" not in content_type
+                    and "text" not in content_type
+                ):
+                    return
+
+                body_text = response.text()
+                if not body_text:
+                    return
+
+                body_lower = body_text.lower()
+                if (
+                    requested_location.lower() not in body_lower
+                    and "fsd_geo" not in body_lower
+                    and "geo_id" not in body_lower
+                    and "geoid" not in body_lower
+                    and "geo_urn" not in body_lower
+                ):
+                    return
+
+                captured_typeahead.append(
+                    (response.url, body_text[:150000])
+                )
+                print(
+                    "[LOCATION V8] Captured LinkedIn response:",
+                    response.url[:500]
+                )
+            except Exception:
+                pass
+
+        try:
+            self.page.on("response", _capture_typeahead_response)
+        except Exception as ex:
+            print("[LOCATION V8] Response listener setup failed:", repr(ex))
 
         try:
             location_inputs = self.page.locator(
                 "input[placeholder='Add a location']:visible"
             )
+            input_count = location_inputs.count()
+            print("[LOCATION V8] Visible Add a location inputs:", input_count)
 
-            if location_inputs.count() == 0:
-                print(
-                    "[LOCATION ERROR] Add a location input disappeared."
+            if input_count:
+                location_box = location_inputs.last
+                location_box.click(timeout=10000)
+                location_box.press("Control+A")
+                location_box.press("Backspace")
+                location_box.press_sequentially(
+                    requested_location,
+                    delay=180
                 )
-                return False
+                print("[LOCATION V8] Typed location:", requested_location)
 
-            location_input = location_inputs.last
-
-            location_input.scroll_into_view_if_needed(
-                timeout=5000
-            )
-
-            location_input.click(
-                timeout=5000
-            )
-
-            # Retrigger React's typeahead using keyboard input.
-            location_input.press(
-                "Control+A"
-            )
-
-            location_input.press_sequentially(
-                requested_location,
-                delay=120
-            )
-
-            print(
-                "Autocomplete input confirmed."
-            )
-
-            print(
-                "Autocomplete input aria-controls:",
-                location_input.get_attribute(
-                    "aria-controls"
-                )
-            )
-
-            print(
-                "Autocomplete input aria-owns:",
-                location_input.get_attribute(
-                    "aria-owns"
-                )
-            )
-
+                for _ in range(30):
+                    self.page.wait_for_timeout(500)
+                    if captured_typeahead:
+                        print(
+                            "[LOCATION V8] Typeahead response count:",
+                            len(captured_typeahead)
+                        )
+                        break
+            else:
+                print("[LOCATION V8] Location input disappeared.")
         except Exception as ex:
-            print(
-                "[LOCATION ERROR] Could not retrigger location autocomplete:",
-                repr(ex)
-            )
-            return False
+            print("[LOCATION V8] Typing failed:", repr(ex))
+
+        for response_url, body_text in reversed(captured_typeahead):
+            try:
+                import json
+                parsed = json.loads(body_text)
+                geo_ids = _find_geo_ids(parsed)
+                if geo_ids:
+                    location_geo_id = geo_ids[0]
+                    print(
+                        "[LOCATION V8] Extracted LinkedIn geo id:",
+                        location_geo_id
+                    )
+                    break
+            except Exception:
+                pass
+
+        if not location_geo_id:
+            import re
+            for response_url, body_text in reversed(captured_typeahead):
+                for pattern in (
+                    r"urn:li:(?:fsd_)?geo:(\d+)",
+                    r'"(?:geoId|geo_id|geoid|locationId|location_id)"\s*:\s*"?([0-9]+)"?',
+                ):
+                    match = re.search(
+                        pattern,
+                        body_text,
+                        flags=re.IGNORECASE
+                    )
+                    if match:
+                        location_geo_id = match.group(1)
+                        print(
+                            "[LOCATION V8] Extracted geo id via regex:",
+                            location_geo_id
+                        )
+                        break
+                if location_geo_id:
+                    break
 
         try:
-            input_box = location_input.bounding_box()
-        except Exception:
-            input_box = None
-
-        print(
-            "Location input bounding box:",
-            input_box
-        )
-
-        if not input_box:
-            print(
-                "[LOCATION ERROR] Location input has no bounding box."
+            self.page.remove_listener(
+                "response",
+                _capture_typeahead_response
             )
+        except Exception:
+            pass
+
+        if location_geo_id:
+            try:
+                from urllib.parse import (
+                    parse_qs, urlencode, urlsplit, urlunsplit
+                )
+
+                current_url = self.page.url
+                parts = urlsplit(current_url)
+                query = parse_qs(parts.query, keep_blank_values=True)
+                query["geoUrn"] = [f'["{location_geo_id}"]']
+
+                filtered_url = urlunsplit(
+                    (
+                        parts.scheme,
+                        parts.netloc,
+                        parts.path,
+                        urlencode(query, doseq=True),
+                        parts.fragment,
+                    )
+                )
+
+                print("[LOCATION V8] Applying company-scoped geoUrn URL:")
+                print(filtered_url)
+
+                self.page.goto(
+                    filtered_url,
+                    wait_until="domcontentloaded",
+                    timeout=30000
+                )
+                self.page.wait_for_timeout(3000)
+
+                after_url = self.page.url
+                after_lower = after_url.lower()
+                print("[LOCATION V8] URL after geo filter:", after_url)
+
+                if (
+                    "/search/results/people/" in after_lower
+                    and "currentcompany=" in after_lower
+                    and "geourn=" in after_lower
+                ):
+                    location_selected = True
+                    print(
+                        "[LOCATION V8] Location filter applied through geoUrn."
+                    )
+                else:
+                    print(
+                        "[LOCATION V8] Geo URL safety validation failed."
+                    )
+            except Exception as ex:
+                print("[LOCATION V8] Failed to apply geoUrn:", repr(ex))
+
+        if not location_selected:
+            print(
+                "ERROR: Could not determine/apply the LinkedIn location filter."
+            )
+            print("Requested location:", requested_location)
+            print("Expected LinkedIn location:", expected_location)
+
+            try:
+                location_inputs = self.page.locator(
+                    "input[placeholder='Add a location']:visible"
+                )
+                if location_inputs.count():
+                    print(
+                        "Final input value:",
+                        location_inputs.last.input_value()
+                    )
+                    print(
+                        "Final aria-activedescendant:",
+                        location_inputs.last.get_attribute(
+                            "aria-activedescendant"
+                        )
+                    )
+                    print(
+                        "Final aria-expanded:",
+                        location_inputs.last.get_attribute("aria-expanded")
+                    )
+            except Exception:
+                pass
+
+            try:
+                self.page.screenshot(
+                    path="location_autocomplete_failure_v8.png",
+                    full_page=False
+                )
+                print(
+                    "[LOCATION V8] Saved location_autocomplete_failure_v8.png"
+                )
+            except Exception:
+                pass
+
             return False
 
-        # Poll for up to 12 seconds.
-        for attempt in range(1, 25):
+        print("Location suggestion selected successfully.")
 
-            if location_selected:
-                break
+        after_selection_url = self.page.url
+        after_selection_lower = after_selection_url.lower()
 
-            self.page.wait_for_timeout(
-                500
-            )
+        if "/in/" in after_selection_lower:
+            print("[LOCATION ERROR] Location selection opened a profile.")
+            return False
 
-            # --------------------------------------------------------
-            # METHOD 1: active descendant when LinkedIn exposes it.
-            # --------------------------------------------------------
-            try:
-                active_id = location_input.get_attribute(
-                    "aria-activedescendant"
-                )
+        if "/search/results/people/" not in after_selection_lower:
+            print("[LOCATION ERROR] Location selection left people-search.")
+            return False
 
-                if active_id:
-                    active = self.page.locator(
-                        f"#{active_id}"
-                    )
+        if "currentcompany=" not in after_selection_lower:
+            print("[LOCATION ERROR] currentCompany disappeared.")
+            return False
 
-                    if (
-                        active.count() > 0
-                        and active.is_visible()
-                    ):
-                        active_text = (
-                            active.inner_text(
-                                timeout=1000
-                            ).strip()
-                        )
-
-                        print(
-                            "Active autocomplete candidate:",
-                            repr(active_text)
-                        )
-
-                        if matches_location(
-                            active_text
-                        ):
-                            active.click(
-                                timeout=5000
-                            )
-
-                            location_selected = True
-
-                            print(
-                                "Location selected through active descendant."
-                            )
-
-                            break
-
-            except Exception as ex:
-                print(
-                    "Active-descendant lookup failed:",
-                    repr(ex)
-                )
-
-            # --------------------------------------------------------
-            # METHOD 2: rendered DOM scan.
-            #
-            # This is the important V7 change. V5 sampled
-            # document.elementsFromPoint(), which returned zero.
-            # V7 scans visible elements and then applies strict
-            # geometry/text validation.
-            # --------------------------------------------------------
-            try:
-                candidates = self.page.evaluate(
-                    """({box, requested, expected}) => {
-                        const norm = v =>
-                            String(v || "")
-                                .replace(/\\s+/g, " ")
-                                .trim()
-                                .toLowerCase();
-
-                        const req = norm(requested);
-                        const exp = norm(expected);
-
-                        const visible = el => {
-                            if (!el) return false;
-
-                            const s = getComputedStyle(el);
-                            const r = el.getBoundingClientRect();
-
-                            return (
-                                s.display !== "none" &&
-                                s.visibility !== "hidden" &&
-                                s.opacity !== "0" &&
-                                r.width > 0 &&
-                                r.height > 0
-                            );
-                        };
-
-                        const getText = el =>
-                            String(
-                                el.innerText ||
-                                el.textContent ||
-                                ""
-                            )
-                            .replace(/\\s+/g, " ")
-                            .trim();
-
-                        const matches = el => {
-                            const t = norm(getText(el));
-
-                            return (
-                                t === exp ||
-                                (
-                                    t.startsWith(req) &&
-                                    t.includes("united states") &&
-                                    t.length <= 180
-                                )
-                            );
-                        };
-
-                        const left = box.x - 150;
-                        const right = box.x + box.width + 150;
-                        const top = box.y + box.height;
-                        const bottom = top + 500;
-
-                        const found = [];
-                        const seen = new Set();
-
-                        for (const el of document.querySelectorAll("*")) {
-                            if (!visible(el) || !matches(el)) {
-                                continue;
-                            }
-
-                            const r = el.getBoundingClientRect();
-
-                            if (
-                                r.right < left ||
-                                r.left > right ||
-                                r.bottom < top ||
-                                r.top > bottom
-                            ) {
-                                continue;
-                            }
-
-                            // Prefer the smallest matching rendered node.
-                            let smallerMatch = false;
-
-                            for (const child of el.children) {
-                                if (
-                                    visible(child) &&
-                                    matches(child)
-                                ) {
-                                    smallerMatch = true;
-                                    break;
-                                }
-                            }
-
-                            if (smallerMatch || seen.has(el)) {
-                                continue;
-                            }
-
-                            seen.add(el);
-
-                            found.push({
-                                text: getText(el),
-                                x: r.x,
-                                y: r.y,
-                                w: r.width,
-                                h: r.height,
-                                cx: r.x + r.width / 2,
-                                cy: r.y + r.height / 2,
-                                tag: el.tagName,
-                                role: el.getAttribute("role"),
-                                testid: el.getAttribute("data-testid"),
-                                aria: el.getAttribute("aria-label")
-                            });
-                        }
-
-                        found.sort(
-                            (a, b) =>
-                                (a.y - b.y) ||
-                                (a.x - b.x)
-                        );
-
-                        return found.slice(0, 10);
-                    }""",
-                    {
-                        "box": input_box,
-                        "requested": requested_location,
-                        "expected": expected_location
-                    }
-                )
-
-                if candidates:
-                    print(
-                        "Rendered autocomplete candidates:",
-                        len(candidates)
-                    )
-
-                    for candidate in candidates:
-                        print(
-                            "Autocomplete candidate:",
-                            repr(candidate["text"]),
-                            "tag=",
-                            candidate["tag"],
-                            "role=",
-                            candidate["role"],
-                            "testid=",
-                            candidate["testid"],
-                            "box=",
-                            (
-                                candidate["x"],
-                                candidate["y"],
-                                candidate["w"],
-                                candidate["h"]
-                            )
-                        )
-
-                    # Click the first strictly validated candidate.
-                    candidate = candidates[0]
-
-                    self.page.mouse.click(
-                        candidate["cx"],
-                        candidate["cy"]
-                    )
-
-                    self.page.wait_for_timeout(
-                        1000
-                    )
-
-                    current_url = self.page.url.lower()
-
-                    if (
-                        "/search/results/people/" in current_url
-                        and "currentcompany=" in current_url
-                        and "/in/" not in current_url
-                    ):
-                        location_selected = True
-
-                        print(
-                            "Location selected through bounded rendered candidate."
-                        )
-
-                        break
-
-            except Exception as ex:
-                print(
-                    "Rendered DOM autocomplete inspection failed:",
-                    repr(ex)
-                )
-
-            # --------------------------------------------------------
-            # METHOD 3: ArrowDown trigger only.
-            # Never press Enter blindly.
-            # --------------------------------------------------------
-            try:
-                location_input.click(
-                    timeout=3000
-                )
-
-                self.page.keyboard.press(
-                    "ArrowDown"
-                )
-
-                self.page.wait_for_timeout(
-                    400
-                )
-
-                active_id = location_input.get_attribute(
-                    "aria-activedescendant"
-                )
-
-                print(
-                    "Keyboard trigger active descendant:",
-                    active_id
-                )
-
-                if active_id:
-                    active = self.page.locator(
-                        f"#{active_id}"
-                    )
-
-                    if (
-                        active.count() > 0
-                        and active.is_visible()
-                    ):
-                        active_text = (
-                            active.inner_text(
-                                timeout=1000
-                            ).strip()
-                        )
-
-                        if matches_location(
-                            active_text
-                        ):
-                            active.click(
-                                timeout=5000
-                            )
-
-                            location_selected = True
-
-                            print(
-                                "Location selected through keyboard-triggered active option."
-                            )
-
-                            break
-
-            except Exception as ex:
-                print(
-                    "Keyboard autocomplete trigger failed:",
-                    repr(ex)
-                )
+        if "geourn=" not in after_selection_lower:
+            print("[LOCATION ERROR] geoUrn filter is missing.")
+            return False
 
         if not location_selected:
             try:
