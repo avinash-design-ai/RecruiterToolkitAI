@@ -1836,9 +1836,44 @@ class CompanyPage(BasePage):
                 )
 
             if show_results is None:
-                print(
-                    "[LOCATION ERROR] No visible enabled Show results button."
-                )
+                try:
+                    exact_text = self.page.get_by_text("Show results", exact=True)
+                    print("[LOCATION] Exact visible Show results text matches:", exact_text.count())
+                    for i in range(exact_text.count()):
+                        try:
+                            candidate = exact_text.nth(i)
+                            if candidate.is_visible() and candidate.bounding_box():
+                                show_results = candidate
+                                print("[LOCATION] Selected exact visible Show results text #", i + 1)
+                                break
+                        except Exception:
+                            continue
+                except Exception as ex:
+                    print("[LOCATION] Show results text fallback failed:", repr(ex))
+
+            if show_results is None:
+                try:
+                    show_candidates = self.page.evaluate("""() => {
+                        const norm=v=>String(v||"").replace(/\\s+/g," ").trim().toLowerCase();
+                        const visible=el=>{const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=="none"&&s.visibility!=="hidden"&&s.opacity!=="0"&&r.width>0&&r.height>0};
+                        return [...document.querySelectorAll("*")].filter(el=>visible(el)&&norm(el.innerText||el.textContent||el.getAttribute("aria-label"))==="show results").map(el=>{const r=el.getBoundingClientRect();return {tag:el.tagName,role:el.getAttribute("role"),x:r.x,y:r.y,w:r.width,h:r.height,area:r.width*r.height}}).sort((a,b)=>b.area-a.area).slice(0,20);
+                    }""")
+                    print("[LOCATION] DOM Show results candidates:", len(show_candidates or []))
+                    if show_candidates:
+                        exact_text=self.page.get_by_text("Show results", exact=True)
+                        for i in range(exact_text.count()):
+                            try:
+                                candidate=exact_text.nth(i)
+                                if candidate.is_visible():
+                                    show_results=candidate
+                                    break
+                            except Exception:
+                                continue
+                except Exception as ex:
+                    print("[LOCATION] DOM Show results fallback failed:", repr(ex))
+
+            if show_results is None:
+                print("[LOCATION ERROR] Could not locate the LinkedIn Show results control.")
                 return False
 
             # Before clicking, ensure we still have the same company scope.
@@ -1886,13 +1921,13 @@ class CompanyPage(BasePage):
                 show_results.scroll_into_view_if_needed(
                     timeout=5000
                 )
-                show_results.click(
-                    timeout=15000
-                )
+                try:
+                    show_results.click(timeout=15000)
+                except Exception as click_ex:
+                    print("[LOCATION] Normal Show results click failed; using DOM click fallback:", repr(click_ex))
+                    show_results.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
 
-                print(
-                    "Show results BUTTON clicked successfully."
-                )
+                print("Show results control clicked successfully.")
 
             except Exception as ex:
                 print(
