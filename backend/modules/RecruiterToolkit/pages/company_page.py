@@ -675,14 +675,15 @@ class CompanyPage(BasePage):
 
     def get_profiles(self, company="", location=""):
         """
-        Extract employee candidates from the company-scoped people search.
+        Extract employee candidates from the company-scoped LinkedIn people search.
 
-        Prefer known LinkedIn result-card containers. If the current LinkedIn
-        DOM does not expose those legacy containers, fall back to grouping
-        visible /in/ links by their smallest meaningful DOM ancestor.
-
-        Connection degree is ignored. Location is enforced from rendered
-        result text.
+        Strategy:
+        1. Use known LinkedIn result-card containers when available.
+        2. If that produces no valid location-matching candidates, use a DOM
+           fallback based on visible /in/ links and their smallest meaningful
+           visible ancestor.
+        3. Connection degree is never used as an eligibility criterion.
+        4. Location is enforced from rendered result text.
         """
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
@@ -691,6 +692,7 @@ class CompanyPage(BasePage):
         print("Requested location:", location)
 
         profiles = []
+        seen_urls = set()
 
         def normalize_text(value):
             if not value:
@@ -716,7 +718,8 @@ class CompanyPage(BasePage):
 
         requested_location = normalize_text(location).lower()
         location_tokens = [
-            token for token in re.findall(r"[a-z0-9]+", requested_location)
+            token
+            for token in re.findall(r"[a-z0-9]+", requested_location)
             if len(token) >= 3
         ]
 
@@ -731,43 +734,32 @@ class CompanyPage(BasePage):
                 and all(token in value for token in location_tokens)
             )
 
-        def collect_from_card(card, card_index, seen_urls):
-            try:
-                if not card.is_visible():
-                    return None
-                card_text = normalize_text(card.inner_text())
-                if len(card_text) < 20 or not location_matches(card_text):
-                    return None
+        def add_candidate(href, name, result_text):
+            profile_url = canonical_profile_url(href)
+            if not profile_url or profile_url in seen_urls:
+                return False
 
-                links = card.locator("a[href*='/in/']:visible")
-                for link_index in range(links.count()):
-                    try:
-                        link = links.nth(link_index)
-                        href = canonical_profile_url(
-                            link.get_attribute("href")
-                        )
-                        if not href or href in seen_urls:
-                            continue
-                        name = normalize_text(link.inner_text())
-                        if not name:
-                            continue
-                        return {
-                            "full_name": name,
-                            "profile_url": href,
-                            "company": company,
-                            "location": location,
-                            "search_result_text": card_text,
-                        }
-                    except Exception:
-                        continue
-            except Exception as ex:
-                print(
-                    f"Result-card {card_index + 1} inspection failed:",
-                    repr(ex),
-                )
-            return None
+            clean_name = normalize_text(name)
+            clean_text = normalize_text(result_text)
 
-        # PASS 1: known result-card containers.
+            if not clean_name or not location_matches(clean_text):
+                return False
+
+            profiles.append(
+                {
+                    "full_name": clean_name,
+                    "profile_url": profile_url,
+                    "company": company,
+                    "location": location,
+                    "search_result_text": clean_text,
+                }
+            )
+            seen_urls.add(profile_url)
+            return True
+
+        # ------------------------------------------------------------
+        # PASS 1: known LinkedIn result-card containers.
+        # ------------------------------------------------------------
         card_selectors = (
             "li.reusable-search__result-container:visible",
             "li[class*='reusable-search__result']:visible",
@@ -785,12 +777,14 @@ class CompanyPage(BasePage):
             for selector in card_selectors:
                 try:
                     locator = self.page.locator(selector)
-                    if locator.count() > 0:
+                    count = locator.count()
+                    if count > 0:
                         cards = locator
                         selected_selector = selector
                         break
                 except Exception:
                     continue
+
             if cards is not None:
                 print(
                     f"Employee result-card wait {attempt}/15:",
@@ -799,76 +793,114 @@ class CompanyPage(BasePage):
                     selected_selector,
                 )
                 break
+
             try:
                 self.page.wait_for_timeout(500)
             except Exception:
                 pass
 
-        seen_urls = set()
-
         if cards is not None:
             for card_index in range(cards.count()):
-                row = collect_from_card(
-                    cards.nth(card_index),
-                    card_index,
-                    seen_urls,
-                )
-                if row:
-                    seen_urls.add(row["profile_url"])
-                    profiles.append(row)
+                try:
+                    card = cards.nth(card_index)
 
-        # PASS 2: current LinkedIn DOM fallback.
+                    if not card.is_visible():
+                        continue
+
+                    card_text = normalize_text(card.inner_text())
+
+                    if len(card_text) < 20 or not location_matches(card_text):
+                        continue
+
+                    links = card.locator("a[href*='/in/']:visible")
+
+                    for link_index in range(links.count()):
+                        try:
+                            link = links.nth(link_index)
+                            href = link.get_attribute("href") or ""
+                            name = link.inner_text(timeout=1500).strip()
+
+                            if add_candidate(href, name, card_text):
+                                print("-" * 60)
+                                print(
+                                    "EMPLOYEE CANDIDATE:",
+                                    canonical_profile_url(href),
+                                )
+                                print("Primary anchor:", normalize_text(name)[:200])
+                                print("Connection degree: IGNORED")
+                                break
+                        except Exception:
+                            continue
+
+                except Exception as ex:
+                    print(
+                        f"Result-card {card_index + 1} inspection failed:",
+                        repr(ex),
+                    )
+
+        # ------------------------------------------------------------
+        # PASS 2: DOM fallback.
         #
-        # The failed GitHub run showed visible /in/ links but zero legacy
-        # result-card containers. Group those links by the smallest visible
-        # ancestor containing the requested location. The first /in/ link in
-        # each group is treated as the employee; later links in that group
-        # are ignored as nested/mutual links.
+        # Important:
+        # The fallback uses the same page-wide visible /in/ link population
+        # that Playwright uses for its count. It does NOT depend on <main>.
+        #
+        # We group each link by the smallest visible ancestor (up to 12
+        # levels) that:
+        #   - contains the requested location text
+        #   - contains one or more visible /in/ links
+        #
+        # The first /in/ link in each group is treated as the primary employee
+        # link; nested mutual-connection links are not independently returned.
+        # ------------------------------------------------------------
         if not profiles:
             print("=" * 60)
             print("RESULT-CARD FALLBACK: VISIBLE /in/ LINKS")
             print("=" * 60)
 
             try:
-                links = self.page.locator("main a[href*='/in/']:visible")
+                links = self.page.locator("a[href*='/in/']:visible")
                 link_count = links.count()
-            except Exception:
-                try:
-                    links = self.page.locator("a[href*='/in/']:visible")
-                    link_count = links.count()
-                except Exception as ex:
-                    print("Could not inspect visible employee links:", repr(ex))
-                    links = None
-                    link_count = 0
+            except Exception as ex:
+                print("Could not inspect visible employee links:", repr(ex))
+                links = None
+                link_count = 0
 
             print("Visible /in/ links found:", link_count)
 
             if links is not None and link_count:
                 try:
                     raw_groups = self.page.evaluate(
-                        """({locationText}) => {
+                        r"""(locationText) => {
                             const visible = (el) => {
                                 if (!el) return false;
+
                                 const r = el.getBoundingClientRect();
                                 const s = getComputedStyle(el);
-                                return r.width > 0 && r.height > 0 &&
+
+                                return (
+                                    r.width > 0 &&
+                                    r.height > 0 &&
                                     s.display !== 'none' &&
-                                    s.visibility !== 'hidden';
+                                    s.visibility !== 'hidden'
+                                );
                             };
-                            const normalize = (v) => String(v || '')
-                                .replace(/\u00a0/g, ' ')
-                                .replace(/\s+/g, ' ')
-                                .trim().toLowerCase();
+
+                            const normalize = (value) =>
+                                String(value || '')
+                                    .replace(/\u00a0/g, ' ')
+                                    .replace(/\s+/g, ' ')
+                                    .trim()
+                                    .toLowerCase();
 
                             const requested = normalize(locationText);
-                            const tokens = requested.split(/\s+/)
+                            const tokens = requested
+                                .split(/\s+/)
                                 .filter(Boolean)
-                                .filter(x => x.length >= 3);
+                                .filter(token => token.length >= 3);
 
                             const links = Array.from(
-                                document.querySelectorAll(
-                                    "main a[href*='/in/']"
-                                )
+                                document.querySelectorAll("a[href*='/in/']")
                             ).filter(visible);
 
                             const groups = [];
@@ -878,18 +910,20 @@ class CompanyPage(BasePage):
                                 let node = link.parentElement;
                                 let chosen = null;
 
-                                for (let depth = 0;
-                                     node && depth < 12;
-                                     depth++, node = node.parentElement) {
+                                for (
+                                    let depth = 0;
+                                    node && depth < 12;
+                                    depth++,
+                                    node = node.parentElement
+                                ) {
                                     if (!visible(node)) continue;
 
                                     const text = normalize(node.innerText);
+
                                     if (text.length < 20) continue;
 
                                     const profileLinks = Array.from(
-                                        node.querySelectorAll(
-                                            "a[href*='/in/']"
-                                        )
+                                        node.querySelectorAll("a[href*='/in/']")
                                     ).filter(visible);
 
                                     if (!profileLinks.length) continue;
@@ -897,10 +931,12 @@ class CompanyPage(BasePage):
                                     const locationOk =
                                         !requested ||
                                         text.includes(requested) ||
-                                        (tokens.length > 0 &&
-                                         tokens.every(
-                                             token => text.includes(token)
-                                         ));
+                                        (
+                                            tokens.length > 0 &&
+                                            tokens.every(
+                                                token => text.includes(token)
+                                            )
+                                        );
 
                                     if (!locationOk) continue;
 
@@ -911,6 +947,7 @@ class CompanyPage(BasePage):
                                 if (!chosen) continue;
 
                                 const href = link.getAttribute('href') || '';
+
                                 const absolute = new URL(
                                     href,
                                     window.location.href
@@ -921,6 +958,7 @@ class CompanyPage(BasePage):
                                         element: chosen,
                                         links: []
                                     };
+
                                     groupMap.set(chosen, group);
                                     groups.push(group);
                                 }
@@ -940,7 +978,7 @@ class CompanyPage(BasePage):
                                 links: group.links
                             }));
                         }""",
-                        {"locationText": requested_location},
+                        requested_location,
                     )
                 except Exception as ex:
                     print("DOM ancestry fallback failed:", repr(ex))
@@ -951,37 +989,37 @@ class CompanyPage(BasePage):
                 for group_index, group in enumerate(raw_groups):
                     try:
                         group_text = normalize_text(group.get("text", ""))
+
                         if not location_matches(group_text):
                             continue
 
-                        primary = None
+                        # Prefer the first unique /in/ link in this group.
                         for item in group.get("links", []):
-                            href = canonical_profile_url(item.get("href", ""))
-                            if not href or href in seen_urls:
-                                continue
-                            name = normalize_text(item.get("text", ""))
-                            if not name:
-                                continue
-                            primary = {
-                                "full_name": name,
-                                "profile_url": href,
-                                "company": company,
-                                "location": location,
-                                "search_result_text": group_text,
-                            }
-                            break
+                            if add_candidate(
+                                item.get("href", ""),
+                                item.get("text", ""),
+                                group_text,
+                            ):
+                                print("-" * 60)
+                                print(
+                                    "EMPLOYEE CANDIDATE:",
+                                    canonical_profile_url(
+                                        item.get("href", "")
+                                    ),
+                                )
+                                print(
+                                    "Primary anchor:",
+                                    normalize_text(
+                                        item.get("text", "")
+                                    )[:200],
+                                )
+                                print(
+                                    "Result group:",
+                                    group_text[:500],
+                                )
+                                print("Connection degree: IGNORED")
+                                break
 
-                        if not primary:
-                            continue
-
-                        seen_urls.add(primary["profile_url"])
-                        profiles.append(primary)
-
-                        print("-" * 60)
-                        print("EMPLOYEE CANDIDATE:", primary["profile_url"])
-                        print("Primary anchor:", primary["full_name"][:200])
-                        print("Result group:", group_text[:500])
-                        print("Connection degree: IGNORED")
                     except Exception as ex:
                         print(
                             f"Fallback result group {group_index + 1} failed:",
@@ -989,11 +1027,14 @@ class CompanyPage(BasePage):
                         )
 
         print("=" * 60)
-        print("UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:", len(profiles))
+        print(
+            "UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:",
+            len(profiles),
+        )
         print("=" * 60)
         print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
-        return profiles
 
+        return profiles
 
     def next_page(self):
         """

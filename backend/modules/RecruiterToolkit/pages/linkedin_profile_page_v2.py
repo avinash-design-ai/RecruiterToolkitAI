@@ -531,6 +531,7 @@ class LinkedInProfilePageV2(BasePage):
             "location": "",
             "company": "",
             "email": "",
+            "linked_email_id": "",
             "email_source": "",
             "profile_url": self.profile_url,
         }
@@ -1386,11 +1387,17 @@ class LinkedInProfilePageV2(BasePage):
         """
         Extract publicly visible email addresses only.
 
-        No Contact Info interaction is performed.
+        Output contract:
 
-        LinkedIn can render email content asynchronously, so this method
-        performs several short DOM-read attempts before concluding that
-        no public email is available.
+            email
+                Primary/direct public email belonging to the profile owner.
+
+            linked_email_id
+                Other publicly visible emails found on the profile that
+                do not belong to the profile owner.
+
+        No Contact Info interaction is performed.
+        No private/API endpoint is accessed.
         """
 
         print(
@@ -1408,35 +1415,80 @@ class LinkedInProfilePageV2(BasePage):
 
             discovered_emails = []
 
-            # ----------------------------------------------------
-            # Give the authenticated profile page time to render.
-            # ----------------------------------------------------
+            # --------------------------------------------------------
+            # Email regex
+            # --------------------------------------------------------
+
+            email_pattern = re.compile(
+                r"\b[A-Za-z0-9._%+-]+"
+                r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+            )
+
+            def add_email(value):
+
+                if not value:
+                    return
+
+                try:
+                    value = str(value).strip()
+                except Exception:
+                    return
+
+                if value.lower().startswith("mailto:"):
+                    value = value[7:]
+
+                if "?" in value:
+                    value = value.split("?", 1)[0]
+
+                matches = email_pattern.findall(value)
+
+                for email in matches:
+
+                    email = email.strip().lower()
+
+                    if not self.is_valid_email(email):
+                        continue
+
+                    if email not in discovered_emails:
+                        discovered_emails.append(email)
+
+            # ========================================================
+            # IMPORTANT:
+            #
+            # We intentionally DO NOT break after the first email.
+            #
+            # The previous implementation did:
+            #
+            #     if discovered_emails:
+            #         break
+            #
+            # That caused linked/secondary visible emails to be missed.
+            #
+            # We now complete all five rendering attempts.
+            # ========================================================
 
             for attempt in range(1, 6):
 
                 try:
-                    self.page.wait_for_timeout(
-                        1000
-                    )
+                    self.page.wait_for_timeout(1000)
                 except Exception:
                     pass
 
-                # ------------------------------------------------
-                # 1. mailto links
-                # ------------------------------------------------
+                # ----------------------------------------------------
+                # 1. Visible mailto links
+                # ----------------------------------------------------
 
                 try:
 
                     email_links = self.page.locator(
-                        "a[href^='mailto:']"
+                        "a[href^='mailto:']:visible"
                     )
 
                     count = email_links.count()
 
                     print(
                         f"Email DOM attempt {attempt}/5 - "
-                        f"mailto links:",
-                        count
+                        f"mailto links: {count}"
                     )
 
                     for i in range(count):
@@ -1445,40 +1497,24 @@ class LinkedInProfilePageV2(BasePage):
 
                             link = email_links.nth(i)
 
-                            if not link.is_visible():
-                                continue
-
                             href = (
-                                link.get_attribute(
-                                    "href"
-                                )
+                                link.get_attribute("href")
                                 or ""
                             )
 
-                            if not href:
-                                continue
+                            add_email(href)
 
-                            email = (
-                                href
-                                .replace(
-                                    "mailto:",
-                                    "",
-                                    1
+                            try:
+                                text = (
+                                    link.inner_text(
+                                        timeout=500
+                                    ).strip()
                                 )
-                                .split(
-                                    "?",
-                                    1
-                                )[0]
-                                .strip()
-                            )
 
-                            if self.is_valid_email(
-                                email
-                            ):
+                                add_email(text)
 
-                                discovered_emails.append(
-                                    email
-                                )
+                            except Exception:
+                                pass
 
                         except Exception:
                             continue
@@ -1490,32 +1526,28 @@ class LinkedInProfilePageV2(BasePage):
                         repr(ex)
                     )
 
-                # ------------------------------------------------
+                # ----------------------------------------------------
                 # 2. Visible rendered body text
-                # ------------------------------------------------
+                # ----------------------------------------------------
 
                 try:
 
-                    body = self.page.locator(
-                        "body"
-                    )
+                    body = self.page.locator("body")
 
-                    body_text = body.inner_text()
+                    if body.is_visible():
 
-                    print(
-                        "Visible profile text length:",
-                        len(body_text)
-                    )
+                        body_text = body.inner_text()
 
-                    matches = re.findall(
-                        r"\b[A-Za-z0-9._%+-]+"
-                        r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                        body_text
-                    )
+                        print(
+                            "Visible profile text length:",
+                            len(body_text)
+                        )
 
-                    discovered_emails.extend(
-                        matches
-                    )
+                        for match in email_pattern.findall(
+                            body_text or ""
+                        ):
+
+                            add_email(match)
 
                 except Exception as ex:
 
@@ -1524,12 +1556,9 @@ class LinkedInProfilePageV2(BasePage):
                         repr(ex)
                     )
 
-                # ------------------------------------------------
-                # 3. Visible DOM attributes/text.
-                #
-                # Some LinkedIn renders expose the email in
-                # data-* / title / aria-label instead of a mailto.
-                # ------------------------------------------------
+                # ----------------------------------------------------
+                # 3. Visible DOM attributes / text
+                # ----------------------------------------------------
 
                 try:
 
@@ -1566,16 +1595,13 @@ class LinkedInProfilePageV2(BasePage):
                                 try:
 
                                     value = (
-                                        element
-                                        .get_attribute(
+                                        element.get_attribute(
                                             attr
                                         )
                                     )
 
                                     if value:
-                                        values.append(
-                                            value
-                                        )
+                                        values.append(value)
 
                                 except Exception:
                                     pass
@@ -1583,32 +1609,25 @@ class LinkedInProfilePageV2(BasePage):
                             try:
 
                                 text = (
-                                    element
-                                    .inner_text(
+                                    element.inner_text(
                                         timeout=500
                                     )
                                     .strip()
                                 )
 
                                 if text:
-                                    values.append(
-                                        text
-                                    )
+                                    values.append(text)
 
                             except Exception:
                                 pass
 
                             for value in values:
 
-                                matches = re.findall(
-                                    r"\b[A-Za-z0-9._%+-]+"
-                                    r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+                                for match in email_pattern.findall(
                                     value
-                                )
+                                ):
 
-                                discovered_emails.extend(
-                                    matches
-                                )
+                                    add_email(match)
 
                         except Exception:
                             continue
@@ -1620,17 +1639,43 @@ class LinkedInProfilePageV2(BasePage):
                         repr(ex)
                     )
 
-                # ------------------------------------------------
-                # If we already have an email, no need to wait
-                # through all five attempts.
-                # ------------------------------------------------
+                # ----------------------------------------------------
+                # 4. Rendered public DOM HTML fallback
+                #
+                # This reads only the currently rendered page DOM.
+                # ----------------------------------------------------
 
-                if discovered_emails:
-                    break
+                try:
 
-            # ----------------------------------------------------
-            # Deduplicate.
-            # ----------------------------------------------------
+                    body_html = (
+                        self.page
+                        .locator("body")
+                        .inner_html()
+                    )
+
+                    for match in email_pattern.findall(
+                        body_html or ""
+                    ):
+
+                        add_email(match)
+
+                except Exception as ex:
+
+                    print(
+                        "Rendered HTML email scan failed:",
+                        repr(ex)
+                    )
+
+                # ----------------------------------------------------
+                # DO NOT BREAK HERE.
+                #
+                # Continue all five attempts so additional visible
+                # emails that render later can also be discovered.
+                # ----------------------------------------------------
+
+            # ========================================================
+            # Deduplicate
+            # ========================================================
 
             unique_emails = []
 
@@ -1641,25 +1686,17 @@ class LinkedInProfilePageV2(BasePage):
                 email = (
                     str(email)
                     .strip()
+                    .lower()
                 )
 
-                if not self.is_valid_email(
-                    email
-                ):
+                if not self.is_valid_email(email):
                     continue
 
-                normalized = email.lower()
-
-                if normalized in seen:
+                if email in seen:
                     continue
 
-                seen.add(
-                    normalized
-                )
-
-                unique_emails.append(
-                    email
-                )
+                seen.add(email)
+                unique_emails.append(email)
 
             print(
                 "Unique publicly visible emails:",
@@ -1681,9 +1718,9 @@ class LinkedInProfilePageV2(BasePage):
 
                 return result
 
-            # ----------------------------------------------------
-            # Determine profile owner name.
-            # ----------------------------------------------------
+            # ========================================================
+            # Determine profile owner name
+            # ========================================================
 
             profile_name = ""
 
@@ -1734,12 +1771,12 @@ class LinkedInProfilePageV2(BasePage):
                 last_name
             )
 
+            # ========================================================
+            # Classify primary vs linked emails
+            # ========================================================
+
             owner_email = ""
             linked_emails = []
-
-            # ----------------------------------------------------
-            # Classify owner email.
-            # ----------------------------------------------------
 
             for email in unique_emails:
 
@@ -1757,7 +1794,10 @@ class LinkedInProfilePageV2(BasePage):
 
                 owner_match = False
 
-                # Strong full first-name prefix.
+                # ----------------------------------------------------
+                # Strong first-name match
+                # ----------------------------------------------------
+
                 if first_clean:
 
                     if local_clean.startswith(
@@ -1766,7 +1806,7 @@ class LinkedInProfilePageV2(BasePage):
 
                         owner_match = True
 
-                    # Shortened first-name form.
+                    # Existing shortened-name logic
                     elif (
                         len(first_clean) >= 5
                         and len(local_clean) >= 3
@@ -1777,7 +1817,10 @@ class LinkedInProfilePageV2(BasePage):
 
                         owner_match = True
 
-                # Strong first+last combination.
+                # ----------------------------------------------------
+                # First + last match
+                # ----------------------------------------------------
+
                 if (
                     not owner_match
                     and first_clean
@@ -1799,6 +1842,11 @@ class LinkedInProfilePageV2(BasePage):
 
                         owner_match = True
 
+                # ----------------------------------------------------
+                # First matching owner email becomes PRIMARY.
+                # Everything else becomes LINKED.
+                # ----------------------------------------------------
+
                 if (
                     owner_match
                     and not owner_email
@@ -1812,15 +1860,29 @@ class LinkedInProfilePageV2(BasePage):
                         email
                     )
 
-            # ----------------------------------------------------
-            # Preserve existing output contract.
-            # ----------------------------------------------------
+            # ========================================================
+            # Single public email fallback
+            #
+            # If only one email exists and the name could not be
+            # matched, use that single public email as the primary
+            # profile email.
+            # ========================================================
+
+            if (
+                not owner_email
+                and len(unique_emails) == 1
+            ):
+
+                owner_email = unique_emails[0]
+                linked_emails = []
+
+            # ========================================================
+            # OUTPUT
+            # ========================================================
 
             if owner_email:
 
-                result["email"] = (
-                    owner_email
-                )
+                result["email"] = owner_email
 
                 result["email_source"] = (
                     "profile"
@@ -1830,7 +1892,9 @@ class LinkedInProfilePageV2(BasePage):
 
                 result["linked_email_id"] = (
                     "; ".join(
-                        linked_emails
+                        dict.fromkeys(
+                            linked_emails
+                        )
                     )
                 )
 
@@ -1855,8 +1919,6 @@ class LinkedInProfilePageV2(BasePage):
 
             return result
 
-
-    @staticmethod
     def is_valid_email(email):
         if not email:
             return False
