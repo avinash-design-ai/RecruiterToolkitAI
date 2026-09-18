@@ -240,19 +240,17 @@ class CompanyPage(BasePage):
     # ============================================================
 
 
+
     def open_employees_page(self):
         """
         Open the authenticated company-scoped LinkedIn people search.
 
-        IMPORTANT:
-        LinkedIn sometimes exposes the employee search as a canned URL
-        containing network=["F"]. That is a first-degree network filter.
+        The previous implementation removed network/origin and navigated to
+        the normalized URL. GitHub Actions showed that LinkedIn redirected
+        that URL to /uas/login even though the feed session was authenticated.
 
-        We preserve currentCompany but remove the canned network/origin
-        parameters so the company search is not restricted to first-degree
-        connections.
-
-        We NEVER construct a generic people search.
+        This version preserves LinkedIn's company-scoped search URL and changes
+        only the connection-degree filter from F to F/S/O.
         """
 
         print("=" * 60)
@@ -267,126 +265,120 @@ class CompanyPage(BasePage):
         def is_people_url(url):
             if not url:
                 return False
-
             lower = url.lower()
-
             return (
                 "/search/results/people/" in lower
                 and "currentcompany=" in lower
             )
 
-        def is_bad_url(url):
+        def is_blocked_url(url):
             if not url:
                 return True
-
             lower = url.lower()
-
-            if is_people_url(url):
-                return False
-
-            bad_parts = (
-                "/login",
-                "/authwall",
-                "/checkpoint",
-                "/uas/login",
-                "/signup",
-                "/ssr-login",
+            return any(
+                part in lower
+                for part in (
+                    "/login",
+                    "/authwall",
+                    "/checkpoint",
+                    "/uas/login",
+                    "/signup",
+                    "/ssr-login",
+                    "remember-me-auto-login",
+                )
             )
-
-            if any(part in lower for part in bad_parts):
-                return True
-
-            return True
 
         def company_ids(url):
             try:
                 from urllib.parse import urlsplit, parse_qs
-
-                parsed = urlsplit(url)
-
                 query = parse_qs(
-                    parsed.query,
-                    keep_blank_values=True
+                    urlsplit(url).query,
+                    keep_blank_values=True,
                 )
-
-                return query.get(
-                    "currentCompany",
-                    []
+                return (
+                    query.get("currentCompany", [])
+                    or query.get("currentcompany", [])
                 )
-
             except Exception:
                 return []
 
-        def clean_people_search_url(url):
+        def broaden_connection_degree(url):
             """
-            Preserve:
-                currentCompany
-
-            Remove canned search restrictions:
-                network
-                origin
-                spellCorrectionEnabled
-                prioritizeMessage
-
-            Preserve other LinkedIn search parameters when present.
+            Preserve every existing LinkedIn search parameter and replace
+            only network with ["F","S","O"].
             """
+            try:
+                from urllib.parse import (
+                    urlsplit,
+                    urlunsplit,
+                    parse_qsl,
+                    urlencode,
+                )
+                import json
 
-            from urllib.parse import (
-                urlsplit,
-                urlunsplit,
-                parse_qsl,
-                urlencode,
-            )
+                parsed = urlsplit(url)
 
-            parsed = urlsplit(url)
+                if "/search/results/people/" not in parsed.path.lower():
+                    return ""
 
-            pairs = parse_qsl(
-                parsed.query,
-                keep_blank_values=True
-            )
+                pairs = parse_qsl(
+                    parsed.query,
+                    keep_blank_values=True,
+                )
 
-            blocked = {
-                "network",
-                "origin",
-                "spellCorrectionEnabled",
-                "prioritizeMessage",
-            }
+                if not any(
+                    key.lower() == "currentcompany"
+                    for key, _ in pairs
+                ):
+                    return ""
 
-            cleaned_pairs = [
-                (key, value)
-                for key, value in pairs
-                if key not in blocked
-            ]
+                all_degrees = json.dumps(
+                    ["F", "S", "O"],
+                    separators=(",", ":"),
+                )
 
-            # currentCompany is mandatory.
-            has_company = any(
-                key.lower() == "currentcompany"
-                for key, _ in cleaned_pairs
-            )
+                replaced = []
+                network_seen = False
 
-            if not has_company:
+                for key, value in pairs:
+                    if key.lower() == "network":
+                        if not network_seen:
+                            replaced.append(
+                                ("network", all_degrees)
+                            )
+                            network_seen = True
+                        continue
+
+                    replaced.append((key, value))
+
+                if not network_seen:
+                    return url
+
+                query = urlencode(
+                    replaced,
+                    doseq=True,
+                )
+
+                return urlunsplit(
+                    (
+                        parsed.scheme,
+                        parsed.netloc,
+                        parsed.path,
+                        query,
+                        parsed.fragment,
+                    )
+                )
+
+            except Exception as ex:
+                print(
+                    "Connection-degree URL construction failed:",
+                    repr(ex),
+                )
                 return ""
 
-            query = urlencode(
-                cleaned_pairs,
-                doseq=True
-            )
-
-            return urlunsplit(
-                (
-                    parsed.scheme,
-                    parsed.netloc,
-                    parsed.path,
-                    query,
-                    parsed.fragment,
-                )
-            )
-
-        # --------------------------------------------------------
-        # CASE 1:
-        # The company click already landed directly on the people
-        # search page.
-        # --------------------------------------------------------
+        # ================================================================
+        # CASE 1: company click already landed on people search
+        # ================================================================
 
         if is_people_url(current_url):
 
@@ -395,138 +387,98 @@ class CompanyPage(BasePage):
             print("=" * 60)
             print("COMPANY PEOPLE-SEARCH PAGE ALREADY OPEN")
             print("=" * 60)
-
             print("Company scope:", ids)
 
-            clean_url = clean_people_search_url(
-                current_url
-            )
-
-            if not clean_url:
+            if not ids:
                 print(
-                    "ERROR: Could not safely normalize company "
-                    "people-search URL."
+                    "ERROR: Current people-search page has no currentCompany."
+                )
+                return False
+
+            broad_url = broaden_connection_degree(current_url)
+
+            if not broad_url:
+                print(
+                    "ERROR: Could not construct a safe all-degree "
+                    "company people-search URL."
                 )
                 return False
 
             print("Original people-search URL:")
             print(current_url)
+            print("All-degree people-search URL:")
+            print(broad_url)
 
-            print("Normalized people-search URL:")
-            print(clean_url)
-
-            if clean_url != current_url:
-                print(
-                    "Removing LinkedIn canned first-degree "
-                    "network/origin filters."
-                )
-
-                try:
-                    self.page.goto(
-                        clean_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
-
-                    self.page.wait_for_timeout(
-                        5000
-                    )
-
-                except Exception as ex:
-                    print(
-                        "Normalized people-search navigation failed:",
-                        repr(ex)
-                    )
-
-                    # Safe fallback:
-                    # change the browser URL without constructing a
-                    # different search.
-                    try:
-                        self.page.evaluate(
-                            """
-                            (url) => {
-                                window.history.replaceState(
-                                    {},
-                                    '',
-                                    url
-                                );
-                            }
-                            """,
-                            clean_url,
-                        )
-
-                        self.page.reload(
-                            wait_until="domcontentloaded",
-                            timeout=60000,
-                        )
-
-                        self.page.wait_for_timeout(
-                            5000
-                        )
-
-                    except Exception as fallback_ex:
-                        print(
-                            "Normalized people-search fallback failed:",
-                            repr(fallback_ex)
-                        )
-                        return False
-
-            final_url = str(
-                self.page.url or ""
-            ).strip()
+            if broad_url == current_url:
+                print("Connection-degree filter:", "NOT RESTRICTED")
+                print("Company scope preserved:", ids)
+                return True
 
             print(
-                "Final employee-search URL:",
-                final_url
+                "Broadening connection-degree filter to F + S + O."
+            )
+            print(
+                "Preserving LinkedIn origin and currentCompany."
             )
 
-            if not is_people_url(final_url):
+            try:
+                self.page.goto(
+                    broad_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                self.page.wait_for_timeout(5000)
+            except Exception as ex:
                 print(
-                    "ERROR: Normalized URL did not remain "
-                    "company-scoped people search."
+                    "All-degree people-search navigation failed:",
+                    repr(ex),
                 )
                 return False
 
-            final_ids = company_ids(
-                final_url
+            final_url = str(self.page.url or "").strip()
+
+            print(
+                "Final employee-search URL:",
+                final_url,
             )
 
-            if ids and final_ids != ids:
+            if is_blocked_url(final_url):
                 print(
-                    "ERROR: currentCompany changed during normalization."
+                    "ERROR: LinkedIn redirected the all-degree "
+                    "company search to authentication."
                 )
+                print("Authentication URL:", final_url)
+                return False
+
+            if not is_people_url(final_url):
                 print(
-                    "Expected:",
-                    ids
+                    "ERROR: Final page is not a company-scoped "
+                    "people search."
                 )
+                return False
+
+            final_ids = company_ids(final_url)
+
+            if final_ids != ids:
                 print(
-                    "Actual:",
-                    final_ids
+                    "ERROR: currentCompany changed during navigation."
                 )
+                print("Expected:", ids)
+                print("Actual:", final_ids)
                 return False
 
             print("=" * 60)
             print("COMPANY PEOPLE SEARCH READY")
             print("=" * 60)
-
-            print(
-                "Connection-degree filter:",
-                "NOT APPLIED"
-            )
-
-            print(
-                "Company scope preserved:",
-                final_ids
-            )
+            print("Final URL:", final_url)
+            print("Connection-degree filter:", "F + S + O")
+            print("Company scope preserved:", final_ids)
 
             return True
 
-        # --------------------------------------------------------
-        # CASE 2:
-        # We are still on the company page.
-        #
-        # Find LinkedIn's own currentCompany people-search link.
-        # --------------------------------------------------------
+        # ================================================================
+        # CASE 2: still on company page; use LinkedIn's own people link
+        # ================================================================
 
         links = self.page.locator(
             "a[href*='/search/results/people/']"
@@ -534,20 +486,13 @@ class CompanyPage(BasePage):
 
         count = links.count()
 
-        print(
-            "People-search links found:",
-            count
-        )
+        print("People-search links found:", count)
 
         selected = None
         selected_href = ""
-
-        selected_company_ids = company_ids(
-            current_url
-        )
+        selected_company_ids = company_ids(current_url)
 
         for i in range(count):
-
             try:
                 link = links.nth(i)
 
@@ -573,7 +518,7 @@ class CompanyPage(BasePage):
                 ):
                     print(
                         "SKIP unrelated currentCompany:",
-                        href
+                        href,
                     )
                     continue
 
@@ -583,16 +528,13 @@ class CompanyPage(BasePage):
                 print(
                     "Selected LinkedIn employee-search link:"
                 )
-                print(
-                    selected_href
-                )
-
+                print(selected_href)
                 break
 
             except Exception as ex:
                 print(
                     "Employee-search link inspection failed:",
-                    repr(ex)
+                    repr(ex),
                 )
 
         if selected is None:
@@ -600,29 +542,20 @@ class CompanyPage(BasePage):
                 "No valid LinkedIn currentCompany "
                 "employee-search link found."
             )
-
             return False
 
-        # --------------------------------------------------------
-        # Normalize the LinkedIn-provided href before clicking.
-        # --------------------------------------------------------
-
-        normalized_href = clean_people_search_url(
+        broadened_href = broaden_connection_degree(
             selected_href
         )
 
-        if not normalized_href:
+        if not broadened_href:
             print(
-                "ERROR: Employee link could not be safely normalized."
+                "ERROR: Employee link could not be safely broadened."
             )
             return False
 
-        print(
-            "Normalized employee-search href:"
-        )
-        print(
-            normalized_href
-        )
+        print("Broadening LinkedIn employee-search href:")
+        print(broadened_href)
 
         try:
             selected.evaluate(
@@ -631,120 +564,58 @@ class CompanyPage(BasePage):
                     el.setAttribute('href', url);
                 }
                 """,
-                normalized_href,
+                broadened_href,
             )
 
-            selected.click(
-                timeout=15000
-            )
-
-            self.page.wait_for_timeout(
-                5000
-            )
+            selected.click(timeout=15000)
+            self.page.wait_for_timeout(5000)
 
         except Exception as ex:
             print(
-                "Employee-search click failed:",
-                repr(ex)
+                "All-degree employee-search click failed:",
+                repr(ex),
             )
             return False
 
-        final_url = str(
-            self.page.url or ""
-        ).strip()
+        final_url = str(self.page.url or "").strip()
 
         print(
-            "URL after employee-search click:",
-            final_url
+            "URL after all-degree employee-search click:",
+            final_url,
         )
+
+        if is_blocked_url(final_url):
+            print(
+                "ERROR: LinkedIn redirected the all-degree "
+                "employee search to authentication."
+            )
+            print("Authentication URL:", final_url)
+            return False
 
         if not is_people_url(final_url):
             print(
-                "Employee-search navigation did not produce "
-                "a valid company-scoped people search."
+                "ERROR: Employee-search navigation did not produce "
+                "a company-scoped people search."
             )
-
             return False
 
-        final_ids = company_ids(
-            final_url
-        )
+        final_ids = company_ids(final_url)
 
         if (
             selected_company_ids
             and final_ids != selected_company_ids
         ):
-            print(
-                "ERROR: Company scope changed."
-            )
-
-            return False
-
-        # If LinkedIn reinserted network=F after the click,
-        # normalize the resulting URL one more time.
-        final_clean = clean_people_search_url(
-            final_url
-        )
-
-        if (
-            final_clean
-            and final_clean != final_url
-        ):
-
-            print(
-                "LinkedIn restored canned network/origin parameters."
-            )
-
-            print(
-                "Removing them from final URL."
-            )
-
-            try:
-                self.page.goto(
-                    final_clean,
-                    wait_until="domcontentloaded",
-                    timeout=60000,
-                )
-
-                self.page.wait_for_timeout(
-                    5000
-                )
-
-            except Exception as ex:
-                print(
-                    "Final URL normalization failed:",
-                    repr(ex)
-                )
-                return False
-
-        final_url = str(
-            self.page.url or ""
-        ).strip()
-
-        if not is_people_url(final_url):
-            print(
-                "ERROR: Final page is no longer company-scoped people search."
-            )
+            print("ERROR: Company scope changed.")
+            print("Expected:", selected_company_ids)
+            print("Actual:", final_ids)
             return False
 
         print("=" * 60)
         print("COMPANY PEOPLE SEARCH READY")
         print("=" * 60)
-
-        print(
-            "Final URL:",
-            final_url
-        )
-
-        print(
-            "Connection-degree filter:",
-            "NOT APPLIED"
-        )
-
-        print(
-            "Company scope:",
-            company_ids(final_url)
-        )
+        print("Final URL:", final_url)
+        print("Connection-degree filter:", "F + S + O")
+        print("Company scope preserved:", final_ids)
 
         return True
 
