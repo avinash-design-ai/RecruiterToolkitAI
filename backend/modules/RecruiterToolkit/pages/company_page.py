@@ -673,215 +673,215 @@ class CompanyPage(BasePage):
 
 
 
-def get_profiles(self, company="", location=""):
-    '''
-    Extract ONE employee candidate per LinkedIn result card.
+    def get_profiles(self, company="", location=""):
+        '''
+        Extract ONE employee candidate per LinkedIn result card.
 
-    The old implementation iterated over every /in/ anchor and climbed
-    ancestors. That caused nested mutual-connection links to become
-    employees. This version is card-first and emits only one employee
-    from each result card. Connection degree is ignored.
-    '''
-    print("=" * 60)
-    print("EXTRACTING EMPLOYEE PROFILES")
-    print("=" * 60)
-    print("Requested company:", company)
-    print("Requested location:", location)
+        The old implementation iterated over every /in/ anchor and climbed
+        ancestors. That caused nested mutual-connection links to become
+        employees. This version is card-first and emits only one employee
+        from each result card. Connection degree is ignored.
+        '''
+        print("=" * 60)
+        print("EXTRACTING EMPLOYEE PROFILES")
+        print("=" * 60)
+        print("Requested company:", company)
+        print("Requested location:", location)
 
-    profiles = []
+        profiles = []
 
-    def normalize_text(value):
-        if not value:
-            return ""
-        value = (
-            str(value)
-            .replace("\xa0", " ")
-            .replace("\r", " ")
-            .replace("\n", " ")
-        )
-        return re.sub(r"\s+", " ", value).strip()
-
-    def canonical_profile_url(href):
-        if not href:
-            return ""
-        value = str(href).strip()
-        if value.startswith("/"):
-            value = "https://www.linkedin.com" + value
-        value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-        if "/in/" not in value.lower():
-            return ""
-        return value.lower()
-
-    requested_location = normalize_text(location).lower()
-    location_tokens = [
-        token for token in re.findall(r"[a-z0-9]+", requested_location)
-        if len(token) >= 3
-    ]
-
-    # Wait for virtualized LinkedIn result cards to hydrate.
-    card_selectors = (
-        "li.reusable-search__result-container:visible",
-        "li[class*='reusable-search__result']:visible",
-        "div.entity-result:visible",
-        "li.entity-result:visible",
-        "li.search-result:visible",
-        "li[class*='search-result']:visible",
-        "ul.reusable-search__entity-result-list > li:visible",
-    )
-
-    cards = None
-    selected_selector = ""
-
-    for attempt in range(1, 31):
-        for selector in card_selectors:
-            try:
-                locator = self.page.locator(selector)
-                if locator.count():
-                    cards = locator
-                    selected_selector = selector
-                    break
-            except Exception:
-                continue
-
-        if cards is not None:
-            print(
-                f"Employee result-card wait {attempt}/30:",
-                cards.count(),
-                "cards",
-                "| selector:",
-                selected_selector,
+        def normalize_text(value):
+            if not value:
+                return ""
+            value = (
+                str(value)
+                .replace("\xa0", " ")
+                .replace("\r", " ")
+                .replace("\n", " ")
             )
-            break
+            return re.sub(r"\s+", " ", value).strip()
 
-        try:
-            self.page.mouse.wheel(0, 700)
-        except Exception:
-            pass
-        try:
-            self.page.wait_for_timeout(500)
-        except Exception:
-            pass
+        def canonical_profile_url(href):
+            if not href:
+                return ""
+            value = str(href).strip()
+            if value.startswith("/"):
+                value = "https://www.linkedin.com" + value
+            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            if "/in/" not in value.lower():
+                return ""
+            return value.lower()
 
-    if cards is None:
-        print("No recognizable LinkedIn result-card containers found.")
-        print("EMPLOYEE PROFILES EXTRACTED:", 0)
-        return profiles
+        requested_location = normalize_text(location).lower()
+        location_tokens = [
+            token for token in re.findall(r"[a-z0-9]+", requested_location)
+            if len(token) >= 3
+        ]
 
-    seen_urls = set()
+        # Wait for virtualized LinkedIn result cards to hydrate.
+        card_selectors = (
+            "li.reusable-search__result-container:visible",
+            "li[class*='reusable-search__result']:visible",
+            "div.entity-result:visible",
+            "li.entity-result:visible",
+            "li.search-result:visible",
+            "li[class*='search-result']:visible",
+            "ul.reusable-search__entity-result-list > li:visible",
+        )
 
-    for card_index in range(cards.count()):
-        try:
-            card = cards.nth(card_index)
+        cards = None
+        selected_selector = ""
 
-            if not card.is_visible():
-                continue
-
-            card_text = normalize_text(card.inner_text())
-            if len(card_text) < 40:
-                continue
-
-            card_lower = card_text.lower()
-
-            # Requested location is a hard filter.
-            if requested_location:
-                location_match = requested_location in card_lower
-                if not location_match and location_tokens:
-                    location_match = all(
-                        token in card_lower for token in location_tokens
-                    )
-                if not location_match:
-                    print(
-                        "SKIP outside requested location:",
-                        card_text[:300],
-                    )
-                    continue
-
-            # Only /in/ links inside this specific result card.
-            links = card.locator("a[href*='/in/']:visible")
-            link_count = links.count()
-            if not link_count:
-                continue
-
-            primary_url = ""
-            primary_name = ""
-
-            # First valid /in/ link = primary employee.
-            # All later /in/ links in this card are ignored.
-            for link_index in range(link_count):
+        for attempt in range(1, 31):
+            for selector in card_selectors:
                 try:
-                    link = links.nth(link_index)
-                    href = canonical_profile_url(
-                        link.get_attribute("href")
-                    )
-                    if not href:
-                        continue
-
-                    primary_url = href
-                    try:
-                        primary_name = normalize_text(link.inner_text())
-                    except Exception:
-                        primary_name = ""
-
-                    if link_index > 0:
-                        print(
-                            "Nested /in/ links ignored:",
-                            link_count - link_index,
-                        )
-                    break
+                    locator = self.page.locator(selector)
+                    if locator.count():
+                        cards = locator
+                        selected_selector = selector
+                        break
                 except Exception:
                     continue
 
-            if not primary_url or primary_url in seen_urls:
-                continue
-
-            seen_urls.add(primary_url)
-
-            full_name = primary_name
-
-            if not full_name:
-                for raw_line in str(card_text).splitlines():
-                    line = normalize_text(raw_line)
-                    if line and len(line) <= 120:
-                        full_name = line
-                        break
-
-            if not full_name:
+            if cards is not None:
                 print(
-                    "SKIP candidate with empty employee name:",
-                    primary_url,
+                    f"Employee result-card wait {attempt}/30:",
+                    cards.count(),
+                    "cards",
+                    "| selector:",
+                    selected_selector,
                 )
-                continue
+                break
 
-            profiles.append(
-                {
-                    "full_name": full_name,
-                    "profile_url": primary_url,
-                    "company": company,
-                    "location": location,
-                    "search_result_text": card_text,
-                }
-            )
+            try:
+                self.page.mouse.wheel(0, 700)
+            except Exception:
+                pass
+            try:
+                self.page.wait_for_timeout(500)
+            except Exception:
+                pass
 
-            print("-" * 60)
-            print("EMPLOYEE CANDIDATE:", primary_url)
-            print("Primary anchor:", full_name[:200])
-            print("Result card:", card_text[:500])
-            print("Connection degree: IGNORED")
+        if cards is None:
+            print("No recognizable LinkedIn result-card containers found.")
+            print("EMPLOYEE PROFILES EXTRACTED:", 0)
+            return profiles
 
-        except Exception as ex:
-            print(
-                f"Profile result-card {card_index + 1} inspection failed:",
-                repr(ex),
-            )
+        seen_urls = set()
 
-    print("=" * 60)
-    print(
-        "UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:",
-        len(profiles),
-    )
-    print("=" * 60)
-    print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
-    return profiles
+        for card_index in range(cards.count()):
+            try:
+                card = cards.nth(card_index)
+
+                if not card.is_visible():
+                    continue
+
+                card_text = normalize_text(card.inner_text())
+                if len(card_text) < 40:
+                    continue
+
+                card_lower = card_text.lower()
+
+                # Requested location is a hard filter.
+                if requested_location:
+                    location_match = requested_location in card_lower
+                    if not location_match and location_tokens:
+                        location_match = all(
+                            token in card_lower for token in location_tokens
+                        )
+                    if not location_match:
+                        print(
+                            "SKIP outside requested location:",
+                            card_text[:300],
+                        )
+                        continue
+
+                # Only /in/ links inside this specific result card.
+                links = card.locator("a[href*='/in/']:visible")
+                link_count = links.count()
+                if not link_count:
+                    continue
+
+                primary_url = ""
+                primary_name = ""
+
+                # First valid /in/ link = primary employee.
+                # All later /in/ links in this card are ignored.
+                for link_index in range(link_count):
+                    try:
+                        link = links.nth(link_index)
+                        href = canonical_profile_url(
+                            link.get_attribute("href")
+                        )
+                        if not href:
+                            continue
+
+                        primary_url = href
+                        try:
+                            primary_name = normalize_text(link.inner_text())
+                        except Exception:
+                            primary_name = ""
+
+                        if link_index > 0:
+                            print(
+                                "Nested /in/ links ignored:",
+                                link_count - link_index,
+                            )
+                        break
+                    except Exception:
+                        continue
+
+                if not primary_url or primary_url in seen_urls:
+                    continue
+
+                seen_urls.add(primary_url)
+
+                full_name = primary_name
+
+                if not full_name:
+                    for raw_line in str(card_text).splitlines():
+                        line = normalize_text(raw_line)
+                        if line and len(line) <= 120:
+                            full_name = line
+                            break
+
+                if not full_name:
+                    print(
+                        "SKIP candidate with empty employee name:",
+                        primary_url,
+                    )
+                    continue
+
+                profiles.append(
+                    {
+                        "full_name": full_name,
+                        "profile_url": primary_url,
+                        "company": company,
+                        "location": location,
+                        "search_result_text": card_text,
+                    }
+                )
+
+                print("-" * 60)
+                print("EMPLOYEE CANDIDATE:", primary_url)
+                print("Primary anchor:", full_name[:200])
+                print("Result card:", card_text[:500])
+                print("Connection degree: IGNORED")
+
+            except Exception as ex:
+                print(
+                    f"Profile result-card {card_index + 1} inspection failed:",
+                    repr(ex),
+                )
+
+        print("=" * 60)
+        print(
+            "UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:",
+            len(profiles),
+        )
+        print("=" * 60)
+        print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
+        return profiles
 
 
 
