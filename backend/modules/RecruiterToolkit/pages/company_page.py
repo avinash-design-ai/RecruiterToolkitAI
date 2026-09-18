@@ -675,74 +675,148 @@ class CompanyPage(BasePage):
 
     def get_profiles(self, company="", location=""):
         """
-        Extract employee candidates from the company-scoped LinkedIn people search.
+        Extract employee candidates from the company-scoped LinkedIn
+        people-search page.
 
         Strategy:
-        1. Use known LinkedIn result-card containers when available.
-        2. If that produces no valid location-matching candidates, use a DOM
-           fallback based on visible /in/ links and their smallest meaningful
-           visible ancestor.
-        3. Connection degree is never used as an eligibility criterion.
-        4. Location is enforced from rendered result text.
+            1. Wait for LinkedIn's virtualized result DOM to hydrate.
+            2. Prefer recognizable result-card containers.
+            3. Fall back to visible /in/ links when LinkedIn changes
+               result-card markup.
+            4. Group profile links by the smallest meaningful rendered
+               ancestor containing the requested location.
+            5. Use the first employee/profile link in each group.
+            6. Ignore connection degree completely.
+            7. Preserve company scope from the already-open people search.
         """
+
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
-        print("Requested company:", company)
-        print("Requested location:", location)
+
+        print(
+            "Requested company:",
+            company
+        )
+
+        print(
+            "Requested location:",
+            location
+        )
 
         profiles = []
         seen_urls = set()
 
+        # ============================================================
+        # Helpers
+        # ============================================================
+
         def normalize_text(value):
+
             if not value:
                 return ""
+
             value = (
                 str(value)
                 .replace("\xa0", " ")
                 .replace("\r", " ")
                 .replace("\n", " ")
             )
-            return re.sub(r"\s+", " ", value).strip()
+
+            return re.sub(
+                r"\s+",
+                " ",
+                value
+            ).strip()
 
         def canonical_profile_url(href):
+
             if not href:
                 return ""
+
             value = str(href).strip()
+
             if value.startswith("/"):
-                value = "https://www.linkedin.com" + value
-            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+                value = (
+                    "https://www.linkedin.com"
+                    + value
+                )
+
+            value = (
+                value
+                .split("?", 1)[0]
+                .split("#", 1)[0]
+                .rstrip("/")
+            )
+
             if "/in/" not in value.lower():
                 return ""
+
             return value.lower()
 
-        requested_location = normalize_text(location).lower()
+        requested_location = normalize_text(
+            location
+        ).lower()
+
         location_tokens = [
             token
-            for token in re.findall(r"[a-z0-9]+", requested_location)
+            for token in re.findall(
+                r"[a-z0-9]+",
+                requested_location
+            )
             if len(token) >= 3
         ]
 
         def location_matches(text):
-            value = normalize_text(text).lower()
+
+            value = normalize_text(
+                text
+            ).lower()
+
             if not requested_location:
                 return True
+
             if requested_location in value:
                 return True
+
             return bool(
                 location_tokens
-                and all(token in value for token in location_tokens)
+                and all(
+                    token in value
+                    for token in location_tokens
+                )
             )
 
-        def add_candidate(href, name, result_text):
-            profile_url = canonical_profile_url(href)
-            if not profile_url or profile_url in seen_urls:
+        def add_candidate(
+            href,
+            name,
+            result_text,
+        ):
+
+            profile_url = canonical_profile_url(
+                href
+            )
+
+            if not profile_url:
                 return False
 
-            clean_name = normalize_text(name)
-            clean_text = normalize_text(result_text)
+            if profile_url in seen_urls:
+                return False
 
-            if not clean_name or not location_matches(clean_text):
+            clean_name = normalize_text(
+                name
+            )
+
+            clean_text = normalize_text(
+                result_text
+            )
+
+            if not clean_name:
+                return False
+
+            if not location_matches(
+                clean_text
+            ):
                 return False
 
             profiles.append(
@@ -754,17 +828,186 @@ class CompanyPage(BasePage):
                     "search_result_text": clean_text,
                 }
             )
-            seen_urls.add(profile_url)
+
+            seen_urls.add(
+                profile_url
+            )
+
             return True
 
-        # ------------------------------------------------------------
-        # PASS 1: known LinkedIn result-card containers.
-        # ------------------------------------------------------------
+        # ============================================================
+        # Verify current page is still the company-scoped people page.
+        # ============================================================
+
+        current_url = str(
+            self.page.url or ""
+        ).strip()
+
+        current_lower = current_url.lower()
+
+        if (
+            "/search/results/people/"
+            not in current_lower
+            or "currentcompany="
+            not in current_lower
+        ):
+
+            print(
+                "ERROR: Current page is not a company-scoped "
+                "LinkedIn people search."
+            )
+
+            print(
+                "Current URL:",
+                current_url
+            )
+
+            return profiles
+
+        print(
+            "Company-scoped employee search confirmed."
+        )
+
+        print(
+            "Current URL:",
+            current_url
+        )
+
+        # ============================================================
+        # FIRST-PAGE HYDRATION WAIT
+        #
+        # This is the important fix.
+        #
+        # LinkedIn can initially return zero visible /in/ links while
+        # its virtualized employee-result DOM is still being hydrated.
+        #
+        # The old code checked once and immediately returned zero.
+        # ============================================================
+
+        print("=" * 60)
+        print("WAITING FOR EMPLOYEE RESULT DOM")
+        print("=" * 60)
+
+        rendered_profile_links = 0
+        rendered_result_cards = 0
+
+        for attempt in range(1, 41):
+
+            try:
+                self.page.wait_for_timeout(
+                    500
+                )
+            except Exception:
+                pass
+
+            # --------------------------------------------------------
+            # Visible /in/ links
+            # --------------------------------------------------------
+
+            try:
+
+                rendered_profile_links = (
+                    self.page
+                    .locator(
+                        "a[href*='/in/']:visible"
+                    )
+                    .count()
+                )
+
+            except Exception:
+                rendered_profile_links = 0
+
+            # --------------------------------------------------------
+            # Multiple possible LinkedIn result-card structures
+            # --------------------------------------------------------
+
+            try:
+
+                rendered_result_cards = 0
+
+                for selector in (
+                    "li.reusable-search__result-container:visible",
+                    "li[class*='reusable-search__result']:visible",
+                    "li.entity-result:visible",
+                    "div.entity-result:visible",
+                    "li.search-result:visible",
+                    "li[class*='search-result']:visible",
+                    "ul.reusable-search__entity-result-list > li:visible",
+                ):
+
+                    try:
+
+                        count = (
+                            self.page
+                            .locator(selector)
+                            .count()
+                        )
+
+                        if count > rendered_result_cards:
+                            rendered_result_cards = count
+
+                    except Exception:
+                        continue
+
+            except Exception:
+                rendered_result_cards = 0
+
+            print(
+                f"Employee DOM wait {attempt}/40:",
+                rendered_profile_links,
+                "visible /in/ links |",
+                rendered_result_cards,
+                "result cards"
+            )
+
+            if (
+                rendered_profile_links > 0
+                or rendered_result_cards > 0
+            ):
+
+                print(
+                    "Employee result DOM detected."
+                )
+
+                break
+
+            # --------------------------------------------------------
+            # Periodically scroll to trigger LinkedIn virtualized
+            # rendering.
+            # --------------------------------------------------------
+
+            if attempt in (
+                8,
+                16,
+                24,
+                32,
+            ):
+
+                try:
+
+                    self.page.mouse.wheel(
+                        0,
+                        1200
+                    )
+
+                except Exception:
+                    pass
+
+        # ============================================================
+        # PASS 1
+        #
+        # Known result-card containers.
+        # ============================================================
+
+        print("=" * 60)
+        print("PASS 1 - RESULT CARD EXTRACTION")
+        print("=" * 60)
+
         card_selectors = (
             "li.reusable-search__result-container:visible",
             "li[class*='reusable-search__result']:visible",
-            "div.entity-result:visible",
             "li.entity-result:visible",
+            "div.entity-result:visible",
             "li.search-result:visible",
             "li[class*='search-result']:visible",
             "ul.reusable-search__entity-result-list > li:visible",
@@ -773,268 +1016,677 @@ class CompanyPage(BasePage):
         cards = None
         selected_selector = ""
 
-        for attempt in range(1, 16):
-            for selector in card_selectors:
-                try:
-                    locator = self.page.locator(selector)
-                    count = locator.count()
-                    if count > 0:
-                        cards = locator
-                        selected_selector = selector
-                        break
-                except Exception:
-                    continue
-
-            if cards is not None:
-                print(
-                    f"Employee result-card wait {attempt}/15:",
-                    cards.count(),
-                    "cards | selector:",
-                    selected_selector,
-                )
-                break
+        for selector in card_selectors:
 
             try:
-                self.page.wait_for_timeout(500)
-            except Exception:
-                pass
+
+                locator = self.page.locator(
+                    selector
+                )
+
+                count = locator.count()
+
+                if count > 0:
+
+                    cards = locator
+                    selected_selector = selector
+
+                    print(
+                        "Using result-card selector:",
+                        selector
+                    )
+
+                    print(
+                        "Result cards:",
+                        count
+                    )
+
+                    break
+
+            except Exception as ex:
+
+                print(
+                    "Result-card selector failed:",
+                    selector,
+                    repr(ex)
+                )
 
         if cards is not None:
-            for card_index in range(cards.count()):
+
+            for card_index in range(
+                cards.count()
+            ):
+
                 try:
-                    card = cards.nth(card_index)
+
+                    card = cards.nth(
+                        card_index
+                    )
 
                     if not card.is_visible():
                         continue
 
-                    card_text = normalize_text(card.inner_text())
+                    card_text = normalize_text(
+                        card.inner_text()
+                    )
 
-                    if len(card_text) < 20 or not location_matches(card_text):
+                    if len(card_text) < 20:
                         continue
 
-                    links = card.locator("a[href*='/in/']:visible")
+                    if not location_matches(
+                        card_text
+                    ):
+                        continue
 
-                    for link_index in range(links.count()):
+                    links = card.locator(
+                        "a[href*='/in/']:visible"
+                    )
+
+                    for link_index in range(
+                        links.count()
+                    ):
+
                         try:
-                            link = links.nth(link_index)
-                            href = link.get_attribute("href") or ""
-                            name = link.inner_text(timeout=1500).strip()
 
-                            if add_candidate(href, name, card_text):
+                            link = links.nth(
+                                link_index
+                            )
+
+                            href = (
+                                link
+                                .get_attribute(
+                                    "href"
+                                )
+                                or ""
+                            )
+
+                            name = (
+                                link
+                                .inner_text(
+                                    timeout=1500
+                                )
+                                .strip()
+                            )
+
+                            if add_candidate(
+                                href,
+                                name,
+                                card_text
+                            ):
+
                                 print("-" * 60)
+
                                 print(
                                     "EMPLOYEE CANDIDATE:",
-                                    canonical_profile_url(href),
+                                    canonical_profile_url(
+                                        href
+                                    )
                                 )
-                                print("Primary anchor:", normalize_text(name)[:200])
-                                print("Connection degree: IGNORED")
+
+                                print(
+                                    "Primary anchor:",
+                                    normalize_text(
+                                        name
+                                    )[:200]
+                                )
+
+                                print(
+                                    "Connection degree: IGNORED"
+                                )
+
+                                # Only one employee per result card.
                                 break
+
                         except Exception:
                             continue
 
                 except Exception as ex:
+
                     print(
-                        f"Result-card {card_index + 1} inspection failed:",
-                        repr(ex),
+                        f"Result-card "
+                        f"{card_index + 1} inspection failed:",
+                        repr(ex)
                     )
 
-        # ------------------------------------------------------------
-        # PASS 2: DOM fallback.
+        # ============================================================
+        # PASS 2
         #
-        # Important:
-        # The fallback uses the same page-wide visible /in/ link population
-        # that Playwright uses for its count. It does NOT depend on <main>.
+        # Robust DOM fallback.
         #
-        # We group each link by the smallest visible ancestor (up to 12
-        # levels) that:
-        #   - contains the requested location text
-        #   - contains one or more visible /in/ links
+        # IMPORTANT:
+        # We intentionally use page-wide visible /in/ links here.
         #
-        # The first /in/ link in each group is treated as the primary employee
-        # link; nested mutual-connection links are not independently returned.
-        # ------------------------------------------------------------
+        # The previous failure proved that LinkedIn can render employee
+        # results without the legacy result-card classes.
+        #
+        # We then group those links by the smallest visible ancestor
+        # containing:
+        #
+        #     requested location
+        #     one or more /in/ links
+        #
+        # The first /in/ link is treated as the employee.
+        # ============================================================
+
         if not profiles:
+
             print("=" * 60)
-            print("RESULT-CARD FALLBACK: VISIBLE /in/ LINKS")
+            print(
+                "PASS 2 - DOM FALLBACK"
+            )
             print("=" * 60)
 
             try:
-                links = self.page.locator("a[href*='/in/']:visible")
+
+                links = self.page.locator(
+                    "a[href*='/in/']:visible"
+                )
+
                 link_count = links.count()
+
             except Exception as ex:
-                print("Could not inspect visible employee links:", repr(ex))
+
+                print(
+                    "Visible /in/ link lookup failed:",
+                    repr(ex)
+                )
+
                 links = None
                 link_count = 0
 
-            print("Visible /in/ links found:", link_count)
+            print(
+                "Visible /in/ links found:",
+                link_count
+            )
 
-            if links is not None and link_count:
+            # --------------------------------------------------------
+            # If the normal Playwright visible locator is still zero,
+            # inspect the rendered DOM directly.
+            # --------------------------------------------------------
+
+            if (
+                links is None
+                or link_count == 0
+            ):
+
+                print(
+                    "Playwright visible-link count is zero."
+                )
+
+                print(
+                    "Running rendered-DOM diagnostic..."
+                )
+
                 try:
-                    raw_groups = self.page.evaluate(
-                        r"""(locationText) => {
-                            const visible = (el) => {
-                                if (!el) return false;
 
-                                const r = el.getBoundingClientRect();
-                                const s = getComputedStyle(el);
+                    dom_info = self.page.evaluate(
+                        r"""
+                        () => {
+
+                            const visible = (el) => {
+
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                const style =
+                                    window.getComputedStyle(
+                                        el
+                                    );
 
                                 return (
-                                    r.width > 0 &&
-                                    r.height > 0 &&
-                                    s.display !== 'none' &&
-                                    s.visibility !== 'hidden'
+                                    rect.width > 0 &&
+                                    rect.height > 0 &&
+                                    style.display !== "none" &&
+                                    style.visibility !== "hidden"
                                 );
                             };
 
-                            const normalize = (value) =>
-                                String(value || '')
-                                    .replace(/\u00a0/g, ' ')
-                                    .replace(/\s+/g, ' ')
-                                    .trim()
-                                    .toLowerCase();
+                            const allLinks =
+                                Array.from(
+                                    document.querySelectorAll(
+                                        "a[href*='/in/']"
+                                    )
+                                );
 
-                            const requested = normalize(locationText);
-                            const tokens = requested
-                                .split(/\s+/)
-                                .filter(Boolean)
-                                .filter(token => token.length >= 3);
+                            const visibleLinks =
+                                allLinks.filter(
+                                    visible
+                                );
 
-                            const links = Array.from(
-                                document.querySelectorAll("a[href*='/in/']")
-                            ).filter(visible);
+                            return {
+                                total:
+                                    allLinks.length,
+
+                                visible:
+                                    visibleLinks.length,
+
+                                hrefs:
+                                    visibleLinks
+                                        .slice(0, 20)
+                                        .map(
+                                            a =>
+                                                a.getAttribute(
+                                                    "href"
+                                                )
+                                        ),
+
+                                bodyLength:
+                                    document.body
+                                        ? document.body.innerText.length
+                                        : 0
+                            };
+                        }
+                        """
+                    )
+
+                    print(
+                        "Rendered DOM /in/ diagnostics:",
+                        dom_info
+                    )
+
+                except Exception as ex:
+
+                    print(
+                        "Rendered DOM diagnostic failed:",
+                        repr(ex)
+                    )
+
+            # --------------------------------------------------------
+            # Re-query after diagnostic/wait.
+            # --------------------------------------------------------
+
+            try:
+
+                links = self.page.locator(
+                    "a[href*='/in/']:visible"
+                )
+
+                link_count = links.count()
+
+                print(
+                    "Visible /in/ links after re-query:",
+                    link_count
+                )
+
+            except Exception as ex:
+
+                print(
+                    "Final visible-link query failed:",
+                    repr(ex)
+                )
+
+                links = None
+                link_count = 0
+
+            # --------------------------------------------------------
+            # Browser-side grouping.
+            # --------------------------------------------------------
+
+            if (
+                links is not None
+                and link_count > 0
+            ):
+
+                try:
+
+                    raw_groups = self.page.evaluate(
+                        r"""
+                        (locationText) => {
+
+                            const visible = (el) => {
+
+                                if (!el) {
+                                    return false;
+                                }
+
+                                const rect =
+                                    el.getBoundingClientRect();
+
+                                const style =
+                                    window.getComputedStyle(
+                                        el
+                                    );
+
+                                return (
+                                    rect.width > 0 &&
+                                    rect.height > 0 &&
+                                    style.display !== "none" &&
+                                    style.visibility !== "hidden"
+                                );
+                            };
+
+                            const normalize = (
+                                value
+                            ) => String(
+                                value || ""
+                            )
+                                .replace(
+                                    /\u00a0/g,
+                                    " "
+                                )
+                                .replace(
+                                    /\s+/g,
+                                    " "
+                                )
+                                .trim()
+                                .toLowerCase();
+
+                            const requested =
+                                normalize(
+                                    locationText
+                                );
+
+                            const tokens =
+                                requested
+                                    .split(/\s+/)
+                                    .filter(Boolean)
+                                    .filter(
+                                        token =>
+                                            token.length >= 3
+                                    );
+
+                            const links =
+                                Array.from(
+                                    document.querySelectorAll(
+                                        "a[href*='/in/']"
+                                    )
+                                ).filter(
+                                    visible
+                                );
 
                             const groups = [];
-                            const groupMap = new Map();
+                            const groupMap =
+                                new Map();
 
-                            for (const link of links) {
-                                let node = link.parentElement;
+                            for (
+                                const link
+                                of links
+                            ) {
+
+                                let node =
+                                    link.parentElement;
+
                                 let chosen = null;
 
                                 for (
                                     let depth = 0;
-                                    node && depth < 12;
+                                    node &&
+                                    depth < 15;
                                     depth++,
-                                    node = node.parentElement
+                                    node =
+                                        node.parentElement
                                 ) {
-                                    if (!visible(node)) continue;
 
-                                    const text = normalize(node.innerText);
+                                    if (
+                                        !visible(node)
+                                    ) {
+                                        continue;
+                                    }
 
-                                    if (text.length < 20) continue;
+                                    const text =
+                                        normalize(
+                                            node.innerText
+                                        );
 
-                                    const profileLinks = Array.from(
-                                        node.querySelectorAll("a[href*='/in/']")
-                                    ).filter(visible);
+                                    if (
+                                        text.length < 20
+                                    ) {
+                                        continue;
+                                    }
 
-                                    if (!profileLinks.length) continue;
+                                    const profileLinks =
+                                        Array.from(
+                                            node.querySelectorAll(
+                                                "a[href*='/in/']"
+                                            )
+                                        ).filter(
+                                            visible
+                                        );
+
+                                    if (
+                                        !profileLinks.length
+                                    ) {
+                                        continue;
+                                    }
 
                                     const locationOk =
-                                        !requested ||
-                                        text.includes(requested) ||
+                                        !requested
+                                        ||
+                                        text.includes(
+                                            requested
+                                        )
+                                        ||
                                         (
-                                            tokens.length > 0 &&
+                                            tokens.length > 0
+                                            &&
                                             tokens.every(
-                                                token => text.includes(token)
+                                                token =>
+                                                    text.includes(
+                                                        token
+                                                    )
                                             )
                                         );
 
-                                    if (!locationOk) continue;
+                                    if (
+                                        !locationOk
+                                    ) {
+                                        continue;
+                                    }
 
                                     chosen = node;
+
                                     break;
                                 }
 
-                                if (!chosen) continue;
+                                if (!chosen) {
+                                    continue;
+                                }
 
-                                const href = link.getAttribute('href') || '';
+                                const href =
+                                    link.getAttribute(
+                                        "href"
+                                    ) || "";
 
-                                const absolute = new URL(
-                                    href,
-                                    window.location.href
-                                ).href;
+                                const absolute =
+                                    new URL(
+                                        href,
+                                        window.location.href
+                                    ).href;
 
-                                if (!groupMap.has(chosen)) {
+                                if (
+                                    !groupMap.has(
+                                        chosen
+                                    )
+                                ) {
+
                                     const group = {
-                                        element: chosen,
+                                        element:
+                                            chosen,
                                         links: []
                                     };
 
-                                    groupMap.set(chosen, group);
-                                    groups.push(group);
+                                    groupMap.set(
+                                        chosen,
+                                        group
+                                    );
+
+                                    groups.push(
+                                        group
+                                    );
                                 }
 
-                                groupMap.get(chosen).links.push({
-                                    href: absolute,
-                                    text: String(
-                                        link.innerText || ''
-                                    ).trim()
-                                });
+                                groupMap
+                                    .get(chosen)
+                                    .links
+                                    .push(
+                                        {
+                                            href:
+                                                absolute,
+
+                                            text:
+                                                String(
+                                                    link
+                                                        .innerText
+                                                    || ""
+                                                ).trim()
+                                        }
+                                    );
                             }
 
-                            return groups.map(group => ({
-                                text: String(
-                                    group.element.innerText || ''
-                                ),
-                                links: group.links
-                            }));
-                        }""",
-                        requested_location,
+                            return groups.map(
+                                group => ({
+                                    text:
+                                        String(
+                                            group
+                                                .element
+                                                .innerText
+                                            || ""
+                                        ),
+
+                                    links:
+                                        group.links
+                                })
+                            );
+                        }
+                        """,
+                        requested_location
                     )
+
                 except Exception as ex:
-                    print("DOM ancestry fallback failed:", repr(ex))
+
+                    print(
+                        "DOM ancestry fallback failed:",
+                        repr(ex)
+                    )
+
                     raw_groups = []
 
-                print("Fallback result groups found:", len(raw_groups))
+                print(
+                    "Fallback result groups found:",
+                    len(raw_groups)
+                )
 
-                for group_index, group in enumerate(raw_groups):
+                # ----------------------------------------------------
+                # Process each group.
+                # ----------------------------------------------------
+
+                for (
+                    group_index,
+                    group
+                ) in enumerate(
+                    raw_groups
+                ):
+
+                    if len(profiles) >= 100:
+                        break
+
                     try:
-                        group_text = normalize_text(group.get("text", ""))
 
-                        if not location_matches(group_text):
+                        group_text = normalize_text(
+                            group.get(
+                                "text",
+                                ""
+                            )
+                        )
+
+                        if not location_matches(
+                            group_text
+                        ):
                             continue
 
-                        # Prefer the first unique /in/ link in this group.
-                        for item in group.get("links", []):
+                        group_links = (
+                            group.get(
+                                "links",
+                                []
+                            )
+                        )
+
+                        # ------------------------------------------------
+                        # Prefer the first unique profile link in group.
+                        # ------------------------------------------------
+
+                        for item in group_links:
+
                             if add_candidate(
-                                item.get("href", ""),
-                                item.get("text", ""),
-                                group_text,
+                                item.get(
+                                    "href",
+                                    ""
+                                ),
+                                item.get(
+                                    "text",
+                                    ""
+                                ),
+                                group_text
                             ):
-                                print("-" * 60)
+
+                                print(
+                                    "-" * 60
+                                )
+
                                 print(
                                     "EMPLOYEE CANDIDATE:",
                                     canonical_profile_url(
-                                        item.get("href", "")
-                                    ),
+                                        item.get(
+                                            "href",
+                                            ""
+                                        )
+                                    )
                                 )
+
                                 print(
                                     "Primary anchor:",
                                     normalize_text(
-                                        item.get("text", "")
-                                    )[:200],
+                                        item.get(
+                                            "text",
+                                            ""
+                                        )
+                                    )[:200]
                                 )
+
                                 print(
                                     "Result group:",
-                                    group_text[:500],
+                                    group_text[:500]
                                 )
-                                print("Connection degree: IGNORED")
+
+                                print(
+                                    "Connection degree: IGNORED"
+                                )
+
+                                # One employee per result group.
                                 break
 
                     except Exception as ex:
+
                         print(
-                            f"Fallback result group {group_index + 1} failed:",
-                            repr(ex),
+                            f"Fallback result group "
+                            f"{group_index + 1} failed:",
+                            repr(ex)
                         )
 
+        # ============================================================
+        # Final result
+        # ============================================================
+
         print("=" * 60)
+
         print(
             "UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:",
-            len(profiles),
+            len(profiles)
         )
+
         print("=" * 60)
-        print("EMPLOYEE PROFILES EXTRACTED:", len(profiles))
+
+        print(
+            "EMPLOYEE PROFILES EXTRACTED:",
+            len(profiles)
+        )
 
         return profiles
+
 
     def next_page(self):
         """
