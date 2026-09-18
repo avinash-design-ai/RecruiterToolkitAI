@@ -1855,49 +1855,29 @@ class LinkedInProfilePageV2(BasePage):
 
             return result
 
+
+    @staticmethod
     def is_valid_email(email):
-
         if not email:
-
             return False
 
-        email = email.strip()
+        email = str(email).strip()
 
-        if len(email) > 254:
-
+        if len(email) > 254 or "@" not in email:
             return False
 
-        if "@" not in email:
+        domain = email.rsplit("@", 1)[-1].lower()
 
-            return False
-
-        # Avoid obvious LinkedIn/system artifacts.
-
-        blocked_domains = {
-
-            "linkedin.com",
-
-            "example.com",
-
-        }
-
-        domain = (
-            email
-            .rsplit("@", 1)[-1]
-            .lower()
-        )
-
-        if domain in blocked_domains:
-
+        if domain in {"linkedin.com", "example.com"}:
             return False
 
         return bool(
             re.match(
-                r"^[A-Za-z0-9._%+-]+"
-                r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
+                r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
                 email
             )
         )
+
 
 
 # ============================================================

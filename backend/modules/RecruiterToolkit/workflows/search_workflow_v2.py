@@ -95,33 +95,63 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
             or "remember-me-auto-login" in u
         )
 
+
     def _employee_search_page(self):
         """
-        Return the current authenticated company-scoped people-search page.
-        Do not navigate away from it.
+        Locate the live authenticated company-scoped employee-search page.
+
+        Do not assume self.page is still the search page: during profile
+        extraction self.page is intentionally switched to a temporary profile
+        tab. The browser context is the authoritative source.
         """
         try:
-            current = self._original_profile_page
-            if current and not current.is_closed():
-                u = (current.url or "").lower()
-                if "/search/results/people/" in u and "currentcompany=" in u:
-                    return current
+            context = self.page.context
         except Exception:
-            pass
+            return None
 
-        # The current workflow page is normally the search page. Keep this
-        # as a non-navigating fallback so a temporary profile tab can never
-        # become the source page for the next candidate.
+        pages = []
         try:
-            current = self.page
-            if current and not current.is_closed():
-                u = (current.url or "").lower()
-                if "/search/results/people/" in u and "currentcompany=" in u:
-                    return current
+            pages = list(context.pages)
+        except Exception:
+            return None
+
+        # Prefer a company people-search page. This also survives the case
+        # where self.page is currently a profile tab or LinkedIn feed.
+        for candidate in pages:
+            try:
+                if candidate.is_closed():
+                    continue
+                url = str(candidate.url or "")
+                lower = url.lower()
+                if (
+                    "/search/results/people/" in lower
+                    and "currentcompany=" in lower
+                    and "/login" not in lower
+                    and "/authwall" not in lower
+                    and "/ssr-login" not in lower
+                ):
+                    print("Authenticated employee search page found in browser context:")
+                    print(url)
+                    return candidate
+            except Exception:
+                continue
+
+        # Preserve the original-page fallback if it is still usable.
+        try:
+            original = getattr(self, "_original_profile_page", None)
+            if original and not original.is_closed():
+                lower = str(original.url or "").lower()
+                if (
+                    "/search/results/people/" in lower
+                    and "currentcompany=" in lower
+                ):
+                    return original
         except Exception:
             pass
 
+        print("No authenticated company-scoped employee-search page found in browser context.")
         return None
+
 
     def open_profile(self, profile_url):
         requested = self._canonical_profile_url(profile_url)
@@ -627,9 +657,8 @@ class SearchWorkflowV2:
                     )
                     continue
 
-                seen_urls.add(
-                    candidate_url
-                )
+                # Candidate is marked seen only after it is
+                # successfully retained in results.
 
                 print(
                     "Candidate profile URL:",
@@ -933,6 +962,12 @@ class SearchWorkflowV2:
 
                     results.append(
                         data
+                    )
+
+                    # Mark only after all profile validation succeeded
+                    # and the candidate was actually retained.
+                    seen_urls.add(
+                        candidate_url
                     )
 
                     print(
