@@ -303,10 +303,8 @@ class CompanyPage(BasePage):
                 return []
 
         def broaden_connection_degree(url):
-            """
-            Preserve every existing LinkedIn search parameter and replace
-            only network with ["F","S","O"].
-            """
+            # Remove only LinkedIn's network parameter.
+            # Preserve currentCompany and every other search parameter.
             try:
                 from urllib.parse import (
                     urlsplit,
@@ -314,7 +312,6 @@ class CompanyPage(BasePage):
                     parse_qsl,
                     urlencode,
                 )
-                import json
 
                 parsed = urlsplit(url)
 
@@ -332,30 +329,14 @@ class CompanyPage(BasePage):
                 ):
                     return ""
 
-                all_degrees = json.dumps(
-                    ["F", "S", "O"],
-                    separators=(",", ":"),
-                )
-
-                replaced = []
-                network_seen = False
-
-                for key, value in pairs:
-                    if key.lower() == "network":
-                        if not network_seen:
-                            replaced.append(
-                                ("network", all_degrees)
-                            )
-                            network_seen = True
-                        continue
-
-                    replaced.append((key, value))
-
-                if not network_seen:
-                    return url
+                filtered = [
+                    (key, value)
+                    for key, value in pairs
+                    if key.lower() != "network"
+                ]
 
                 query = urlencode(
-                    replaced,
+                    filtered,
                     doseq=True,
                 )
 
