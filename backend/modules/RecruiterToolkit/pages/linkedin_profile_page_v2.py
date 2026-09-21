@@ -1501,23 +1501,112 @@ class LinkedInProfilePageV2(BasePage):
             first_clean = re.sub(r"[^a-z0-9]", "", parts[0] if parts else "")
             last_clean = re.sub(r"[^a-z0-9]", "", parts[-1] if len(parts) >= 2 else "")
 
+
+            # ----------------------------------------------------
+            # Deterministic owner-vs-linked email classification.
+            #
+            # email:
+            #   profile owner's own public email.
+            #
+            # linked_email_id:
+            #   other publicly visible email addresses on the SAME
+            #   profile page, never the owner's email.
+            #
+            # If only one unique email exists, linked_email_id remains
+            # blank.
+            # ----------------------------------------------------
+
+            unique_emails = list(
+                dict.fromkeys(
+                    email.strip().lower()
+                    for email in discovered_emails
+                    if self.is_valid_email(email)
+                )
+            )
+
+            profile_name = str(
+                result.get("name", "")
+                or result.get("full_name", "")
+                or ""
+            ).strip()
+
+            if not profile_name:
+                try:
+                    profile_name = str(
+                        self.page.locator(
+                            "h1"
+                        ).first.inner_text(timeout=2000)
+                    ).strip()
+                except Exception:
+                    profile_name = ""
+
+            cleaned = re.sub(
+                r"[^a-zA-Z0-9 ]",
+                " ",
+                profile_name
+            )
+
+            parts = [
+                p.lower()
+                for p in cleaned.split()
+                if len(p) >= 2
+            ]
+
+            first_clean = re.sub(
+                r"[^a-z0-9]",
+                "",
+                parts[0] if parts else ""
+            )
+
+            last_clean = re.sub(
+                r"[^a-z0-9]",
+                "",
+                parts[-1] if len(parts) >= 2 else ""
+            )
+
             owner_email = ""
             linked_emails = []
 
-            for email in discovered_emails:
-                local_clean = re.sub(r"[^a-z0-9]", "", email.split("@", 1)[0].lower())
+            for email in unique_emails:
+
+                local_clean = re.sub(
+                    r"[^a-z0-9]",
+                    "",
+                    email.split("@", 1)[0].lower()
+                )
+
                 owner_match = False
 
                 if first_clean:
                     if local_clean.startswith(first_clean):
                         owner_match = True
-                    elif (len(first_clean) >= 5 and len(local_clean) >= 3 and
-                          first_clean.startswith(local_clean[:3])):
+
+                    elif (
+                        len(first_clean) >= 5
+                        and len(local_clean) >= 3
+                        and first_clean.startswith(
+                            local_clean[:3]
+                        )
+                    ):
                         owner_match = True
 
-                if not owner_match and first_clean and last_clean:
-                    compact = first_clean + last_clean
-                    if compact in local_clean or (first_clean in local_clean and last_clean in local_clean):
+                if (
+                    not owner_match
+                    and first_clean
+                    and last_clean
+                ):
+                    compact = (
+                        first_clean
+                        + last_clean
+                    )
+
+                    if (
+                        compact in local_clean
+                        or (
+                            first_clean in local_clean
+                            and last_clean in local_clean
+                        )
+                    ):
                         owner_match = True
 
                 if owner_match and not owner_email:
@@ -1525,18 +1614,39 @@ class LinkedInProfilePageV2(BasePage):
                 else:
                     linked_emails.append(email)
 
-            if not owner_email and len(discovered_emails) == 1:
-                owner_email = discovered_emails[0]
+            # If exactly one unique email was found, it is the only
+            # public email discovered for this profile. Never duplicate
+            # it into linked_email_id.
+            if (
+                not owner_email
+                and len(unique_emails) == 1
+            ):
+                owner_email = unique_emails[0]
                 linked_emails = []
 
             if owner_email:
                 result["email"] = owner_email
                 result["email_source"] = "profile"
-            if linked_emails:
-                result["linked_email_id"] = "; ".join(dict.fromkeys(linked_emails))
 
-            print("Primary email:", result["email"])
-            print("Linked email IDs:", result["linked_email_id"])
+            if linked_emails:
+                result["linked_email_id"] = "; ".join(
+                    dict.fromkeys(linked_emails)
+                )
+            else:
+                result["linked_email_id"] = ""
+
+            print(
+                "Unique public emails:",
+                unique_emails
+            )
+            print(
+                "Primary email:",
+                result["email"]
+            )
+            print(
+                "Linked email IDs:",
+                result["linked_email_id"]
+            )
             return result
 
         except Exception as ex:
