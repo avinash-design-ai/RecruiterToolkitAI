@@ -1009,7 +1009,7 @@ class CompanyPage(BasePage):
             try:
                 raw_candidates = self.page.evaluate(
                     r'''
-                    (requestedCompany, requestedLocation) => {
+                    ({requestedCompany, requestedLocation}) => {
                         const visible = (el) => {
                             if (!el) return false;
                             const r = el.getBoundingClientRect();
@@ -1179,8 +1179,10 @@ class CompanyPage(BasePage):
                         return results;
                     }
                     ''',
-                    company,
-                    location,
+                    {
+                        "requestedCompany": company,
+                        "requestedLocation": location,
+                    },
                 )
             except Exception as ex:
                 print("All-degree DOM extraction failed:", repr(ex))
@@ -1347,11 +1349,74 @@ class CompanyPage(BasePage):
 
             print("URL after Next:", current_url)
 
+            # LinkedIn can briefly expose a valid people-search URL and
+            # then redirect the same Page back to linkedin.com. Require the
+            # destination to remain company-scoped before returning True.
+            stable_people_url = False
+            stable_url = current_url
+
+            for stability_attempt in range(1, 13):
+                self.page.wait_for_timeout(500)
+
+                try:
+                    stable_url = str(
+                        self.page.url or ""
+                    ).strip()
+                except Exception:
+                    stable_url = ""
+
+                stable_lower = stable_url.lower()
+
+                if (
+                    "/search/results/people/" in stable_lower
+                    and "currentcompany=" in stable_lower
+                    and not any(
+                        part in stable_lower
+                        for part in (
+                            "/login",
+                            "/authwall",
+                            "/checkpoint",
+                            "/uas/login",
+                            "/signup",
+                            "/ssr-login",
+                            "remember-me-auto-login",
+                        )
+                    )
+                ):
+                    if stability_attempt >= 4:
+                        stable_people_url = True
+                        current_url = stable_url
+                        break
+                else:
+                    print(
+                        "NEXT DESTINATION LOST COMPANY PEOPLE SEARCH:",
+                        stable_url
+                    )
+                    break
+
+            print(
+                "Next-page destination stable:",
+                stable_people_url
+            )
+            print(
+                "Stable destination URL:",
+                stable_url
+            )
+
+            if not stable_people_url:
+                print(
+                    "NEXT FAILED - destination did not remain on "
+                    "company people-search."
+                )
+                return False
+
             if not changed_url:
                 print("NEXT FAILED - URL did not change.")
                 return False
 
+            current_url = stable_url
             current_lower = current_url.lower()
+
             bad_parts = (
                 "/login",
                 "/authwall",
