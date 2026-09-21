@@ -442,15 +442,57 @@ class CompanyPage(BasePage):
                 final_url,
             )
 
-            if is_blocked_url(final_url):
-                print(
-                    "ERROR: LinkedIn redirected the all-degree "
-                    "company search to authentication."
-                )
-                print("Authentication URL:", final_url)
-                return False
+            if (
+                is_blocked_url(final_url)
+                or not is_people_url(final_url)
+                or company_ids(final_url) != ids
+            ):
+                print("=" * 60)
+                print("F/S/O URL NOT ACCEPTED - RESTORING ORIGINAL COMPANY SEARCH")
+                print("=" * 60)
+                print("Original authenticated URL:", current_url)
 
-            if not is_people_url(final_url):
+                try:
+                    self.page.goto(
+                        current_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
+                    self.page.wait_for_timeout(5000)
+                except Exception as ex:
+                    print(
+                        "Original company-search restoration failed:",
+                        repr(ex),
+                    )
+                    return False
+
+                final_url = str(self.page.url or "").strip()
+
+                print(
+                    "Restored employee-search URL:",
+                    final_url,
+                )
+
+                if (
+                    is_blocked_url(final_url)
+                    or not is_people_url(final_url)
+                    or company_ids(final_url) != ids
+                ):
+                    print(
+                        "ERROR: Original authenticated company people-search "
+                        "could not be restored."
+                    )
+                    return False
+
+                print("=" * 60)
+                print("COMPANY PEOPLE SEARCH READY")
+                print("=" * 60)
+                print("Final URL:", final_url)
+                print("Connection-degree filter:", "ORIGINAL LINKEDIN FILTER")
+                print("Company scope preserved:", ids)
+                return True
+
+            if is_blocked_url(final_url):
                 print(
                     "ERROR: Final page is not a company-scoped "
                     "people search."
@@ -584,15 +626,65 @@ class CompanyPage(BasePage):
             final_url,
         )
 
-        if is_blocked_url(final_url):
-            print(
-                "ERROR: LinkedIn redirected the all-degree "
-                "employee search to authentication."
+        if (
+            is_blocked_url(final_url)
+            or not is_people_url(final_url)
+            or (
+                selected_company_ids
+                and company_ids(final_url) != selected_company_ids
             )
-            print("Authentication URL:", final_url)
-            return False
+        ):
+            print("=" * 60)
+            print("F/S/O CLICK NOT ACCEPTED - RESTORING ORIGINAL COMPANY SEARCH")
+            print("=" * 60)
+            print("Original authenticated URL:", selected_href)
 
-        if not is_people_url(final_url):
+            try:
+                self.page.goto(
+                    selected_href,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                self.page.wait_for_timeout(5000)
+            except Exception as ex:
+                print(
+                    "Original company-search restoration failed:",
+                    repr(ex),
+                )
+                return False
+
+            final_url = str(self.page.url or "").strip()
+
+            print(
+                "Restored employee-search URL:",
+                final_url,
+            )
+
+            if (
+                is_blocked_url(final_url)
+                or not is_people_url(final_url)
+                or (
+                    selected_company_ids
+                    and company_ids(final_url) != selected_company_ids
+                )
+            ):
+                print(
+                    "ERROR: Original authenticated company people-search "
+                    "could not be restored."
+                )
+                return False
+
+            final_ids = company_ids(final_url)
+
+            print("=" * 60)
+            print("COMPANY PEOPLE SEARCH READY")
+            print("=" * 60)
+            print("Final URL:", final_url)
+            print("Connection-degree filter:", "ORIGINAL LINKEDIN FILTER")
+            print("Company scope preserved:", final_ids)
+            return True
+
+        if is_blocked_url(final_url):
             print(
                 "ERROR: Employee-search navigation did not produce "
                 "a company-scoped people search."
