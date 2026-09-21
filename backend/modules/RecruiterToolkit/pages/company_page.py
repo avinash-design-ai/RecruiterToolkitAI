@@ -1168,11 +1168,11 @@ class CompanyPage(BasePage):
         # The first /in/ link is treated as the employee.
         # ============================================================
 
-        if not profiles:
+        if len(profiles) < 5:
 
             print("=" * 60)
             print(
-                "PASS 2 - DOM FALLBACK"
+                "PASS 2 - DOM FALLBACK / SUPPLEMENT"
             )
             print("=" * 60)
 
@@ -1606,10 +1606,42 @@ class CompanyPage(BasePage):
                         )
 
                         # ------------------------------------------------
-                        # Prefer the first unique profile link in group.
+                        # Prefer the employee's richer existing result link.
+                        #
+                        # LinkedIn can nest mutual-connection /in/ links
+                        # inside the same employee result. Those nested
+                        # links normally have short anchor text, while the
+                        # employee result anchor carries richer result text.
+                        #
+                        # Do not create another locator or scraping method.
+                        # Only reorder links already returned by the
+                        # existing DOM-grouping logic.
                         # ------------------------------------------------
 
-                        for item in group_links:
+                        ranked_group_links = sorted(
+                            group_links,
+                            key=lambda item: (
+                                len(
+                                    normalize_text(
+                                        item.get(
+                                            "text",
+                                            ""
+                                        )
+                                    )
+                                ),
+                                normalize_text(
+                                    item.get(
+                                        "text",
+                                        ""
+                                    )
+                                ).lower().count(
+                                    "mutual connections"
+                                ) == 0,
+                            ),
+                            reverse=True,
+                        )
+
+                        for item in ranked_group_links:
 
                             if add_candidate(
                                 item.get(
