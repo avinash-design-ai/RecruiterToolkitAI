@@ -507,6 +507,21 @@ class SearchWorkflowV2:
             opened
         )
 
+        # Keep SearchWorkflowV2 and CompanyPage pointed at the exact same
+        # authenticated employee-search page.
+        if opened:
+            try:
+                self.page = self.company_page.page
+                print(
+                    "Employee-search page ownership synchronized:",
+                    self.page.url
+                )
+            except Exception as ex:
+                print(
+                    "Employee-search page ownership synchronization failed:",
+                    repr(ex)
+                )
+
         # -------------------------------------------------
         # V2 EMPLOYEE SEARCH RECOVERY
         #
@@ -521,9 +536,25 @@ class SearchWorkflowV2:
 
         if not opened:
 
+            # First recover from an already-open authenticated company
+            # people-search tab. This is non-navigational and cannot turn a
+            # valid session into /login/ or /uas/login/.
+            try:
+                if self._restore_employee_search_page():
+                    opened = True
+                    print(
+                        "Existing authenticated employee-search tab "
+                        "recovered without navigation."
+                    )
+            except Exception as ex:
+                print(
+                    "Existing employee-search tab recovery failed:",
+                    repr(ex)
+                )
+
             current_url = self.page.url.lower()
 
-            if (
+            if not opened and (
                 "/ssr-login/" in current_url
                 or "remember-me-auto-login" in current_url
                 or "/login" in current_url
