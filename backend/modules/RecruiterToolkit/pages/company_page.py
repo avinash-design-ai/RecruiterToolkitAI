@@ -1087,45 +1087,31 @@ class CompanyPage(BasePage):
                                 );
                             };
 
-                            const isResultContainer = (node) => {
-                                if (!node) return false;
-
-                                const tag =
-                                    String(
-                                        node.tagName || ""
-                                    ).toLowerCase();
-
-                                const cls =
-                                    String(
-                                        node.className || ""
-                                    ).toLowerCase();
-
-                                const id =
-                                    String(
-                                        node.id || ""
-                                    ).toLowerCase();
-
-                                return (
-                                    tag === "li" ||
-                                    cls.includes("entity-result") ||
-                                    cls.includes(
-                                        "reusable-search__result"
-                                    ) ||
-                                    cls.includes("search-result") ||
-                                    cls.includes(
-                                        "search-results__result"
-                                    ) ||
-                                    id.includes("search-result")
-                                );
-                            };
+                            // -------------------------------------------------
+                            // Identify the employee result group without using
+                            // connection-degree text or assuming a particular
+                            // LinkedIn result-card class.
+                            //
+                            // IMPORTANT:
+                            // LinkedIn currently renders first-degree and
+                            // non-first-degree employees differently. The
+                            // previous fallback could collapse/ignore non-first-
+                            // degree results because it required a known result
+                            // container or <= 6 /in/ links.
+                            //
+                            // We instead use the nearest visible ancestor that:
+                            //   - contains the requested location
+                            //   - contains a bounded number of profile links
+                            // Then rank the links in that group and choose the
+                            // richest employee anchor. Mutual-connection links
+                            // normally have much shorter text.
+                            // -------------------------------------------------
 
                             for (const link of allLinks) {
 
                                 let node = link.parentElement;
                                 let chosen = null;
 
-                                // Prefer the nearest known LinkedIn
-                                // result container containing location.
                                 for (
                                     let depth = 0;
                                     node && depth < 18;
@@ -1137,12 +1123,11 @@ class CompanyPage(BasePage):
                                     }
 
                                     const text =
-                                        String(
-                                            node.innerText || ""
-                                        );
+                                        String(node.innerText || "");
 
                                     if (
                                         text.length < 20 ||
+                                        text.length > 6000 ||
                                         !hasLocation(text)
                                     ) {
                                         continue;
@@ -1155,82 +1140,60 @@ class CompanyPage(BasePage):
                                             )
                                         ).filter(visible);
 
-                                    if (!profileLinks.length) {
-                                        continue;
-                                    }
-
+                                    // A real employee result normally has a
+                                    // small local set of /in/ links. A larger
+                                    // ancestor is the page/list wrapper and is
+                                    // deliberately rejected.
                                     if (
-                                        isResultContainer(node)
+                                        profileLinks.length >= 1 &&
+                                        profileLinks.length <= 12
                                     ) {
                                         chosen = node;
                                         break;
                                     }
                                 }
 
-                                // Fallback for LinkedIn DOM structures
-                                // without recognizable result-card classes.
-                                if (!chosen) {
-                                    node = link.parentElement;
-
-                                    for (
-                                        let depth = 0;
-                                        node && depth < 14;
-                                        depth++,
-                                        node = node.parentElement
-                                    ) {
-                                        if (!visible(node)) {
-                                            continue;
-                                        }
-
-                                        const text =
-                                            String(
-                                                node.innerText || ""
-                                            );
-
-                                        if (
-                                            text.length < 40 ||
-                                            text.length > 4000 ||
-                                            !hasLocation(text)
-                                        ) {
-                                            continue;
-                                        }
-
-                                        const profileLinks =
-                                            Array.from(
-                                                node.querySelectorAll(
-                                                    "a[href*='/in/']"
-                                                )
-                                            ).filter(visible);
-
-                                        if (
-                                            profileLinks.length >= 1 &&
-                                            profileLinks.length <= 6
-                                        ) {
-                                            chosen = node;
-                                            break;
-                                        }
-                                    }
-                                }
-
                                 if (!chosen) {
                                     continue;
                                 }
 
-                                const primaryLinks =
+                                const groupLinks =
                                     Array.from(
                                         chosen.querySelectorAll(
                                             "a[href*='/in/']"
                                         )
                                     ).filter(visible);
 
-                                if (!primaryLinks.length) {
+                                if (!groupLinks.length) {
                                     continue;
                                 }
 
-                                // FIRST visible /in/ link in a result
-                                // container is the primary employee.
-                                // Later /in/ links are nested people.
-                                if (primaryLinks[0] !== link) {
+                                // Prefer the richest anchor. Employee anchors
+                                // contain name + headline/result text; mutual
+                                // connection anchors are normally short names.
+                                const rankedLinks = groupLinks.slice().sort(
+                                    (a, b) => {
+                                        const aText =
+                                            String(a.innerText || "").trim();
+                                        const bText =
+                                            String(b.innerText || "").trim();
+
+                                        const aMutual =
+                                            /mutual connections?/i.test(aText);
+                                        const bMutual =
+                                            /mutual connections?/i.test(bText);
+
+                                        if (aMutual !== bMutual) {
+                                            return aMutual ? 1 : -1;
+                                        }
+
+                                        return bText.length - aText.length;
+                                    }
+                                );
+
+                                const primaryLink = rankedLinks[0];
+
+                                if (primaryLink !== link) {
                                     continue;
                                 }
 
@@ -1645,14 +1608,119 @@ class CompanyPage(BasePage):
                     or rendered_cards > 0
                     or rendered_result_text
                 ):
+                    # LinkedIn can transiently expose employee-result text and
+                    # then redirect the page to linkedin.com/. Never report
+                    # success based on stale DOM from that transient state.
+                    stable_url = str(self.page.url or "").strip()
+                    stable_lower = stable_url.lower()
+
+                    if (
+                        "/search/results/people/" not in stable_lower
+                        or "currentcompany=" not in stable_lower
+                    ):
+                        print(
+                            "NEXT PAGE TRANSIENTLY LEFT COMPANY SEARCH."
+                        )
+                        print("Stable URL check:", stable_url)
+                        print(
+                            "Attempting one browser-history recovery before "
+                            "declaring pagination failure."
+                        )
+
+                        try:
+                            self.page.go_back(
+                                wait_until="domcontentloaded",
+                                timeout=30000
+                            )
+                            self.page.wait_for_timeout(3000)
+                        except Exception as recovery_ex:
+                            print(
+                                "Pagination history recovery failed:",
+                                repr(recovery_ex)
+                            )
+
+                        recovered_url = str(
+                            self.page.url or ""
+                        ).strip()
+                        recovered_lower = recovered_url.lower()
+
+                        if (
+                            "/search/results/people/" not in recovered_lower
+                            or "currentcompany=" not in recovered_lower
+                        ):
+                            print(
+                                "NEXT REJECTED - history recovery did not "
+                                "restore company people-search."
+                            )
+                            print(
+                                "Recovered URL:",
+                                recovered_url
+                            )
+                            return False
+
+                        recovered_query = parse_qs(
+                            urlsplit(recovered_url).query,
+                            keep_blank_values=True
+                        )
+                        recovered_company_ids = (
+                            recovered_query.get("currentCompany", [])
+                            or recovered_query.get("currentcompany", [])
+                        )
+
+                        if (
+                            company_ids
+                            and recovered_company_ids != company_ids
+                        ):
+                            print(
+                                "NEXT REJECTED - history recovery changed "
+                                "company scope."
+                            )
+                            print("Before:", company_ids)
+                            print("Recovered:", recovered_company_ids)
+                            return False
+
+                        # If history returned to the original page, the click
+                        # did not stick. Do not pretend that this is page 2.
+                        if recovered_url == before_url:
+                            print(
+                                "NEXT REJECTED - history returned to the "
+                                "same employee page."
+                            )
+                            return False
+
+                        stable_url = recovered_url
+                        stable_lower = recovered_lower
+
+                    stable_query = parse_qs(
+                        urlsplit(stable_url).query,
+                        keep_blank_values=True
+                    )
+                    stable_company_ids = (
+                        stable_query.get("currentCompany", [])
+                        or stable_query.get("currentcompany", [])
+                    )
+
+                    if (
+                        company_ids
+                        and stable_company_ids != company_ids
+                    ):
+                        print(
+                            "NEXT REJECTED - company scope changed during "
+                            "DOM validation."
+                        )
+                        print("Before:", company_ids)
+                        print("After:", stable_company_ids)
+                        return False
+
                     print("=" * 60)
                     print("NEXT PAGE VALIDATED")
                     print("=" * 60)
                     print("Same company people-search:", True)
                     print(
                         "Validation:",
-                        "links/cards/text"
+                        "links/cards/text + stable URL"
                     )
+                    print("Final validated URL:", stable_url)
                     return True
 
                 if attempt in (10, 20, 30):
