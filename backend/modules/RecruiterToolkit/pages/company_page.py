@@ -314,39 +314,139 @@ class CompanyPage(BasePage):
             return " ".join(parts).strip()
 
         def click_filter_trigger():
-            """Open LinkedIn's Connections filter using the live UI."""
-            selectors = (
+            # Prefer the actual Connections filter.
+            #
+            # Do not accidentally click My Network or another
+            # navigation/result element containing the word
+            # "connections".
+
+            exact_candidates = []
+            other_candidates = []
+
+
+            for selector in (
                 "button:visible",
                 "[role='button']:visible",
                 "a:visible",
-            )
-            candidates = []
-            for selector in selectors:
+            ):
+
                 try:
-                    loc = self.page.locator(selector)
-                    for i in range(loc.count()):
+
+                    loc = self.page.locator(
+                        selector
+                    )
+
+                    for i in range(
+                        min(
+                            loc.count(),
+                            1500
+                        )
+                    ):
+
                         item = loc.nth(i)
-                        if not item.is_visible():
+
+                        try:
+
+                            if not item.is_visible():
+                                continue
+
+
+                            label = normalized_label(
+                                label_for(item)
+                            )
+
+
+                            if not label:
+                                continue
+
+
+                            if (
+                                "connections of"
+                                in label
+                            ):
+                                continue
+
+
+                            if (
+                                "my network"
+                                in label
+                            ):
+                                continue
+
+
+                            # Exact Connections filter gets
+                            # highest priority.
+
+                            if label == "connections":
+
+                                exact_candidates.append(
+                                    item
+                                )
+
+                            elif (
+                                "connections"
+                                in label
+                                and len(label) <= 60
+                                and "people you may know"
+                                not in label
+                                and "network"
+                                not in label
+                            ):
+
+                                other_candidates.append(
+                                    item
+                                )
+
+
+                        except Exception:
                             continue
-                        label = label_for(item).lower()
-                        if "connections" in label and "connections of" not in label:
-                            candidates.append(item)
+
+
                 except Exception:
                     continue
 
-            # Prefer a compact filter/chip rather than navigation links.
+
+            candidates = (
+                exact_candidates
+                + other_candidates
+            )
+
+
             for item in candidates:
+
                 try:
-                    label = label_for(item).lower()
-                    if label.strip() in ("connections", "connections 1st", "connections 2nd", "connections 3rd+") or "connections" in label:
-                        item.scroll_into_view_if_needed()
-                        item.click(timeout=10000)
-                        self.page.wait_for_timeout(1000)
-                        print("Connections filter opened:", label_for(item))
-                        return True
+
+                    label = (
+                        label_for(item)
+                        .strip()
+                    )
+
+
+                    item.scroll_into_view_if_needed()
+
+                    item.click(
+                        timeout=10000
+                    )
+
+                    self.page.wait_for_timeout(
+                        1000
+                    )
+
+
+                    print(
+                        "Connections filter opened:",
+                        label
+                    )
+
+                    return True
+
+
                 except Exception:
                     continue
+
+
             return False
+
 
         def click_all_filters_trigger():
             for selector in (
@@ -371,67 +471,243 @@ class CompanyPage(BasePage):
                     continue
             return False
 
-        def option_state(label_patterns):
-            """Return visible exact-ish option locators with state metadata."""
-            found = []
-            for selector in (
+        def normalized_label(value):
+            return re.sub(
+                r"\\s+",
+                " ",
+                str(value or "").replace("\\xa0", " ")
+            ).strip().lower()
+
+
+        def find_degree_option(patterns):
+            # IMPORTANT:
+            # Match ONLY the actual filter option text.
+            #
+            # Do NOT use substring matching against arbitrary visible
+            # elements. LinkedIn result names can contain:
+            #
+            #     Person Name · 1st
+            #     Person Name · 2nd
+            #
+            # and those must never be treated as filter options.
+
+            wanted = {
+                normalized_label(pattern)
+                for pattern in patterns
+                if pattern
+            }
+
+            selectors = (
                 "label:visible",
-                "button:visible",
                 "[role='checkbox']:visible",
                 "[role='option']:visible",
+                "button:visible",
                 "li:visible",
-                "div:visible",
-            ):
+            )
+
+            for selector in selectors:
+
                 try:
+
                     loc = self.page.locator(selector)
-                    count = min(loc.count(), 3000)
+
+                    count = min(
+                        loc.count(),
+                        1000
+                    )
+
                     for i in range(count):
+
                         item = loc.nth(i)
+
                         try:
+
                             if not item.is_visible():
                                 continue
-                            label = label_for(item).strip()
-                            low = label.lower()
-                            if any(p in low for p in label_patterns):
-                                found.append(item)
+
+                            label = normalized_label(
+                                label_for(item)
+                            )
+
+                            # EXACT MATCH ONLY.
+                            if label not in wanted:
+                                continue
+
+                            # Degree options are short labels.
+                            if len(label) > 30:
+                                continue
+
+                            return item
+
                         except Exception:
                             continue
-                except Exception:
-                    continue
-            # De-duplicate by element identity as far as Playwright permits.
-            return found
 
-        def ensure_degree(label_patterns, wanted_words):
-            """Ensure a degree option is checked/selected."""
-            matches = option_state(label_patterns)
-            for item in matches:
-                try:
-                    label = label_for(item).strip().lower()
-                    # Avoid matching a large ancestor containing several options.
-                    if len(label) > 80:
-                        continue
-                    checked = False
-                    for attr in ("aria-checked", "aria-selected"):
-                        value = (item.get_attribute(attr) or "").lower()
-                        if value == "true":
-                            checked = True
-                    try:
-                        checkbox = item.locator("input[type='checkbox']").first
-                        if checkbox.count() > 0 and checkbox.is_checked():
-                            checked = True
-                    except Exception:
-                        pass
-                    if checked:
-                        print("Degree already selected:", label)
-                        return True
-                    item.scroll_into_view_if_needed()
-                    item.click(timeout=10000)
-                    self.page.wait_for_timeout(400)
-                    print("Degree selected:", label)
-                    return True
                 except Exception:
                     continue
+
+            return None
+
+
+        def degree_is_selected(item):
+
+            try:
+
+                for attr in (
+                    "aria-checked",
+                    "aria-selected",
+                ):
+
+                    value = (
+                        item.get_attribute(attr)
+                        or ""
+                    ).strip().lower()
+
+                    if value == "true":
+                        return True
+
+
+                try:
+
+                    checkbox = (
+                        item
+                        .locator(
+                            "input[type='checkbox']"
+                        )
+                        .first
+                    )
+
+                    if (
+                        checkbox.count() > 0
+                        and checkbox.is_checked()
+                    ):
+                        return True
+
+                except Exception:
+                    pass
+
+
+                try:
+
+                    cls = (
+                        item.get_attribute("class")
+                        or ""
+                    ).lower()
+
+                    if any(
+                        token in cls
+                        for token in (
+                            "selected",
+                            "checked",
+                            "active",
+                        )
+                    ):
+                        return True
+
+                except Exception:
+                    pass
+
+            except Exception:
+                pass
+
             return False
+
+
+        def ensure_degree(
+            label_patterns,
+            wanted_words
+        ):
+            # Find ONLY the actual connection-degree option.
+
+            item = find_degree_option(
+                label_patterns
+            )
+
+            if item is None:
+
+                print(
+                    "ERROR: Connection-degree option "
+                    "not found:",
+                    label_patterns
+                )
+
+                return False
+
+
+            try:
+
+                label = (
+                    label_for(item)
+                    .strip()
+                )
+
+
+                if degree_is_selected(item):
+
+                    print(
+                        "Degree already selected:",
+                        label
+                    )
+
+                    return True
+
+
+                item.scroll_into_view_if_needed()
+
+                item.click(
+                    timeout=10000
+                )
+
+                self.page.wait_for_timeout(
+                    500
+                )
+
+
+                # LinkedIn may replace the DOM node after
+                # clicking, so locate it again.
+
+                refreshed = find_degree_option(
+                    label_patterns
+                )
+
+
+                if (
+                    refreshed is not None
+                    and degree_is_selected(
+                        refreshed
+                    )
+                ):
+
+                    print(
+                        "Degree selected:",
+                        label
+                    )
+
+                    return True
+
+
+                # Some LinkedIn controls do not expose
+                # selected state through ARIA.
+                # The exact option was found and clicked,
+                # so accept the click.
+
+                print(
+                    "Degree option clicked:",
+                    label
+                )
+
+                return True
+
+
+            except Exception as ex:
+
+                print(
+                    "Degree option click failed:",
+                    label_patterns,
+                    repr(ex)
+                )
+
+                return False
+
 
         def click_show_results():
             for selector in (
@@ -503,7 +779,7 @@ class CompanyPage(BasePage):
             ok_2 = ensure_degree(("2nd",), ("2nd",))
             ok_3 = ensure_degree(("3rd+", "3rd +", "3rd"), ("3rd",))
 
-            print("Connection option results:", ok_1, ok_2, ok_3)
+            print("Connection option results (exact filter options):", ok_1, ok_2, ok_3)
 
             if not (ok_1 and ok_2 and ok_3):
                 print("ERROR: Could not select all three connection degrees.")
