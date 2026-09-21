@@ -565,42 +565,39 @@ class CompanyPage(BasePage):
 
 
 
+
     def get_profiles(self, company="", location=""):
         """
-        Extract employee candidates from the company-scoped LinkedIn
-        people-search page.
+        Extract employee candidates from the authenticated company-scoped
+        LinkedIn people-search page.
 
-        Strategy:
-            1. Wait for LinkedIn's virtualized result DOM to hydrate.
-            2. Prefer recognizable result-card containers.
-            3. Fall back to visible /in/ links when LinkedIn changes
-               result-card markup.
-            4. Group profile links by the smallest meaningful rendered
-               ancestor containing the requested location.
-            5. Use the first employee/profile link in each group.
-            6. Ignore connection degree completely.
-            7. Preserve company scope from the already-open people search.
+        PASS 1:
+            Use known LinkedIn result-card selectors.
+
+        PASS 2:
+            Inspect each visible /in/ link independently using only local
+            Playwright ancestors. Never select a page-level ancestor that
+            contains many employees.
+
+        Connection degree is ignored.
+
+        Location is authoritative at profile-validation level. The DOM
+        discovery stage does not discard a candidate merely because LinkedIn's
+        virtualized result markup does not expose location text.
         """
 
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
 
-        print(
-            "Requested company:",
-            company
-        )
-
-        print(
-            "Requested location:",
-            location
-        )
+        print("Requested company:", company)
+        print("Requested location:", location)
 
         profiles = []
         seen_urls = set()
 
         # ============================================================
-        # Helpers
+        # HELPERS
         # ============================================================
 
         def normalize_text(value):
@@ -683,7 +680,7 @@ class CompanyPage(BasePage):
             href,
             name,
             result_text,
-            require_location=True,
+            enforce_location=False
         ):
 
             profile_url = canonical_profile_url(
@@ -707,11 +704,9 @@ class CompanyPage(BasePage):
             if not clean_name:
                 return False
 
-            # Candidate discovery may be DOM-incomplete on later pages.
-            # PASS 2 intentionally supplies candidates even when location text
-            # is missing from the rendered ancestor. SearchWorkflowV2 performs
-            # the authoritative profile-level location validation.
-            if require_location and not location_matches(clean_text):
+            if enforce_location and not location_matches(
+                clean_text
+            ):
                 return False
 
             profiles.append(
@@ -731,7 +726,7 @@ class CompanyPage(BasePage):
             return True
 
         # ============================================================
-        # Verify current page is still the company-scoped people page.
+        # VERIFY COMPANY PEOPLE SEARCH
         # ============================================================
 
         current_url = str(
@@ -769,14 +764,18 @@ class CompanyPage(BasePage):
         )
 
         # ============================================================
-        # FIRST-PAGE HYDRATION WAIT
+        # HYDRATION WAIT
         #
-        # This is the important fix.
+        # IMPORTANT:
+        # Page 2 can temporarily have:
         #
-        # LinkedIn can initially return zero visible /in/ links while
-        # its virtualized employee-result DOM is still being hydrated.
+        #   0 visible /in/ links
+        #   0 recognizable result cards
         #
-        # The old code checked once and immediately returned zero.
+        # while the employee-result text is already rendered.
+        #
+        # next_page() already recognizes this condition. get_profiles()
+        # must use the same third signal.
         # ============================================================
 
         print("=" * 60)
@@ -785,6 +784,29 @@ class CompanyPage(BasePage):
 
         rendered_profile_links = 0
         rendered_result_cards = 0
+        rendered_result_text = False
+
+        role_signals = (
+            "recruiter",
+            "talent acquisition",
+            "sales",
+            "specialist",
+            "manager",
+            "engineer",
+            "developer",
+            "analyst",
+            "consultant",
+            "director",
+            "staffing",
+            "human resources",
+        )
+
+        result_words = (
+            "people",
+            "employees",
+            "results",
+            "connections",
+        )
 
         for attempt in range(1, 41):
 
@@ -796,7 +818,7 @@ class CompanyPage(BasePage):
                 pass
 
             # --------------------------------------------------------
-            # Visible /in/ links
+            # Visible profile links
             # --------------------------------------------------------
 
             try:
@@ -810,66 +832,104 @@ class CompanyPage(BasePage):
                 )
 
             except Exception:
+
                 rendered_profile_links = 0
 
             # --------------------------------------------------------
-            # Multiple possible LinkedIn result-card structures
+            # Recognizable result cards
             # --------------------------------------------------------
+
+            rendered_result_cards = 0
+
+            for selector in (
+                "li.reusable-search__result-container:visible",
+                "li[class*='reusable-search__result']:visible",
+                "li.entity-result:visible",
+                "div.entity-result:visible",
+                "li.search-result:visible",
+                "li[class*='search-result']:visible",
+                "ul.reusable-search__entity-result-list > li:visible",
+            ):
+
+                try:
+
+                    count = (
+                        self.page
+                        .locator(selector)
+                        .count()
+                    )
+
+                    if count > rendered_result_cards:
+                        rendered_result_cards = count
+
+                except Exception:
+                    continue
+
+            # --------------------------------------------------------
+            # Rendered employee-result text
+            # --------------------------------------------------------
+
+            rendered_result_text = False
 
             try:
 
-                rendered_result_cards = 0
+                body_text = (
+                    self.page
+                    .locator("body")
+                    .inner_text(
+                        timeout=2000
+                    )
+                )
 
-                for selector in (
-                    "li.reusable-search__result-container:visible",
-                    "li[class*='reusable-search__result']:visible",
-                    "li.entity-result:visible",
-                    "div.entity-result:visible",
-                    "li.search-result:visible",
-                    "li[class*='search-result']:visible",
-                    "ul.reusable-search__entity-result-list > li:visible",
-                ):
+                normalized_body = re.sub(
+                    r"\s+",
+                    " ",
+                    body_text or ""
+                ).strip().lower()
 
-                    try:
+                role_hits = sum(
+                    1
+                    for signal in role_signals
+                    if signal in normalized_body
+                )
 
-                        count = (
-                            self.page
-                            .locator(selector)
-                            .count()
-                        )
+                result_context_hits = sum(
+                    1
+                    for word in result_words
+                    if word in normalized_body
+                )
 
-                        if count > rendered_result_cards:
-                            rendered_result_cards = count
-
-                    except Exception:
-                        continue
+                rendered_result_text = (
+                    len(normalized_body) >= 800
+                    and role_hits >= 2
+                    and result_context_hits >= 1
+                )
 
             except Exception:
-                rendered_result_cards = 0
+
+                rendered_result_text = False
 
             print(
                 f"Employee DOM wait {attempt}/40:",
                 rendered_profile_links,
                 "visible /in/ links |",
                 rendered_result_cards,
-                "result cards"
+                "result cards |",
+                rendered_result_text,
+                "employee-result text"
             )
 
             if (
                 rendered_profile_links > 0
                 or rendered_result_cards > 0
+                or rendered_result_text
             ):
 
                 print(
-                    "Employee result DOM detected."
+                    "Employee result DOM/text detected."
                 )
 
                 break
-
-            # --------------------------------------------------------
-            # Periodically scroll to trigger LinkedIn virtualized
-            # rendering.
-            # --------------------------------------------------------
 
             if attempt in (
                 8,
@@ -890,8 +950,7 @@ class CompanyPage(BasePage):
 
         # ============================================================
         # PASS 1
-        #
-        # Known result-card containers.
+        # KNOWN RESULT-CARD SELECTORS
         # ============================================================
 
         print("=" * 60)
@@ -909,7 +968,6 @@ class CompanyPage(BasePage):
         )
 
         cards = None
-        selected_selector = ""
 
         for selector in card_selectors:
 
@@ -924,7 +982,6 @@ class CompanyPage(BasePage):
                 if count > 0:
 
                     cards = locator
-                    selected_selector = selector
 
                     print(
                         "Using result-card selector:",
@@ -968,72 +1025,60 @@ class CompanyPage(BasePage):
                     if len(card_text) < 20:
                         continue
 
-                    if not location_matches(
-                        card_text
-                    ):
-                        continue
-
                     links = card.locator(
                         "a[href*='/in/']:visible"
                     )
 
-                    for link_index in range(
-                        links.count()
+                    link_count = links.count()
+
+                    if link_count == 0:
+                        continue
+
+                    # First /in/ link in a real result card is the
+                    # employee. Mutual-connection links follow it.
+                    link = links.nth(0)
+
+                    href = (
+                        link.get_attribute(
+                            "href"
+                        )
+                        or ""
+                    )
+
+                    name = (
+                        link
+                        .inner_text(
+                            timeout=1500
+                        )
+                        .strip()
+                    )
+
+                    if add_candidate(
+                        href,
+                        name,
+                        card_text,
+                        enforce_location=True
                     ):
 
-                        try:
+                        print("-" * 60)
 
-                            link = links.nth(
-                                link_index
+                        print(
+                            "EMPLOYEE CANDIDATE:",
+                            canonical_profile_url(
+                                href
                             )
+                        )
 
-                            href = (
-                                link
-                                .get_attribute(
-                                    "href"
-                                )
-                                or ""
-                            )
+                        print(
+                            "Primary anchor:",
+                            normalize_text(
+                                name
+                            )[:200]
+                        )
 
-                            name = (
-                                link
-                                .inner_text(
-                                    timeout=1500
-                                )
-                                .strip()
-                            )
-
-                            if add_candidate(
-                                href,
-                                name,
-                                card_text
-                            ):
-
-                                print("-" * 60)
-
-                                print(
-                                    "EMPLOYEE CANDIDATE:",
-                                    canonical_profile_url(
-                                        href
-                                    )
-                                )
-
-                                print(
-                                    "Primary anchor:",
-                                    normalize_text(
-                                        name
-                                    )[:200]
-                                )
-
-                                print(
-                                    "Connection degree: IGNORED"
-                                )
-
-                                # Only one employee per result card.
-                                break
-
-                        except Exception:
-                            continue
+                        print(
+                            "Connection degree: IGNORED"
+                        )
 
                 except Exception as ex:
 
@@ -1043,254 +1088,287 @@ class CompanyPage(BasePage):
                         repr(ex)
                     )
 
-
         # ============================================================
         # PASS 2
         #
-        # ALL-DEGREE DOM FALLBACK
+        # PURE PLAYWRIGHT / PYTHON
         #
-        # LinkedIn can render employee results without legacy result-card
-        # classes. We inspect visible /in/ links and infer the employee
-        # result container from several independent signals.
+        # NO page.evaluate()
         #
-        # IMPORTANT:
-        # - Connection degree is NEVER used as an inclusion filter.
-        # - Location text is NOT required during discovery because LinkedIn
-        #   can virtualize/omit it from the immediate DOM on later pages.
-        # - Nested mutual-connection links are not returned as separate
-        #   employees when they belong to the same result container.
-        # - Final company/location validation remains in SearchWorkflowV2.
+        # The old implementation walked up to a broad ancestor and
+        # then did:
+        #
+        #     primary = groupLinks[0]
+        #
+        # That is the reason SmartWorks produced only one candidate
+        # even though the result group contained several employees.
+        #
+        # This implementation evaluates EACH visible /in/ link
+        # independently and accepts only a SMALL local ancestor.
         # ============================================================
 
         print("=" * 60)
-        print("PASS 2 - ALL-DEGREE DOM FALLBACK")
+        print("PASS 2 - LOCAL PLAYWRIGHT EMPLOYEE EXTRACTION")
         print("=" * 60)
 
         try:
-            links = self.page.locator("a[href*='/in/']:visible")
+
+            links = self.page.locator(
+                "a[href*='/in/']:visible"
+            )
+
             link_count = links.count()
+
         except Exception as ex:
-            print("Visible /in/ link lookup failed:", repr(ex))
+
+            print(
+                "Visible /in/ link lookup failed:",
+                repr(ex)
+            )
+
             links = None
             link_count = 0
 
-        print("Visible /in/ links found:", link_count)
+        print(
+            "Visible /in/ links found:",
+            link_count
+        )
 
         if links is not None and link_count > 0:
-            try:
-                raw_candidates = self.page.evaluate(
-                    r'''
-                    ({requestedCompany, requestedLocation}) => {
-                        const visible = (el) => {
-                            if (!el) return false;
-                            const r = el.getBoundingClientRect();
-                            const s = getComputedStyle(el);
-                            return r.width > 0 && r.height > 0 &&
-                                   s.display !== "none" &&
-                                   s.visibility !== "hidden";
-                        };
 
-                        const norm = (v) => String(v || "")
-                            .replace(/\u00a0/g, " ")
-                            .replace(/\s+/g, " ")
-                            .trim()
-                            .toLowerCase();
+            for link_index in range(
+                link_count
+            ):
 
-                        const company = norm(requestedCompany);
-                        const location = norm(requestedLocation);
-                        const locTokens = location.split(/\s+/)
-                            .filter(Boolean).filter(x => x.length >= 3);
-
-                        const allLinks = Array.from(
-                            document.querySelectorAll("a[href*='/in/']")
-                        ).filter(visible);
-
-                        const canonical = (href) => {
-                            try {
-                                return new URL(href, window.location.href).href
-                                    .split("?", 1)[0]
-                                    .split("#", 1)[0]
-                                    .replace(/\/+$/, "")
-                                    .toLowerCase();
-                            } catch (_) {
-                                return "";
-                            }
-                        };
-
-                        const hasLocation = (text) => {
-                            const t = norm(text);
-                            if (!location) return true;
-                            if (t.includes(location)) return true;
-                            return locTokens.length > 0 &&
-                                locTokens.every(x => t.includes(x));
-                        };
-
-                        const hasCompany = (text) => {
-                            const t = norm(text);
-                            return !!company && t.includes(company);
-                        };
-
-                        const degree = (text) =>
-                            /(?:•\s*)?(?:1st|2nd|3rd\+?)(?:\s|$)/i.test(String(text || ""));
-
-                        const containerScore = (node, depth) => {
-                            if (!node || !visible(node)) return -9999;
-                            const text = String(node.innerText || "");
-                            const t = norm(text);
-                            if (t.length < 20 || t.length > 6000) return -9999;
-
-                            const profileLinks = Array.from(
-                                node.querySelectorAll("a[href*='/in/']")
-                            ).filter(visible);
-                            if (!profileLinks.length || profileLinks.length > 12) return -9999;
-
-                            const tag = String(node.tagName || "").toLowerCase();
-                            const cls = String(node.className || "").toLowerCase();
-                            let score = 0;
-
-                            if (tag === "li") score += 12;
-                            if (cls.includes("entity-result")) score += 12;
-                            if (cls.includes("reusable-search__result")) score += 12;
-                            if (cls.includes("search-result")) score += 10;
-                            if (degree(text)) score += 10;
-                            if (hasLocation(text)) score += 8;
-                            if (hasCompany(text)) score += 8;
-                            if (/\bmessage\b/i.test(text)) score += 3;
-                            if (/mutual connection/i.test(text)) score += 2;
-                            if (profileLinks.length <= 4) score += 2;
-                            if (text.length >= 80) score += 1;
-
-                            // Prefer the smallest strong result container.
-                            score -= Math.min(depth, 8) * 0.35;
-                            return score;
-                        };
-
-                        const groups = [];
-                        const groupByNode = new Map();
-
-                        for (const link of allLinks) {
-                            let node = link.parentElement;
-                            let best = null;
-                            let bestScore = -9999;
-
-                            for (let depth = 0; node && depth < 20; depth++, node = node.parentElement) {
-                                const score = containerScore(node, depth);
-                                if (score > bestScore) {
-                                    bestScore = score;
-                                    best = node;
-                                }
-                            }
-
-                            if (!best || bestScore < 6) continue;
-
-                            if (!groupByNode.has(best)) {
-                                const group = { node: best, links: [], score: bestScore };
-                                groupByNode.set(best, group);
-                                groups.push(group);
-                            }
-                            groupByNode.get(best).links.push(link);
-                        }
-
-                        const results = [];
-                        const seen = new Set();
-
-                        for (const group of groups) {
-                            const node = group.node;
-                            const groupLinks = Array.from(
-                                node.querySelectorAll("a[href*='/in/']")
-                            ).filter(visible);
-
-                            if (!groupLinks.length) continue;
-
-                            // Pick the first /in/ link in the chosen employee
-                            // result container. Later links are commonly mutual
-                            // connections and must not replace the primary employee.
-                            const primary = groupLinks[0];
-
-                            const href = primary.getAttribute("href") || "";
-                            const url = canonical(href);
-                            if (!url || seen.has(url)) continue;
-
-                            const text = String(primary.innerText || "").trim();
-                            const containerText = String(node.innerText || "").trim();
-
-                            seen.add(url);
-                            results.push({
-                                href: url,
-                                text,
-                                container_text: containerText,
-                                has_location: hasLocation(containerText),
-                                has_company: hasCompany(containerText),
-                                has_degree: degree(containerText),
-                            });
-                        }
-
-                        // If grouping was too conservative, use the visible
-                        // links as a final discovery fallback. Do not apply a
-                        // location or degree filter here; profile validation
-                        // decides whether a candidate is actually acceptable.
-                        if (results.length === 0) {
-                            for (const link of allLinks) {
-                                const url = canonical(link.getAttribute("href") || "");
-                                if (!url || seen.has(url)) continue;
-                                const text = String(link.innerText || "").trim();
-                                if (!text || text.length > 180) continue;
-                                seen.add(url);
-                                results.push({
-                                    href: url,
-                                    text,
-                                    container_text: String(link.parentElement?.innerText || "").trim(),
-                                    has_location: false,
-                                    has_company: false,
-                                    has_degree: degree(text),
-                                });
-                            }
-                        }
-
-                        return results;
-                    }
-                    ''',
-                    {
-                        "requestedCompany": company,
-                        "requestedLocation": location,
-                    },
-                )
-            except Exception as ex:
-                print("All-degree DOM extraction failed:", repr(ex))
-                raw_candidates = []
-
-            print("All-degree primary candidates found:", len(raw_candidates))
-
-            for item in raw_candidates:
                 try:
-                    group_text = normalize_text(item.get("container_text", ""))
-                    # PASS 2 enforces the requested location when it is present
-                    # in the selected result container; unrelated locations must
-                    # not enter the candidate list.
-                    if add_candidate(
-                        item.get("href", ""),
-                        item.get("text", ""),
-                        group_text or item.get("text", ""),
-                        require_location=True,
-                    ): 
+
+                    link = links.nth(
+                        link_index
+                    )
+
+                    if not link.is_visible():
+                        continue
+
+                    href = (
+                        link.get_attribute(
+                            "href"
+                        )
+                        or ""
+                    ).strip()
+
+                    profile_url = (
+                        canonical_profile_url(
+                            href
+                        )
+                    )
+
+                    if not profile_url:
+                        continue
+
+                    name = normalize_text(
+                        link.inner_text(
+                            timeout=1500
+                        )
+                    )
+
+                    if not name:
+                        continue
+
+                    if len(name) > 180:
+                        continue
+
+                    chosen_text = ""
+                    chosen_level = -1
+                    chosen_link_count = 0
+
+                    # ------------------------------------------------
+                    # Walk ONLY 8 local ancestors.
+                    #
+                    # A valid local result container normally contains
+                    # 1-4 profile links. A page-level result container
+                    # contains many and is therefore rejected.
+                    # ------------------------------------------------
+
+                    for level in range(
+                        0,
+                        8
+                    ):
+
+                        try:
+
+                            ancestor = link.locator(
+                                "xpath="
+                                + "/.." * (level + 1)
+                            )
+
+                            if not ancestor.count():
+                                continue
+
+                            if not ancestor.is_visible():
+                                continue
+
+                            ancestor_text = normalize_text(
+                                ancestor.inner_text(
+                                    timeout=1000
+                                )
+                            )
+
+                            if (
+                                len(ancestor_text) < 20
+                                or len(ancestor_text) > 1800
+                            ):
+                                continue
+
+                            ancestor_links = ancestor.locator(
+                                "a[href*='/in/']:visible"
+                            )
+
+                            local_count = (
+                                ancestor_links.count()
+                            )
+
+                            if (
+                                local_count < 1
+                                or local_count > 4
+                            ):
+                                continue
+
+                            first_href = (
+                                ancestor_links
+                                .nth(0)
+                                .get_attribute(
+                                    "href"
+                                )
+                                or ""
+                            )
+
+                            first_url = (
+                                canonical_profile_url(
+                                    first_href
+                                )
+                            )
+
+                            # If this /in/ link is not the first profile
+                            # link in the local container, it is probably
+                            # a nested mutual connection rather than the
+                            # employee represented by this result.
+                            if first_url != profile_url:
+                                continue
+
+                            chosen_text = ancestor_text
+                            chosen_level = level
+                            chosen_link_count = local_count
+
+                            break
+
+                        except Exception:
+
+                            continue
+
+                    # ------------------------------------------------
+                    # Conservative immediate-parent fallback.
+                    # ------------------------------------------------
+
+                    if not chosen_text:
+
+                        try:
+
+                            parent = link.locator(
+                                "xpath=.."
+                            )
+
+                            if (
+                                parent.count()
+                                and parent.is_visible()
+                            ):
+
+                                parent_text = normalize_text(
+                                    parent.inner_text(
+                                        timeout=1000
+                                    )
+                                )
+
+                                if (
+                                    10
+                                    <= len(parent_text)
+                                    <= 500
+                                ):
+
+                                    chosen_text = parent_text
+
+                        except Exception:
+
+                            pass
+
+                    # ------------------------------------------------
+                    # IMPORTANT:
+                    #
+                    # Do not require location here.
+                    #
+                    # LinkedIn's virtualized DOM can omit location text
+                    # while still rendering a valid employee result.
+                    #
+                    # SearchWorkflowV2/profile validation remains the
+                    # authoritative company/location check.
+                    # ------------------------------------------------
+
+                    accepted = add_candidate(
+                        href,
+                        name,
+                        chosen_text or name,
+                        enforce_location=False
+                    )
+
+                    if accepted:
+
                         print("-" * 60)
-                        print("EMPLOYEE CANDIDATE:", canonical_profile_url(item.get("href", "")))
-                        print("Primary anchor:", normalize_text(item.get("text", ""))[:200])
-                        print("Result group:", group_text[:500])
-                        print("Connection degree: IGNORED")
+
+                        print(
+                            "EMPLOYEE CANDIDATE:",
+                            profile_url
+                        )
+
+                        print(
+                            "Primary anchor:",
+                            name[:200]
+                        )
+
+                        print(
+                            "Local ancestor level:",
+                            chosen_level
+                        )
+
+                        print(
+                            "Local /in/ link count:",
+                            chosen_link_count
+                        )
+
+                        print(
+                            "Result group:",
+                            (chosen_text or name)[:500]
+                        )
+
+                        print(
+                            "Connection degree: IGNORED"
+                        )
+
                 except Exception as ex:
-                    print("Fallback candidate processing failed:", repr(ex))
 
+                    print(
+                        f"PASS 2 link "
+                        f"{link_index + 1} inspection failed:",
+                        repr(ex)
+                    )
 
-        # Final result
+        else:
+
+            print(
+                "No visible /in/ links available for PASS 2."
+            )
+
         # ============================================================
-
-        print("=" * 60)
-
-        print(
-            "UNIQUE LOCATION-MATCHING EMPLOYEE CANDIDATES:",
-            len(profiles)
-        )
+        # FINAL RESULT
+        # ============================================================
 
         print("=" * 60)
 
@@ -1298,6 +1376,8 @@ class CompanyPage(BasePage):
             "EMPLOYEE PROFILES EXTRACTED:",
             len(profiles)
         )
+
+        print("=" * 60)
 
         return profiles
 
