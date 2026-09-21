@@ -1384,561 +1384,177 @@ class LinkedInProfilePageV2(BasePage):
 
 
     def extract_email_from_visible_content(self):
+        """Extract publicly visible email addresses only.
+
+        email = primary/direct public email belonging to the profile owner.
+        linked_email_id = other publicly visible emails.
+
+        No Contact Info interaction and no private/API endpoint.
         """
-        Extract publicly visible email addresses only.
-
-        Output contract:
-
-            email
-                Primary/direct public email belonging to the profile owner.
-
-            linked_email_id
-                Other publicly visible emails found on the profile that
-                do not belong to the profile owner.
-
-        No Contact Info interaction is performed.
-        No private/API endpoint is accessed.
-        """
-
-        print(
-            "Searching publicly visible profile content "
-            "for email..."
-        )
-
-        result = {
-            "email": "",
-            "linked_email_id": "",
-            "email_source": "",
-        }
+        print("Searching publicly visible profile content for email...")
+        result = {"email": "", "linked_email_id": "", "email_source": ""}
 
         try:
-
+            email_pattern = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
             discovered_emails = []
 
-            # --------------------------------------------------------
-            # Email regex
-            # --------------------------------------------------------
-
-            email_pattern = re.compile(
-                r"\b[A-Za-z0-9._%+-]+"
-                r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-            )
-
             def add_email(value):
-
                 if not value:
                     return
-
-                try:
-                    value = str(value).strip()
-                except Exception:
-                    return
-
+                value = str(value).strip()
                 if value.lower().startswith("mailto:"):
                     value = value[7:]
-
                 if "?" in value:
                     value = value.split("?", 1)[0]
-
-                matches = email_pattern.findall(value)
-
-                for email in matches:
-
+                for email in email_pattern.findall(value):
                     email = email.strip().lower()
-
-                    if not self.is_valid_email(email):
-                        continue
-
-                    if email not in discovered_emails:
+                    if self.is_valid_email(email) and email not in discovered_emails:
                         discovered_emails.append(email)
 
-            # ========================================================
-            # IMPORTANT:
-            #
-            # We intentionally DO NOT break after the first email.
-            #
-            # The previous implementation did:
-            #
-            #     if discovered_emails:
-            #         break
-            #
-            # That caused linked/secondary visible emails to be missed.
-            #
-            # We now complete all five rendering attempts.
-            # ========================================================
-
-            for attempt in range(1, 6):
-
-                try:
-                    self.page.wait_for_timeout(1000)
-                except Exception:
-                    pass
-
-                # ----------------------------------------------------
-                # 1. Visible mailto links
-                # ----------------------------------------------------
-
-                try:
-
-                    email_links = self.page.locator(
-                        "a[href^='mailto:']:visible"
-                    )
-
-                    count = email_links.count()
-
-                    print(
-                        f"Email DOM attempt {attempt}/5 - "
-                        f"mailto links: {count}"
-                    )
-
-                    for i in range(count):
-
+            # 1. Direct visible mailto links.
+            try:
+                links = self.page.locator("a[href^='mailto:']:visible")
+                count = links.count()
+                print("Visible mailto links:", count)
+                for i in range(count):
+                    try:
+                        link = links.nth(i)
+                        add_email(link.get_attribute("href") or "")
                         try:
-
-                            link = email_links.nth(i)
-
-                            href = (
-                                link.get_attribute("href")
-                                or ""
-                            )
-
-                            add_email(href)
-
-                            try:
-                                text = (
-                                    link.inner_text(
-                                        timeout=500
-                                    ).strip()
-                                )
-
-                                add_email(text)
-
-                            except Exception:
-                                pass
-
+                            add_email(link.inner_text(timeout=1000).strip())
                         except Exception:
-                            continue
+                            pass
+                    except Exception:
+                        continue
+            except Exception as ex:
+                print("Mailto scan failed:", repr(ex))
 
-                except Exception as ex:
-
-                    print(
-                        "Mailto scan failed:",
-                        repr(ex)
-                    )
-
-                # ----------------------------------------------------
-                # 2. Visible rendered body text
-                # ----------------------------------------------------
-
-                try:
-
-                    body = self.page.locator("body")
-
-                    if body.is_visible():
-
-                        body_text = body.inner_text()
-
-                        print(
-                            "Visible profile text length:",
-                            len(body_text)
-                        )
-
-                        for match in email_pattern.findall(
-                            body_text or ""
-                        ):
-
-                            add_email(match)
-
-                except Exception as ex:
-
-                    print(
-                        "Body email scan failed:",
-                        repr(ex)
-                    )
-
-                # ----------------------------------------------------
-                # 3. Visible DOM attributes / text
-                # ----------------------------------------------------
-
-                try:
-
-                    dom_values = self.page.locator(
-                        """
-                        a:visible,
-                        span:visible,
-                        div:visible,
-                        li:visible
-                        """
-                    )
-
-                    dom_count = min(
-                        dom_values.count(),
-                        3000
-                    )
-
-                    for i in range(dom_count):
-
-                        try:
-
-                            element = dom_values.nth(i)
-
-                            values = []
-
-                            for attr in (
-                                "href",
-                                "title",
-                                "aria-label",
-                                "data-test-text",
-                                "data-email",
-                            ):
-
-                                try:
-
-                                    value = (
-                                        element.get_attribute(
-                                            attr
-                                        )
-                                    )
-
-                                    if value:
-                                        values.append(value)
-
-                                except Exception:
-                                    pass
-
-                            try:
-
-                                text = (
-                                    element.inner_text(
-                                        timeout=500
-                                    )
-                                    .strip()
-                                )
-
-                                if text:
-                                    values.append(text)
-
-                            except Exception:
-                                pass
-
-                            for value in values:
-
-                                for match in email_pattern.findall(
-                                    value
-                                ):
-
-                                    add_email(match)
-
-                        except Exception:
-                            continue
-
-                except Exception as ex:
-
-                    print(
-                        "DOM attribute email scan failed:",
-                        repr(ex)
-                    )
-
-                # ----------------------------------------------------
-                # 4. Rendered public DOM HTML fallback
-                #
-                # This reads only the currently rendered page DOM.
-                # ----------------------------------------------------
-
-                try:
-
-                    body_html = (
-                        self.page
-                        .locator("body")
-                        .inner_html()
-                    )
-
-                    for match in email_pattern.findall(
-                        body_html or ""
-                    ):
-
+            # 2. Visible body text.
+            try:
+                body = self.page.locator("body")
+                if body.is_visible():
+                    body_text = body.inner_text()
+                    print("Visible profile text length:", len(body_text))
+                    for match in email_pattern.findall(body_text or ""):
                         add_email(match)
+            except Exception as ex:
+                print("Body email scan failed:", repr(ex))
 
-                except Exception as ex:
+            # 3. One browser-side targeted DOM scan. Avoid the old 3000-element Playwright loop.
+            try:
+                values = self.page.evaluate("""
+                    () => {
+                        const out = [];
+                        const visible = el => {
+                            if (!el) return false;
+                            const r = el.getBoundingClientRect();
+                            const s = getComputedStyle(el);
+                            return r.width > 0 && r.height > 0 &&
+                                   s.display !== 'none' && s.visibility !== 'hidden';
+                        };
+                        for (const el of document.querySelectorAll(
+                            "a[href^='mailto:'],[data-email],[aria-label],[title]"
+                        )) {
+                            if (!visible(el)) continue;
+                            for (const v of [
+                                el.getAttribute('href'),
+                                el.getAttribute('data-email'),
+                                el.getAttribute('aria-label'),
+                                el.getAttribute('title'),
+                                el.innerText || ''
+                            ]) {
+                                if (v) out.push(v);
+                            }
+                        }
+                        return out;
+                    }
+                """)
+                for value in values or []:
+                    add_email(value)
+            except Exception as ex:
+                print("Rendered DOM email scan failed:", repr(ex))
 
-                    print(
-                        "Rendered HTML email scan failed:",
-                        repr(ex)
-                    )
+            # 4. One rendered HTML fallback.
+            try:
+                html = self.page.locator("body").inner_html()
+                for match in email_pattern.findall(html or ""):
+                    add_email(match)
+            except Exception as ex:
+                print("Rendered HTML email scan failed:", repr(ex))
 
-                # ----------------------------------------------------
-                # DO NOT BREAK HERE.
-                #
-                # Continue all five attempts so additional visible
-                # emails that render later can also be discovered.
-                # ----------------------------------------------------
-
-            # ========================================================
-            # Deduplicate
-            # ========================================================
-
-            unique_emails = []
-
-            seen = set()
-
+            print("Unique publicly visible emails:", len(discovered_emails))
             for email in discovered_emails:
+                print("  Email discovered:", email)
 
-                email = (
-                    str(email)
-                    .strip()
-                    .lower()
-                )
-
-                if not self.is_valid_email(email):
-                    continue
-
-                if email in seen:
-                    continue
-
-                seen.add(email)
-                unique_emails.append(email)
-
-            print(
-                "Unique publicly visible emails:",
-                len(unique_emails)
-            )
-
-            for email in unique_emails:
-
-                print(
-                    "  Email discovered:",
-                    email
-                )
-
-            if not unique_emails:
-
-                print(
-                    "No publicly visible email found."
-                )
-
+            if not discovered_emails:
+                print("No publicly visible email found.")
                 return result
 
-            # ========================================================
-            # Determine profile owner name
-            # ========================================================
-
-            profile_name = ""
-
+            # Determine profile owner name.
             try:
-
-                profile_name = (
-                    self.extract_name()
-                    .strip()
-                )
-
+                profile_name = self.extract_name().strip()
             except Exception:
-
                 profile_name = ""
 
-            cleaned_name = re.sub(
-                r"[^a-zA-Z0-9 ]",
-                " ",
-                profile_name
-            )
-
-            name_parts = [
-                part.lower()
-                for part in cleaned_name.split()
-                if len(part) >= 2
-            ]
-
-            first_name = (
-                name_parts[0]
-                if name_parts
-                else ""
-            )
-
-            last_name = (
-                name_parts[-1]
-                if len(name_parts) >= 2
-                else ""
-            )
-
-            first_clean = re.sub(
-                r"[^a-z0-9]",
-                "",
-                first_name
-            )
-
-            last_clean = re.sub(
-                r"[^a-z0-9]",
-                "",
-                last_name
-            )
-
-            # ========================================================
-            # Classify primary vs linked emails
-            # ========================================================
+            cleaned = re.sub(r"[^a-zA-Z0-9 ]", " ", profile_name)
+            parts = [p.lower() for p in cleaned.split() if len(p) >= 2]
+            first_clean = re.sub(r"[^a-z0-9]", "", parts[0] if parts else "")
+            last_clean = re.sub(r"[^a-z0-9]", "", parts[-1] if len(parts) >= 2 else "")
 
             owner_email = ""
             linked_emails = []
 
-            for email in unique_emails:
-
-                local_part = (
-                    email
-                    .split("@", 1)[0]
-                    .lower()
-                )
-
-                local_clean = re.sub(
-                    r"[^a-z0-9]",
-                    "",
-                    local_part
-                )
-
+            for email in discovered_emails:
+                local_clean = re.sub(r"[^a-z0-9]", "", email.split("@", 1)[0].lower())
                 owner_match = False
 
-                # ----------------------------------------------------
-                # Strong first-name match
-                # ----------------------------------------------------
-
                 if first_clean:
-
-                    if local_clean.startswith(
-                        first_clean
-                    ):
-
+                    if local_clean.startswith(first_clean):
+                        owner_match = True
+                    elif (len(first_clean) >= 5 and len(local_clean) >= 3 and
+                          first_clean.startswith(local_clean[:3])):
                         owner_match = True
 
-                    # Existing shortened-name logic
-                    elif (
-                        len(first_clean) >= 5
-                        and len(local_clean) >= 3
-                        and first_clean.startswith(
-                            local_clean[:3]
-                        )
-                    ):
-
+                if not owner_match and first_clean and last_clean:
+                    compact = first_clean + last_clean
+                    if compact in local_clean or (first_clean in local_clean and last_clean in local_clean):
                         owner_match = True
 
-                # ----------------------------------------------------
-                # First + last match
-                # ----------------------------------------------------
-
-                if (
-                    not owner_match
-                    and first_clean
-                    and last_clean
-                ):
-
-                    compact_name = (
-                        first_clean
-                        + last_clean
-                    )
-
-                    if (
-                        compact_name in local_clean
-                        or (
-                            first_clean in local_clean
-                            and last_clean in local_clean
-                        )
-                    ):
-
-                        owner_match = True
-
-                # ----------------------------------------------------
-                # First matching owner email becomes PRIMARY.
-                # Everything else becomes LINKED.
-                # ----------------------------------------------------
-
-                if (
-                    owner_match
-                    and not owner_email
-                ):
-
+                if owner_match and not owner_email:
                     owner_email = email
-
                 else:
+                    linked_emails.append(email)
 
-                    linked_emails.append(
-                        email
-                    )
-
-            # ========================================================
-            # Single public email fallback
-            #
-            # If only one email exists and the name could not be
-            # matched, use that single public email as the primary
-            # profile email.
-            # ========================================================
-
-            if (
-                not owner_email
-                and len(unique_emails) == 1
-            ):
-
-                owner_email = unique_emails[0]
+            if not owner_email and len(discovered_emails) == 1:
+                owner_email = discovered_emails[0]
                 linked_emails = []
 
-            # ========================================================
-            # OUTPUT
-            # ========================================================
-
             if owner_email:
-
                 result["email"] = owner_email
-
-                result["email_source"] = (
-                    "profile"
-                )
-
+                result["email_source"] = "profile"
             if linked_emails:
+                result["linked_email_id"] = "; ".join(dict.fromkeys(linked_emails))
 
-                result["linked_email_id"] = (
-                    "; ".join(
-                        dict.fromkeys(
-                            linked_emails
-                        )
-                    )
-                )
-
-            print(
-                "Primary email:",
-                result["email"]
-            )
-
-            print(
-                "Linked email IDs:",
-                result["linked_email_id"]
-            )
-
+            print("Primary email:", result["email"])
+            print("Linked email IDs:", result["linked_email_id"])
             return result
 
         except Exception as ex:
-
-            print(
-                "Profile email extraction failed:",
-                repr(ex)
-            )
-
+            print("Profile email extraction failed:", repr(ex))
             return result
 
+    @staticmethod
     def is_valid_email(email):
         if not email:
             return False
-
         email = str(email).strip()
-
         if len(email) > 254 or "@" not in email:
             return False
-
         domain = email.rsplit("@", 1)[-1].lower()
-
         if domain in {"linkedin.com", "example.com"}:
             return False
+        return bool(re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", email))
 
-        return bool(
-            re.match(
-                r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
-                email
-            )
-        )
 
 
 
