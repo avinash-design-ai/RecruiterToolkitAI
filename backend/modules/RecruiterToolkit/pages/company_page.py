@@ -325,9 +325,80 @@ class CompanyPage(BasePage):
                 )
                 return False
     
-            print("Connection-degree filter: NOT USED")
-            print("Network parameter: NOT MODIFIED")
-            print("Company scope preserved:", ids)
+            # LinkedIn may land on a first-degree-only company people search.
+            # Broaden only the network parameter while preserving currentCompany.
+            from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
+
+            parsed = urlsplit(current_url)
+            pairs = parse_qsl(parsed.query, keep_blank_values=True)
+
+            rebuilt = []
+            replaced_network = False
+
+            for key, value in pairs:
+                if key.lower() == "network":
+                    if not replaced_network:
+                        rebuilt.append(("network", '["F","S","O"]'))
+                        replaced_network = True
+                else:
+                    rebuilt.append((key, value))
+
+            if not replaced_network:
+                rebuilt.append(("network", '["F","S","O"]'))
+
+            broadened_url = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    urlencode(rebuilt),
+                    parsed.fragment,
+                )
+            )
+
+            print("Broadening company people-search network:")
+            print("FROM:", current_url)
+            print("TO:", broadened_url)
+
+            self.page.goto(
+                broadened_url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            self.page.wait_for_timeout(5000)
+
+            final_url = str(self.page.url or "").strip()
+
+            if is_blocked_url(final_url) or not is_people_url(final_url):
+                print("ERROR: Broadening network left company people search.")
+                print("Final URL:", final_url)
+                return False
+
+            final_ids = company_ids(final_url)
+
+            if final_ids != ids:
+                print("ERROR: currentCompany changed while broadening network.")
+                print("Expected:", ids)
+                print("Actual:", final_ids)
+                return False
+
+            final_query = parse_qs(
+                urlsplit(final_url).query,
+                keep_blank_values=True,
+            )
+            final_network = " ".join(
+                final_query.get("network", [])
+                or final_query.get("Network", [])
+            ).lower()
+
+            if '"s"' not in final_network or '"o"' not in final_network:
+                print("ERROR: Network was not broadened to F/S/O.")
+                print("Final network:", final_network)
+                return False
+
+            print("Connection-degree filter: URL scope F/S/O")
+            print("Network parameter:", final_network)
+            print("Company scope preserved:", final_ids)
             print("Company people search ready.")
             return True
     
@@ -434,8 +505,8 @@ class CompanyPage(BasePage):
         print("COMPANY PEOPLE SEARCH READY")
         print("=" * 60)
         print("Final URL:", final_url)
-        print("Connection-degree filter: NOT USED")
-        print("Network parameter: NOT MODIFIED")
+        print("Connection-degree filter: URL scope F/S/O")
+        print("Network parameter:", final_network if "final_network" in locals() else "verified above")
         print("Company scope preserved:", final_ids)
     
         return True
@@ -1193,14 +1264,14 @@ class CompanyPage(BasePage):
             for item in raw_candidates:
                 try:
                     group_text = normalize_text(item.get("container_text", ""))
-                    # PASS 2 discovery intentionally does not require location.
-                    # SearchWorkflowV2 performs the authoritative profile-level
-                    # location/company validation after opening the profile.
+                    # PASS 2 enforces the requested location when it is present
+                    # in the selected result container; unrelated locations must
+                    # not enter the candidate list.
                     if add_candidate(
                         item.get("href", ""),
                         item.get("text", ""),
                         group_text or item.get("text", ""),
-                        require_location=False,
+                        require_location=True,
                     ): 
                         print("-" * 60)
                         print("EMPLOYEE CANDIDATE:", canonical_profile_url(item.get("href", "")))
