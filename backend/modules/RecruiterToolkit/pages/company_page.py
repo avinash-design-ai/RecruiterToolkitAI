@@ -243,25 +243,24 @@ class CompanyPage(BasePage):
 
     def open_employees_page(self):
         """
-        Open the authenticated company-scoped LinkedIn people search and
-        broaden the connection-degree filter through LinkedIn's UI.
-
+        Open the company-scoped LinkedIn people-search page.
+    
         IMPORTANT:
-        - Do NOT rewrite network=F to F/S/O with page.goto().
-        - LinkedIn can redirect that synthetic URL to /uas/login even when
-          the current browser session is authenticated.
-        - The UI filter change is performed inside the already-authenticated
-          people-search page, so LinkedIn owns the resulting navigation.
+        - Connection degree is NOT a requirement for this workflow.
+        - We deliberately do NOT open or manipulate the Connections filter.
+        - We deliberately do NOT rewrite network=F into another network value.
+        - Company scope is preserved through currentCompany.
+        - Location is handled separately by apply_location()/get_profiles().
         """
-
+    
         print("=" * 60)
         print("OPENING COMPANY EMPLOYEES / PEOPLE SEARCH")
         print("=" * 60)
-
+    
         current_url = str(self.page.url or "").strip()
         print("Current URL:")
         print(current_url)
-
+    
         def is_people_url(url):
             if not url:
                 return False
@@ -270,7 +269,7 @@ class CompanyPage(BasePage):
                 "/search/results/people/" in lower
                 and "currentcompany=" in lower
             )
-
+    
         def is_blocked_url(url):
             if not url:
                 return True
@@ -287,611 +286,159 @@ class CompanyPage(BasePage):
                     "remember-me-auto-login",
                 )
             )
-
+    
         def company_ids(url):
             try:
                 from urllib.parse import urlsplit, parse_qs
-                query = parse_qs(urlsplit(url).query, keep_blank_values=True)
-                return query.get("currentCompany", []) or query.get("currentcompany", [])
+                query = parse_qs(
+                    urlsplit(url).query,
+                    keep_blank_values=True
+                )
+                return (
+                    query.get("currentCompany", [])
+                    or query.get("currentcompany", [])
+                )
             except Exception:
                 return []
-
-        def label_for(locator):
-            parts = []
-            for attr in ("aria-label", "title"):
-                try:
-                    value = locator.get_attribute(attr) or ""
-                    if value:
-                        parts.append(value)
-                except Exception:
-                    pass
-            try:
-                value = locator.inner_text(timeout=1000).strip()
-                if value:
-                    parts.append(value)
-            except Exception:
-                pass
-            return " ".join(parts).strip()
-
-        def click_filter_trigger():
-            # Prefer the actual Connections filter.
-            #
-            # Do not accidentally click My Network or another
-            # navigation/result element containing the word
-            # "connections".
-
-            exact_candidates = []
-            other_candidates = []
-
-
-            for selector in (
-                "button:visible",
-                "[role='button']:visible",
-                "a:visible",
-            ):
-
-                try:
-
-                    loc = self.page.locator(
-                        selector
-                    )
-
-                    for i in range(
-                        min(
-                            loc.count(),
-                            1500
-                        )
-                    ):
-
-                        item = loc.nth(i)
-
-                        try:
-
-                            if not item.is_visible():
-                                continue
-
-
-                            label = normalized_label(
-                                label_for(item)
-                            )
-
-
-                            if not label:
-                                continue
-
-
-                            if (
-                                "connections of"
-                                in label
-                            ):
-                                continue
-
-
-                            if (
-                                "my network"
-                                in label
-                            ):
-                                continue
-
-
-                            # Exact Connections filter gets
-                            # highest priority.
-
-                            if label == "connections":
-
-                                exact_candidates.append(
-                                    item
-                                )
-
-                            elif (
-                                "connections"
-                                in label
-                                and len(label) <= 60
-                                and "people you may know"
-                                not in label
-                                and "network"
-                                not in label
-                            ):
-
-                                other_candidates.append(
-                                    item
-                                )
-
-
-                        except Exception:
-                            continue
-
-
-                except Exception:
-                    continue
-
-
-            candidates = (
-                exact_candidates
-                + other_candidates
-            )
-
-
-            for item in candidates:
-
-                try:
-
-                    label = (
-                        label_for(item)
-                        .strip()
-                    )
-
-
-                    item.scroll_into_view_if_needed()
-
-                    item.click(
-                        timeout=10000
-                    )
-
-                    self.page.wait_for_timeout(
-                        1000
-                    )
-
-
-                    print(
-                        "Connections filter opened:",
-                        label
-                    )
-
-                    return True
-
-
-                except Exception:
-                    continue
-
-
-            return False
-
-
-        def click_all_filters_trigger():
-            for selector in (
-                "button:visible",
-                "[role='button']:visible",
-                "a:visible",
-            ):
-                try:
-                    loc = self.page.locator(selector)
-                    for i in range(loc.count()):
-                        item = loc.nth(i)
-                        if not item.is_visible():
-                            continue
-                        label = label_for(item).strip().lower()
-                        if label == "all filters" or "all filters" in label:
-                            item.scroll_into_view_if_needed()
-                            item.click(timeout=10000)
-                            self.page.wait_for_timeout(1000)
-                            print("All filters opened.")
-                            return True
-                except Exception:
-                    continue
-            return False
-
-        def normalized_label(value):
-            return re.sub(
-                r"\\s+",
-                " ",
-                str(value or "").replace("\\xa0", " ")
-            ).strip().lower()
-
-
-        def find_degree_option(patterns):
-            # IMPORTANT:
-            # Match ONLY the actual filter option text.
-            #
-            # Do NOT use substring matching against arbitrary visible
-            # elements. LinkedIn result names can contain:
-            #
-            #     Person Name · 1st
-            #     Person Name · 2nd
-            #
-            # and those must never be treated as filter options.
-
-            wanted = {
-                normalized_label(pattern)
-                for pattern in patterns
-                if pattern
-            }
-
-            selectors = (
-                "label:visible",
-                "[role='checkbox']:visible",
-                "[role='option']:visible",
-                "button:visible",
-                "li:visible",
-            )
-
-            for selector in selectors:
-
-                try:
-
-                    loc = self.page.locator(selector)
-
-                    count = min(
-                        loc.count(),
-                        1000
-                    )
-
-                    for i in range(count):
-
-                        item = loc.nth(i)
-
-                        try:
-
-                            if not item.is_visible():
-                                continue
-
-                            label = normalized_label(
-                                label_for(item)
-                            )
-
-                            # EXACT MATCH ONLY.
-                            if label not in wanted:
-                                continue
-
-                            # Degree options are short labels.
-                            if len(label) > 30:
-                                continue
-
-                            return item
-
-                        except Exception:
-                            continue
-
-                except Exception:
-                    continue
-
-            return None
-
-
-        def degree_is_selected(item):
-
-            try:
-
-                for attr in (
-                    "aria-checked",
-                    "aria-selected",
-                ):
-
-                    value = (
-                        item.get_attribute(attr)
-                        or ""
-                    ).strip().lower()
-
-                    if value == "true":
-                        return True
-
-
-                try:
-
-                    checkbox = (
-                        item
-                        .locator(
-                            "input[type='checkbox']"
-                        )
-                        .first
-                    )
-
-                    if (
-                        checkbox.count() > 0
-                        and checkbox.is_checked()
-                    ):
-                        return True
-
-                except Exception:
-                    pass
-
-
-                try:
-
-                    cls = (
-                        item.get_attribute("class")
-                        or ""
-                    ).lower()
-
-                    if any(
-                        token in cls
-                        for token in (
-                            "selected",
-                            "checked",
-                            "active",
-                        )
-                    ):
-                        return True
-
-                except Exception:
-                    pass
-
-            except Exception:
-                pass
-
-            return False
-
-
-        def ensure_degree(
-            label_patterns,
-            wanted_words
-        ):
-            # Find ONLY the actual connection-degree option.
-
-            item = find_degree_option(
-                label_patterns
-            )
-
-            if item is None:
-
-                print(
-                    "ERROR: Connection-degree option "
-                    "not found:",
-                    label_patterns
-                )
-
-                return False
-
-
-            try:
-
-                label = (
-                    label_for(item)
-                    .strip()
-                )
-
-
-                if degree_is_selected(item):
-
-                    print(
-                        "Degree already selected:",
-                        label
-                    )
-
-                    return True
-
-
-                item.scroll_into_view_if_needed()
-
-                item.click(
-                    timeout=10000
-                )
-
-                self.page.wait_for_timeout(
-                    500
-                )
-
-
-                # LinkedIn may replace the DOM node after
-                # clicking, so locate it again.
-
-                refreshed = find_degree_option(
-                    label_patterns
-                )
-
-
-                if (
-                    refreshed is not None
-                    and degree_is_selected(
-                        refreshed
-                    )
-                ):
-
-                    print(
-                        "Degree selected:",
-                        label
-                    )
-
-                    return True
-
-
-                # Some LinkedIn controls do not expose
-                # selected state through ARIA.
-                # The exact option was found and clicked,
-                # so accept the click.
-
-                print(
-                    "Degree option clicked:",
-                    label
-                )
-
-                return True
-
-
-            except Exception as ex:
-
-                print(
-                    "Degree option click failed:",
-                    label_patterns,
-                    repr(ex)
-                )
-
-                return False
-
-
-        def click_show_results():
-            for selector in (
-                "button:visible",
-                "[role='button']:visible",
-                "a:visible",
-            ):
-                try:
-                    loc = self.page.locator(selector)
-                    for i in range(loc.count()):
-                        item = loc.nth(i)
-                        if not item.is_visible():
-                            continue
-                        label = label_for(item).strip().lower()
-                        if label == "show results" or label.endswith("show results"):
-                            item.scroll_into_view_if_needed()
-                            item.click(timeout=15000)
-                            self.page.wait_for_timeout(5000)
-                            print("Show results clicked.")
-                            return True
-                except Exception:
-                    continue
-            return False
-
-        # ================================================================
-        # CASE 1: company click already landed on people search
-        # ================================================================
+    
+        # CASE 1:
+        # The company click already landed on LinkedIn's company-scoped
+        # people search. Nothing else is required.
         if is_people_url(current_url):
+    
             ids = company_ids(current_url)
+    
             print("=" * 60)
             print("COMPANY PEOPLE-SEARCH PAGE ALREADY OPEN")
             print("=" * 60)
             print("Company scope:", ids)
-
+    
             if not ids:
-                print("ERROR: Current people-search page has no currentCompany.")
+                print(
+                    "ERROR: Current people-search page has no currentCompany."
+                )
                 return False
-
-            # If LinkedIn already exposes a non-F network in the URL, keep it.
-            try:
-                from urllib.parse import urlsplit, parse_qs
-                q = parse_qs(urlsplit(current_url).query, keep_blank_values=True)
-                network = q.get("network", []) or q.get("Network", [])
-                network_text = " ".join(network).lower()
-            except Exception:
-                network_text = ""
-
-            if network_text and any(x in network_text for x in ("s", "o")):
-                print("Connection-degree filter: already broad enough")
-                print("Company scope preserved:", ids)
-                return True
-
-            print("Connection-degree filter currently restricted.")
-            print("Broadening through LinkedIn UI: 1st + 2nd + 3rd+.")
-
-            opened = click_filter_trigger()
-            if not opened:
-                print("Connections filter chip not found; trying All filters.")
-                opened = click_all_filters_trigger()
-
-            if not opened:
-                print("ERROR: Could not open LinkedIn connection filters.")
+    
+            if is_blocked_url(current_url):
+                print(
+                    "ERROR: Current people-search URL is blocked/authwall."
+                )
                 return False
-
-            # Keep 1st selected and add 2nd + 3rd+. This produces the
-            # equivalent of an unrestricted network while preserving the
-            # authenticated LinkedIn UI state.
-            ok_1 = ensure_degree(("1st",), ("1st",))
-            ok_2 = ensure_degree(("2nd",), ("2nd",))
-            ok_3 = ensure_degree(("3rd+", "3rd +", "3rd"), ("3rd",))
-
-            print("Connection option results (exact filter options):", ok_1, ok_2, ok_3)
-
-            if not (ok_1 and ok_2 and ok_3):
-                print("ERROR: Could not select all three connection degrees.")
-                return False
-
-            if not click_show_results():
-                print("ERROR: Show results button not found after degree selection.")
-                return False
-
-            final_url = str(self.page.url or "").strip()
-            print("Final employee-search URL:", final_url)
-
-            if is_blocked_url(final_url) or not is_people_url(final_url):
-                print("ERROR: LinkedIn UI filter navigation left the authenticated people search.")
-                return False
-
-            final_ids = company_ids(final_url)
-            if final_ids != ids:
-                print("ERROR: currentCompany changed during UI filter update.")
-                print("Expected:", ids)
-                print("Actual:", final_ids)
-                return False
-
-            # Do not accept a silently retained F-only search.
-            try:
-                from urllib.parse import urlsplit, parse_qs
-                q = parse_qs(urlsplit(final_url).query, keep_blank_values=True)
-                network = q.get("network", []) or q.get("Network", [])
-                network_text = " ".join(network).lower()
-            except Exception:
-                network_text = ""
-
-            body_text = ""
-            try:
-                body_text = (self.page.locator("body").inner_text(timeout=3000) or "").lower()
-            except Exception:
-                pass
-
-            broad_network = (
-                '"s"' in network_text
-                or '"o"' in network_text
-                or ("2nd" in body_text and ("3rd" in body_text or "3rd+" in body_text))
-            )
-
-            if not broad_network:
-                print("ERROR: UI filter did not broaden the connection scope; refusing to continue with F-only results.")
-                return False
-
-            print("=" * 60)
-            print("COMPANY PEOPLE SEARCH READY")
-            print("=" * 60)
-            print("Final URL:", final_url)
-            print("Connection-degree filter: UI ALL (1st + 2nd + 3rd+)")
-            print("Company scope preserved:", final_ids)
+    
+            print("Connection-degree filter: NOT USED")
+            print("Network parameter: NOT MODIFIED")
+            print("Company scope preserved:", ids)
+            print("Company people search ready.")
             return True
-
-        # ================================================================
-        # CASE 2: still on company page; use LinkedIn's own people link
-        # ================================================================
-        links = self.page.locator("a[href*='/search/results/people/']")
+    
+        # CASE 2:
+        # We are still on the company page. Use LinkedIn's own
+        # company-scoped people-search link. Never construct a generic
+        # people-search URL and never modify the returned href.
+        links = self.page.locator(
+            "a[href*='/search/results/people/']"
+        )
+    
         count = links.count()
         print("People-search links found:", count)
-
+    
         selected = None
-        selected_href = ""
         selected_company_ids = company_ids(current_url)
-
+    
         for i in range(count):
             try:
                 link = links.nth(i)
-                href = (link.get_attribute("href") or "").strip()
-                if not href or "/search/results/people/" not in href.lower():
+                href = (
+                    link.get_attribute("href")
+                    or ""
+                ).strip()
+    
+                if (
+                    not href
+                    or "/search/results/people/" not in href.lower()
+                ):
                     continue
+    
                 ids = company_ids(href)
+    
                 if not ids:
                     continue
-                if selected_company_ids and ids != selected_company_ids:
+    
+                if (
+                    selected_company_ids
+                    and ids != selected_company_ids
+                ):
                     continue
+    
                 selected = link
-                selected_href = href
+    
+                print(
+                    "Selected company-scoped people-search link:",
+                    href
+                )
                 break
+    
             except Exception:
                 continue
-
+    
         if selected is None:
-            print("ERROR: No company-scoped people-search link found.")
+            print(
+                "ERROR: No company-scoped people-search link found."
+            )
             return False
-
+    
         try:
             selected.scroll_into_view_if_needed()
             selected.click(timeout=15000)
             self.page.wait_for_timeout(5000)
         except Exception as ex:
-            print("People-search link click failed:", repr(ex))
+            print(
+                "People-search link click failed:",
+                repr(ex)
+            )
             return False
-
-        final_url = str(self.page.url or "").strip()
-        print("Final employee-search URL:", final_url)
-
-        if is_blocked_url(final_url) or not is_people_url(final_url):
-            print("ERROR: LinkedIn did not open an authenticated company people search.")
+    
+        final_url = str(
+            self.page.url or ""
+        ).strip()
+    
+        print(
+            "Final employee-search URL:",
+            final_url
+        )
+    
+        if (
+            is_blocked_url(final_url)
+            or not is_people_url(final_url)
+        ):
+            print(
+                "ERROR: LinkedIn did not open an authenticated "
+                "company people search."
+            )
             return False
-
+    
         final_ids = company_ids(final_url)
-        if selected_company_ids and final_ids != selected_company_ids:
-            print("ERROR: currentCompany changed after opening employee search.")
+    
+        if (
+            selected_company_ids
+            and final_ids != selected_company_ids
+        ):
+            print(
+                "ERROR: currentCompany changed after opening employee search."
+            )
+            print("Expected:", selected_company_ids)
+            print("Actual:", final_ids)
             return False
-
-        # Apply the same UI broadening logic now that the authenticated
-        # company people-search page is open.
-        return self.open_employees_page()
-
+    
+        print("=" * 60)
+        print("COMPANY PEOPLE SEARCH READY")
+        print("=" * 60)
+        print("Final URL:", final_url)
+        print("Connection-degree filter: NOT USED")
+        print("Network parameter: NOT MODIFIED")
+        print("Company scope preserved:", final_ids)
+    
+        return True
 
     def apply_location(self, location):
         """
