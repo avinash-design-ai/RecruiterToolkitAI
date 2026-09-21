@@ -260,6 +260,104 @@ class SearchWorkflowV2:
             self.page
         )
 
+
+    # =====================================================
+    # AUTHENTICATED EMPLOYEE SEARCH PAGE OWNERSHIP
+    # =====================================================
+
+    def _restore_employee_search_page(self):
+        """
+        Re-anchor BOTH SearchWorkflowV2.page and CompanyPage.page to the live
+        authenticated company-scoped LinkedIn people-search tab.
+
+        This is the critical state invariant for V2:
+
+            self.page == self.company_page.page == employee-search Page
+
+        Profile extraction is allowed to use a temporary profile tab, but that
+        tab must never become the page used for the next candidate or for
+        pagination.
+
+        The method never navigates a tab. It only inspects existing Playwright
+        context pages, so it cannot turn a working authenticated session into
+        a login redirect.
+        """
+        context = None
+
+        try:
+            context = self.page.context
+        except Exception:
+            try:
+                context = self.company_page.page.context
+            except Exception:
+                context = None
+
+        if context is None:
+            print("SEARCH PAGE RESTORE FAILED: browser context unavailable.")
+            return False
+
+        try:
+            pages = list(context.pages)
+        except Exception as ex:
+            print("SEARCH PAGE RESTORE FAILED: could not inspect context pages:", repr(ex))
+            return False
+
+        valid_pages = []
+
+        for candidate in pages:
+            try:
+                if candidate.is_closed():
+                    continue
+
+                url = str(candidate.url or "").strip()
+                lower = url.lower()
+
+                if (
+                    "/search/results/people/" in lower
+                    and "currentcompany=" in lower
+                    and "/login" not in lower
+                    and "/authwall" not in lower
+                    and "/checkpoint" not in lower
+                    and "/ssr-login" not in lower
+                    and "remember-me-auto-login" not in lower
+                ):
+                    valid_pages.append(candidate)
+            except Exception:
+                continue
+
+        if not valid_pages:
+            print("SEARCH PAGE RESTORE FAILED: no authenticated company people-search tab exists.")
+            return False
+
+        # Prefer the currently-owned CompanyPage tab when it is still valid.
+        selected = None
+        try:
+            owned = self.company_page.page
+            if owned in valid_pages:
+                selected = owned
+        except Exception:
+            pass
+
+        # Otherwise choose the newest live people-search tab.
+        if selected is None:
+            selected = valid_pages[-1]
+
+        try:
+            self.page = selected
+            self.company_page.page = selected
+        except Exception as ex:
+            print("SEARCH PAGE RESTORE FAILED: could not assign page ownership:", repr(ex))
+            return False
+
+        print("=" * 60)
+        print("EMPLOYEE SEARCH PAGE RESTORED")
+        print("=" * 60)
+        print("Workflow page URL:", self.page.url)
+        print("CompanyPage page URL:", self.company_page.page.url)
+        print("Company-scoped people search:", True)
+
+        return True
+
         # LinkedInProfilePageV2 creates a fresh temporary
         # profile tab for each candidate.
         #
@@ -305,7 +403,7 @@ class SearchWorkflowV2:
         self,
         company,
         location,
-        max_profiles=5
+        max_profiles=None
     ):
 
         print("=" * 70)
@@ -321,6 +419,18 @@ class SearchWorkflowV2:
             "Location:",
             location
         )
+
+        try:
+            max_profiles = int(max_profiles)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "max_profiles must be a positive integer."
+            )
+
+        if max_profiles < 1:
+            raise ValueError(
+                "max_profiles must be at least 1."
+            )
 
         print(
             "Maximum profiles:",
@@ -1021,6 +1131,12 @@ class SearchWorkflowV2:
                     print("Continuing to next candidate...")
                     continue
 
+                finally:
+                    # The profile extractor may have switched its own page to
+                    # a temporary profile tab. Re-anchor the workflow and
+                    # CompanyPage before processing another candidate.
+                    self._restore_employee_search_page()
+
             # -------------------------------------------------
             # Maximum reached after exhausting candidates
             # -------------------------------------------------
@@ -1038,6 +1154,20 @@ class SearchWorkflowV2:
             print("Profiles collected so far:", len(results))
             print("Trying next employee page...")
             print("=" * 60)
+
+            if not self._restore_employee_search_page():
+                print("SAFE STOP: authenticated company employee-search page was lost.")
+                break
+
+            # Never paginate from a feed/root/profile/login page.
+            current_employee_url = str(self.company_page.page.url or "").lower()
+            if (
+                "/search/results/people/" not in current_employee_url
+                or "currentcompany=" not in current_employee_url
+            ):
+                print("SAFE STOP: page ownership invariant failed before pagination.")
+                print("Current URL:", self.company_page.page.url)
+                break
 
             has_next = self.company_page.next_page()
 

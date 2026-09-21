@@ -1676,8 +1676,17 @@ _OriginalLinkedInProfilePageV2GetProfile = (
     LinkedInProfilePageV2.get_profile
 )
 
+
 def _LinkedInProfilePageV2GetProfileWithCleanup(self):
+    """
+    Run the existing profile extractor, then close ONLY the temporary profile
+    tab and restore self.page to a live authenticated company people-search
+    tab. Never navigate the search tab to the profile URL.
+    """
+    context_page = None
+
     try:
+        context_page = getattr(self, "_original_profile_page", None)
         return _OriginalLinkedInProfilePageV2GetProfile(self)
     finally:
         temporary_page = getattr(
@@ -1692,6 +1701,9 @@ def _LinkedInProfilePageV2GetProfileWithCleanup(self):
             None
         )
 
+        # Capture a usable context before closing the temporary tab.
+        probe_page = original_page or temporary_page or getattr(self, "page", None)
+
         if temporary_page is not None:
             try:
                 if not temporary_page.is_closed():
@@ -1704,14 +1716,41 @@ def _LinkedInProfilePageV2GetProfileWithCleanup(self):
 
         self._temporary_profile_page = None
 
-        if original_page is not None:
+        # Prefer the original authenticated search page if it is still alive.
+        restored_page = None
+
+        try:
+            if original_page is not None and not original_page.is_closed():
+                original_url = str(original_page.url or "").lower()
+                if (
+                    "/search/results/people/" in original_url
+                    and "currentcompany=" in original_url
+                ):
+                    restored_page = original_page
+        except Exception:
+            restored_page = None
+
+        # If the original object is no longer valid, rediscover an already-open
+        # authenticated company people-search tab. No navigation is performed.
+        if restored_page is None and probe_page is not None:
             try:
-                self.page = original_page
+                restored_page = _find_live_authenticated_employee_search_page(
+                    probe_page
+                )
             except Exception as ex:
                 print(
-                    "Original search-page restoration failed:",
+                    "Authenticated employee-search rediscovery failed:",
                     repr(ex)
                 )
+
+        if restored_page is not None:
+            self.page = restored_page
+            self._original_profile_page = restored_page
+            print("PROFILE CLEANUP: authenticated employee search page restored:")
+            print("PROFILE CLEANUP SEARCH URL:", restored_page.url)
+        else:
+            print("PROFILE CLEANUP WARNING: no live company-scoped employee search page was found.")
+
 
 LinkedInProfilePageV2.get_profile = (
     _LinkedInProfilePageV2GetProfileWithCleanup

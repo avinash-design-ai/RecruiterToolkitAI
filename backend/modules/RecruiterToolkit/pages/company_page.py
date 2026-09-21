@@ -1257,7 +1257,12 @@ class CompanyPage(BasePage):
         # Connection degree is deliberately ignored.
         # ============================================================
 
-        if len(profiles) < 5:
+        # IMPORTANT: CompanyPage never owns max_profiles.
+        # SearchWorkflowV2 decides how many accepted profiles
+        # to collect. PASS 2 must discover all available
+        # candidates on this page so requests such as 10/20/50
+        # are not silently capped at five.
+        if True:
 
             print("=" * 60)
             print("PASS 2 - MUTUAL-SAFE DOM FALLBACK")
@@ -1565,8 +1570,9 @@ class CompanyPage(BasePage):
 
                 for item in raw_candidates:
 
-                    if len(profiles) >= 5:
-                        break
+                    # No max-profile stop belongs in CompanyPage.
+                    # Continue discovering candidates; the workflow
+                    # applies the user's requested max_profiles.
 
                     try:
                         group_text = normalize_text(
