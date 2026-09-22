@@ -1778,14 +1778,20 @@ class CompanyPage(BasePage):
         """
         Move to the next company-scoped LinkedIn people-search page.
 
-        URL change alone is not considered success. LinkedIn may update the
-        URL before its virtualized result cards are rendered, so we wait for
-        either visible /in/ results or recognizable result-card DOM.
+        The unfiltered company people-search URL can be usable for page 1
+        while LinkedIn's visible Next control redirects through
+        /ssr-login/remember-me-auto-login. To avoid losing the authenticated
+        employee-search context, try the explicit next-page URL in a fresh
+        authenticated tab first, with the current search page as Referer.
+
+        The old UI Next-button path remains as a fallback when direct page
+        navigation is not accepted.
         """
         try:
-            from urllib.parse import urlsplit, parse_qs
+            from urllib.parse import urlsplit, parse_qs, urlencode, urlunsplit
 
-            before_url = str(self.page.url or "").strip()
+            before_page = self.page
+            before_url = str(before_page.url or "").strip()
             before_lower = before_url.lower()
 
             print("=" * 60)
@@ -1800,14 +1806,286 @@ class CompanyPage(BasePage):
                 print("NEXT ABORTED - current page is not company-scoped people search.")
                 return False
 
-            before_query = parse_qs(urlsplit(before_url).query, keep_blank_values=True)
+            before_query = parse_qs(
+                urlsplit(before_url).query,
+                keep_blank_values=True,
+            )
+
             company_ids = (
                 before_query.get("currentCompany", [])
                 or before_query.get("currentcompany", [])
             )
 
+            if not company_ids:
+                print("NEXT ABORTED - currentCompany is missing.")
+                return False
+
             print("Current company ID:", company_ids)
 
+            # ------------------------------------------------------------
+            # Current page number.
+            # Page 1 commonly has no explicit ?page=1.
+            # ------------------------------------------------------------
+            current_page_number = 1
+            try:
+                raw_page = (before_query.get("page", ["1"]) or ["1"])[0]
+                current_page_number = max(1, int(str(raw_page).strip()))
+            except Exception:
+                current_page_number = 1
+
+            target_page_number = current_page_number + 1
+
+            # ------------------------------------------------------------
+            # Build an explicitly paginated UNFILTERED people-search URL.
+            # Remove only the connection-degree filter and existing page.
+            # Preserve currentCompany plus every other existing search param.
+            # ------------------------------------------------------------
+            parsed = urlsplit(before_url)
+            pairs = []
+
+            for key, value in __import__("urllib.parse").parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            ):
+                key_lower = key.lower()
+                if key_lower in {"network", "page"}:
+                    continue
+                pairs.append((key, value))
+
+            pairs.append(("page", str(target_page_number)))
+
+            direct_next_url = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    urlencode(pairs),
+                    parsed.fragment,
+                )
+            )
+
+            print("Direct next-page URL:", direct_next_url)
+
+            def blocked(url):
+                lower = str(url or "").lower()
+                return any(
+                    part in lower
+                    for part in (
+                        "/login",
+                        "/authwall",
+                        "/checkpoint",
+                        "/uas/login",
+                        "/signup",
+                        "/ssr-login",
+                        "remember-me-auto-login",
+                    )
+                )
+
+            def valid_unfiltered_people_url(url):
+                if not url or blocked(url):
+                    return False
+
+                lower = str(url).lower()
+                if (
+                    "/search/results/people/" not in lower
+                    or "currentcompany=" not in lower
+                ):
+                    return False
+
+                try:
+                    query = parse_qs(
+                        urlsplit(url).query,
+                        keep_blank_values=True,
+                    )
+                    actual_company_ids = (
+                        query.get("currentCompany", [])
+                        or query.get("currentcompany", [])
+                    )
+                    network = (
+                        query.get("network", [])
+                        or query.get("Network", [])
+                    )
+                except Exception:
+                    return False
+
+                return (
+                    actual_company_ids == company_ids
+                    and not network
+                )
+
+            def page_number_from_url(url):
+                try:
+                    query = parse_qs(
+                        urlsplit(url).query,
+                        keep_blank_values=True,
+                    )
+                    raw = (query.get("page", ["1"]) or ["1"])[0]
+                    return max(1, int(str(raw).strip()))
+                except Exception:
+                    return 1
+
+            def result_dom_ready(page):
+                role_signals = (
+                    "recruiter",
+                    "talent acquisition",
+                    "sales",
+                    "specialist",
+                    "manager",
+                    "engineer",
+                    "developer",
+                    "analyst",
+                    "consultant",
+                    "director",
+                    "staffing",
+                    "human resources",
+                )
+                result_words = (
+                    "people",
+                    "employees",
+                    "results",
+                    "connections",
+                )
+
+                for attempt in range(1, 31):
+                    try:
+                        page.wait_for_timeout(500)
+                    except Exception:
+                        pass
+
+                    try:
+                        visible_links = page.locator(
+                            "a[href*='/in/']:visible"
+                        ).count()
+                    except Exception:
+                        visible_links = 0
+
+                    cards = 0
+                    for selector in (
+                        "li.reusable-search__result-container:visible",
+                        "li[class*='reusable-search__result']:visible",
+                        "li.entity-result:visible",
+                        "div.entity-result:visible",
+                        "li.search-result:visible",
+                        "li[class*='search-result']:visible",
+                        "ul.reusable-search__entity-result-list > li:visible",
+                    ):
+                        try:
+                            cards = max(cards, page.locator(selector).count())
+                        except Exception:
+                            continue
+
+                    rendered_text = False
+                    try:
+                        body_text = page.locator("body").inner_text(timeout=2000)
+                        normalized = re.sub(
+                            r"\s+",
+                            " ",
+                            body_text or "",
+                        ).strip().lower()
+                        role_hits = sum(
+                            1 for signal in role_signals if signal in normalized
+                        )
+                        result_hits = sum(
+                            1 for word in result_words if word in normalized
+                        )
+                        rendered_text = (
+                            len(normalized) >= 800
+                            and role_hits >= 2
+                            and result_hits >= 1
+                        )
+                    except Exception:
+                        pass
+
+                    print(
+                        f"Direct next-page DOM wait {attempt}/30:",
+                        visible_links,
+                        "visible /in/ links;",
+                        cards,
+                        "result cards;",
+                        rendered_text,
+                        "employee-result text",
+                    )
+
+                    if visible_links > 0 or cards > 0 or rendered_text:
+                        return True
+
+                return False
+
+            # ------------------------------------------------------------
+            # PRIMARY PATH: direct page-number navigation in a fresh tab.
+            # ------------------------------------------------------------
+            navigation_page = None
+
+            try:
+                navigation_page = before_page.context.new_page()
+
+                print("Trying authenticated direct next-page navigation...")
+                print("Referer:", before_url)
+
+                try:
+                    navigation_page.goto(
+                        direct_next_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                        referer=before_url,
+                    )
+                except Exception as ex:
+                    print("Direct next-page goto raised:", repr(ex))
+
+                try:
+                    navigation_page.wait_for_timeout(5000)
+                except Exception:
+                    pass
+
+                candidate_url = str(
+                    navigation_page.url or ""
+                ).strip()
+
+                print("Direct next-page final URL:", candidate_url)
+
+                if (
+                    valid_unfiltered_people_url(candidate_url)
+                    and page_number_from_url(candidate_url) >= target_page_number
+                ):
+                    if result_dom_ready(navigation_page):
+                        old_page = before_page
+                        self.page = navigation_page
+
+                        print("NEXT PAGE VALIDATED VIA DIRECT URL")
+                        print("Company scope preserved:", company_ids)
+                        print("Network parameter: removed")
+                        print("Page number:", page_number_from_url(candidate_url))
+
+                        if old_page is not navigation_page:
+                            try:
+                                if not old_page.is_closed():
+                                    old_page.close()
+                                    print("Previous employee-search tab closed after new page validation.")
+                            except Exception as ex:
+                                print("Previous employee-search tab cleanup warning:", repr(ex))
+
+                        navigation_page = None
+                        return True
+
+                print("Direct next-page navigation was not accepted.")
+
+            except Exception as ex:
+                print("Direct next-page recovery failed:", repr(ex))
+
+            finally:
+                if navigation_page is not None:
+                    try:
+                        if not navigation_page.is_closed():
+                            navigation_page.close()
+                    except Exception:
+                        pass
+
+            # ------------------------------------------------------------
+            # FALLBACK PATH: existing LinkedIn Next control.
+            # ------------------------------------------------------------
+            # Keep the old page alive while attempting the button. If LinkedIn
+            # sends it to SSR/login, the direct URL path above remains the safe
+            # recovery mechanism on the next invocation.
             selectors = (
                 "button[data-testid='pagination-controls-next-button-visible']:visible",
                 "nav[aria-label*='Pagination' i] button:visible",
@@ -1816,6 +2094,7 @@ class CompanyPage(BasePage):
                 "div.artdeco-pagination a:visible",
             )
 
+            self.page = before_page
             next_control = None
 
             for selector in selectors:
@@ -1823,7 +2102,6 @@ class CompanyPage(BasePage):
                     controls = self.page.locator(selector)
                     for i in range(controls.count()):
                         control = controls.nth(i)
-
                         text = ""
                         aria = ""
                         title = ""
@@ -1841,7 +2119,9 @@ class CompanyPage(BasePage):
                         except Exception:
                             pass
 
-                        label = " ".join(x for x in (text, aria, title) if x).lower()
+                        label = " ".join(
+                            x for x in (text, aria, title) if x
+                        ).lower()
 
                         if "next" not in label:
                             continue
@@ -1854,14 +2134,14 @@ class CompanyPage(BasePage):
 
                         if control.is_visible():
                             next_control = control
-                            print("Next control found:", selector, "[", i, "]")
-                            print("Next label:", label)
+                            print("Fallback Next control found:", selector, "[", i, "]")
+                            print("Fallback Next label:", label)
                             break
 
                     if next_control is not None:
                         break
                 except Exception as ex:
-                    print("Next selector inspection failed:", selector, repr(ex))
+                    print("Fallback Next selector inspection failed:", selector, repr(ex))
 
             if next_control is None:
                 print("No usable Next control found.")
@@ -1875,280 +2155,30 @@ class CompanyPage(BasePage):
             try:
                 next_control.click(timeout=15000)
             except Exception as ex:
-                print("Next click failed:", repr(ex))
+                print("Fallback Next click failed:", repr(ex))
                 return False
 
-            # First wait for navigation/state change. Do not require the
-            # result DOM yet.
-            changed_url = False
-            current_url = before_url
-
-            for _ in range(60):
-                self.page.wait_for_timeout(250)
+            for attempt in range(1, 31):
+                self.page.wait_for_timeout(500)
                 current_url = str(self.page.url or "").strip()
-                if current_url != before_url:
-                    changed_url = True
-                    break
 
-            print("URL after Next:", current_url)
+                if not valid_unfiltered_people_url(current_url):
+                    print("Fallback Next destination:", current_url)
+                    if blocked(current_url):
+                        print("Fallback Next hit LinkedIn auth/SSR redirect.")
+                        return False
+                    continue
 
-            # LinkedIn can briefly expose a valid people-search URL and
-            # then redirect the same Page back to linkedin.com. Require the
-            # destination to remain company-scoped before returning True.
-            stable_people_url = False
-            stable_url = current_url
+                if page_number_from_url(current_url) < target_page_number:
+                    continue
 
-            for stability_attempt in range(1, 13):
-                self.page.wait_for_timeout(500)
-
-                try:
-                    stable_url = str(
-                        self.page.url or ""
-                    ).strip()
-                except Exception:
-                    stable_url = ""
-
-                stable_lower = stable_url.lower()
-
-                if (
-                    "/search/results/people/" in stable_lower
-                    and "currentcompany=" in stable_lower
-                    and not any(
-                        part in stable_lower
-                        for part in (
-                            "/login",
-                            "/authwall",
-                            "/checkpoint",
-                            "/uas/login",
-                            "/signup",
-                            "/ssr-login",
-                            "remember-me-auto-login",
-                        )
-                    )
-                ):
-                    if stability_attempt >= 4:
-                        stable_people_url = True
-                        current_url = stable_url
-                        break
-                else:
-                    print(
-                        "NEXT DESTINATION LOST COMPANY PEOPLE SEARCH:",
-                        stable_url
-                    )
-                    break
-
-            print(
-                "Next-page destination stable:",
-                stable_people_url
-            )
-            print(
-                "Stable destination URL:",
-                stable_url
-            )
-
-            if not stable_people_url:
-                print(
-                    "NEXT FAILED - destination did not remain on "
-                    "company people-search."
-                )
-                return False
-
-            if not changed_url:
-                print("NEXT FAILED - URL did not change.")
-                return False
-
-            current_url = stable_url
-            current_lower = current_url.lower()
-
-            bad_parts = (
-                "/login",
-                "/authwall",
-                "/checkpoint",
-                "/uas/login",
-                "/signup",
-                "/ssr-login",
-                "remember-me-auto-login",
-            )
-
-            if any(part in current_lower for part in bad_parts):
-                print("NEXT FAILED - LinkedIn redirected to authentication/SSR.")
-                print("Authentication URL:", current_url)
-                return False
-
-            if (
-                "/search/results/people/" not in current_lower
-                or "currentcompany=" not in current_lower
-            ):
-                print("NEXT FAILED - navigation left company people-search.")
-                return False
-
-            current_query = parse_qs(urlsplit(current_url).query, keep_blank_values=True)
-            current_company_ids = (
-                current_query.get("currentCompany", [])
-                or current_query.get("currentcompany", [])
-            )
-
-            if company_ids and current_company_ids != company_ids:
-                print("NEXT FAILED - currentCompany changed.")
-                print("Before:", company_ids)
-                print("After:", current_company_ids)
-                return False
-
-            print("Company scope preserved.")
-
-
-            # LinkedIn can expose employee-result text before
-            # Playwright exposes /in/ anchors or legacy result-card classes.
-            #
-            # Validate page 2 using three independent signals:
-            #   1. visible /in/ links
-            #   2. recognizable result-card DOM
-            #   3. rendered employee-result text
-            #
-            # This prevents a valid page from being rejected solely because
-            # LinkedIn changed or virtualized its result DOM.
-
-            rendered_profiles = 0
-            rendered_cards = 0
-            rendered_result_text = False
-
-            role_signals = (
-                "recruiter",
-                "talent acquisition",
-                "sales",
-                "specialist",
-                "manager",
-                "engineer",
-                "developer",
-                "analyst",
-                "consultant",
-                "director",
-                "staffing",
-                "human resources",
-            )
-
-            result_words = (
-                "people",
-                "employees",
-                "results",
-                "connections",
-            )
-
-            try:
-                self.page.evaluate("window.scrollTo(0, 0)")
-            except Exception:
-                pass
-
-            for attempt in range(1, 41):
-                self.page.wait_for_timeout(500)
-
-                try:
-                    rendered_profiles = self.page.locator(
-                        "a[href*='/in/']:visible"
-                    ).count()
-                except Exception:
-                    rendered_profiles = 0
-
-                try:
-                    rendered_cards = 0
-
-                    for selector in (
-                        "li.reusable-search__result-container:visible",
-                        "li[class*='reusable-search__result']:visible",
-                        "li.entity-result:visible",
-                        "div.entity-result:visible",
-                        "li.search-result:visible",
-                        "li[class*='search-result']:visible",
-                        "ul.reusable-search__entity-result-list > li:visible",
-                    ):
-                        try:
-                            count = self.page.locator(
-                                selector
-                            ).count()
-
-                            if count > rendered_cards:
-                                rendered_cards = count
-                        except Exception:
-                            continue
-
-                except Exception:
-                    rendered_cards = 0
-
-                try:
-                    body_text = self.page.locator("body").inner_text(timeout=2000)
-                    normalized_body = re.sub(
-                        r"\s+",
-                        " ",
-                        body_text or ""
-                    ).strip().lower()
-
-                    role_hits = sum(
-                        1
-                        for signal in role_signals
-                        if signal in normalized_body
-                    )
-
-                    result_context_hits = sum(
-                        1
-                        for word in result_words
-                        if word in normalized_body
-                    )
-
-                    rendered_result_text = (
-                        len(normalized_body) >= 800
-                        and role_hits >= 2
-                        and result_context_hits >= 1
-                    )
-                except Exception:
-                    rendered_result_text = False
-
-                print(
-                    f"Result DOM wait {attempt}/40:",
-                    rendered_profiles,
-                    "visible /in/ links;",
-                    rendered_cards,
-                    "recognizable result cards;",
-                    rendered_result_text,
-                    "employee-result text"
-                )
-
-                if (
-                    rendered_profiles > 0
-                    or rendered_cards > 0
-                    or rendered_result_text
-                ):
-                    print("=" * 60)
-                    print("NEXT PAGE VALIDATED")
-                    print("=" * 60)
-                    print("Same company people-search:", True)
-                    print(
-                        "Validation:",
-                        "links/cards/text"
-                    )
+                if result_dom_ready(self.page):
+                    print("NEXT PAGE VALIDATED VIA FALLBACK NEXT CONTROL")
                     return True
 
-                if attempt in (4, 8, 12, 16, 20, 24, 28, 32, 36):
-                    try:
-                        self.page.mouse.wheel(0, 1200)
-                    except Exception:
-                        pass
-
-            print("=" * 60)
-            print("NEXT REJECTED")
-            print("URL changed but no employee result DOM rendered.")
-            print("Current URL:", current_url)
-
-            try:
-                body_text = self.page.locator("body").inner_text()
-                print("Current page text length:", len(body_text))
-                print("Current page text preview:", body_text[:1000])
-            except Exception as ex:
-                print("Could not inspect empty result page:", repr(ex))
-
+            print("NEXT FAILED - neither direct URL navigation nor Next control produced a validated next page.")
             return False
 
         except Exception as ex:
             print("Pagination failed:", repr(ex))
             return False
-
-

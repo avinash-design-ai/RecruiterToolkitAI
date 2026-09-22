@@ -1092,15 +1092,52 @@ class SearchWorkflowV2:
                     # -------------------------------------------------
                     # Extract actual profile data.
                     # -------------------------------------------------
+                    # Call the base LinkedInProfilePageV2 implementation
+                    # explicitly. This prevents a subclass/monkey-patched
+                    # method-resolution edge case from silently skipping the
+                    # profile extractor after a successful tab open.
+                    # -------------------------------------------------
 
-                    data = profile.get_profile()
+                    print("BEGIN PROFILE DATA EXTRACTION")
 
-                    if not data.get("full_name"):
+                    data = LinkedInProfilePageV2.get_profile(profile)
 
-                        print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY.")
+                    print(
+                        "PROFILE DATA EXTRACTION RETURNED:",
+                        type(data).__name__,
+                        "keys=",
+                        sorted(data.keys()) if isinstance(data, dict) else "NON-DICT",
+                    )
+
+                    if not isinstance(data, dict):
+
+                        print("PROFILE DATA EXTRACTION RETURNED NON-DICT DATA.")
                         print("Candidate NOT counted as collected.")
                         print("Continuing to next candidate...")
                         continue
+
+                    # If LinkedIn hides the person's name on the profile page,
+                    # preserve the identity that came from the authenticated
+                    # search-result row. For anonymized results this will be
+                    # "LinkedIn Member"; do not invent a real name.
+                    if not data.get("full_name"):
+
+                        fallback_name = str(
+                            row.get("full_name", "")
+                        ).strip()
+
+                        if fallback_name:
+                            data["full_name"] = fallback_name
+                            print(
+                                "PROFILE NAME NOT VISIBLE; USING SEARCH-RESULT "
+                                "IDENTITY:",
+                                fallback_name,
+                            )
+                        else:
+                            print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY.")
+                            print("Candidate NOT counted as collected.")
+                            print("Continuing to next candidate...")
+                            continue
 
                     actual_company = (
                         data.get(
