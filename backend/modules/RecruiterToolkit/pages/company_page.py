@@ -360,12 +360,102 @@ class CompanyPage(BasePage):
             print("FROM:", current_url)
             print("TO:", broadened_url)
 
-            self.page.goto(
-                broadened_url,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-            self.page.wait_for_timeout(5000)
+            # IMPORTANT: keep the known-good authenticated F page alive.
+            # Direct page.goto(F/S/O) is the regression that can send
+            # LinkedIn to /uas/login. Try the broadened URL in a second
+            # authenticated tab first, with the current people-search URL
+            # as the Referer. The original page is never sacrificed until
+            # the new F/S/O page has been validated.
+
+            original_page = self.page
+            navigation_page = None
+
+            try:
+                navigation_page = self.page.context.new_page()
+
+                print("Trying authenticated F/S/O navigation in protected tab...")
+                print("Referer:", current_url)
+
+                try:
+                    navigation_page.goto(
+                        broadened_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                        referer=current_url,
+                    )
+                except Exception as ex:
+                    print("Protected-tab F/S/O goto raised:", repr(ex))
+
+                navigation_page.wait_for_timeout(5000)
+
+                candidate_url = str(navigation_page.url or "").strip()
+                print("Protected-tab final URL:", candidate_url)
+
+                if (
+                    not is_blocked_url(candidate_url)
+                    and is_people_url(candidate_url)
+                ):
+                    candidate_ids = company_ids(candidate_url)
+
+                    if candidate_ids != ids:
+                        print("ERROR: Protected F/S/O tab changed company scope.")
+                        print("Expected:", ids)
+                        print("Actual:", candidate_ids)
+                        try:
+                            navigation_page.close()
+                        except Exception:
+                            pass
+                        navigation_page = None
+                    else:
+                        print("Protected F/S/O navigation authenticated successfully.")
+                        self.page = navigation_page
+                        try:
+                            original_page.close()
+                        except Exception:
+                            pass
+                        navigation_page = None
+
+                else:
+                    print(
+                        "Protected F/S/O navigation was blocked; "
+                        "preserving original authenticated page."
+                    )
+
+                    try:
+                        navigation_page.close()
+                    except Exception:
+                        pass
+                    navigation_page = None
+                    self.page = original_page
+
+                    print("Retrying F/S/O with browser-side same-site navigation...")
+                    self.page.evaluate(
+                        "(url) => { window.location.assign(url); }",
+                        broadened_url,
+                    )
+                    self.page.wait_for_timeout(5000)
+
+                    retry_url = str(self.page.url or "").strip()
+                    print("Browser-side F/S/O final URL:", retry_url)
+
+                    if is_blocked_url(retry_url) or not is_people_url(retry_url):
+                        print("Browser-side F/S/O was blocked; retrying goto with Referer.")
+                        self.page.goto(
+                            broadened_url,
+                            wait_until="domcontentloaded",
+                            timeout=60000,
+                            referer=current_url,
+                        )
+                        self.page.wait_for_timeout(5000)
+
+            except Exception as ex:
+                print("ERROR: F/S/O navigation recovery failed:", repr(ex))
+                self.page = original_page
+                if navigation_page is not None:
+                    try:
+                        navigation_page.close()
+                    except Exception:
+                        pass
 
             final_url = str(self.page.url or "").strip()
 
