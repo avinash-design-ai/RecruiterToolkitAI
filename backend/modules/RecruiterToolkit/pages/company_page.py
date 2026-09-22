@@ -18,6 +18,100 @@ class CompanyPage(BasePage):
             "input[placeholder*='looking']"
         ).first
 
+        # PATCH: Dismiss LinkedIn blocking dialogs before global company search
+        # LinkedIn can leave a modal/dialog over the authenticated Feed page.
+        # Playwright finds the search input but its click is intercepted by the
+        # dialog, causing a 30-second Locator.click timeout.
+        try:
+            dialogs = self.page.locator(
+                "dialog[open]:visible, [role='dialog']:visible"
+            )
+
+            dialog_count = dialogs.count()
+
+            if dialog_count:
+                print(
+                    "Open LinkedIn dialog(s) detected before company search:",
+                    dialog_count,
+                )
+
+                for i in range(dialog_count):
+                    try:
+                        dialog = dialogs.nth(i)
+
+                        try:
+                            dialog_text = (
+                                dialog.inner_text(timeout=2000)
+                                .strip()
+                            )
+                        except Exception:
+                            dialog_text = ""
+
+                        if dialog_text:
+                            print(
+                                "Blocking dialog text:",
+                                dialog_text[:500],
+                            )
+                    except Exception:
+                        pass
+
+                # First use LinkedIn's normal modal-dismiss behavior.
+                self.page.keyboard.press("Escape")
+                self.page.wait_for_timeout(750)
+
+                # Some dialogs do not close on Escape. Try an explicit
+                # Close/Dismiss button inside the remaining dialog only.
+                dialogs = self.page.locator(
+                    "dialog[open]:visible, [role='dialog']:visible"
+                )
+
+                remaining = dialogs.count()
+
+                if remaining:
+                    for i in range(remaining):
+                        try:
+                            dialog = dialogs.nth(i)
+                            close_buttons = dialog.get_by_role(
+                                "button",
+                                name=re.compile(
+                                    r"close|dismiss|not now|cancel",
+                                    re.IGNORECASE,
+                                ),
+                            )
+
+                            if close_buttons.count():
+                                close_buttons.first.click(timeout=5000)
+                                self.page.wait_for_timeout(500)
+                                break
+                        except Exception as ex:
+                            print(
+                                "Dialog close-button attempt failed:",
+                                repr(ex),
+                            )
+
+                dialogs = self.page.locator(
+                    "dialog[open]:visible, [role='dialog']:visible"
+                )
+
+                if dialogs.count():
+                    print(
+                        "WARNING: A LinkedIn dialog is still visible before "
+                        "company-search click; allowing the normal Playwright "
+                        "click to surface a precise failure if it remains blocking."
+                    )
+                else:
+                    print(
+                        "LinkedIn blocking dialog dismissed before company search."
+                    )
+
+        except Exception as ex:
+            # Do not fail the workflow merely because dialog inspection itself
+            # is unavailable. Continue with the existing search behavior.
+            print(
+                "Dialog dismissal check failed; continuing with company search:",
+                repr(ex),
+            )
+
         search_box.click()
         search_box.fill(company)
         search_box.press("Enter")
