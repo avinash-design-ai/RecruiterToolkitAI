@@ -889,7 +889,37 @@ class SearchWorkflowV2:
                     requested_profile_url
                 )
 
+                profile = None
+
                 try:
+
+                    # Re-anchor to the authenticated employee search page before
+                    # opening EVERY candidate. The search page is never the profile page.
+                    if not self._restore_employee_search_page():
+                        print(
+                            "PROFILE OPEN FAILED: employee-search page is not available."
+                        )
+                        print("Candidate NOT counted as collected.")
+                        print("Continuing to next candidate...")
+                        continue
+
+                    current_employee_url = str(
+                        self.company_page.page.url or ""
+                    ).lower()
+
+                    if (
+                        "/search/results/people/" not in current_employee_url
+                        or "currentcompany=" not in current_employee_url
+                    ):
+                        print(
+                            "PROFILE OPEN FAILED: current page is not company-scoped employee search."
+                        )
+                        print("Current URL:", self.company_page.page.url)
+                        print("Candidate NOT counted as collected.")
+                        print("Continuing to next candidate...")
+                        continue
+
+                    self.page = self.company_page.page
 
                     # self.page remains the authenticated employee-search page.
                     # LinkedInProfilePageV2.open_profile() searches that page for
@@ -1232,10 +1262,41 @@ class SearchWorkflowV2:
                     continue
 
                 finally:
-                    # The profile extractor may have switched its own page to
-                    # a temporary profile tab. Re-anchor the workflow and
-                    # CompanyPage before processing another candidate.
-                    self._restore_employee_search_page()
+                    # ALWAYS close the temporary profile tab used by this candidate.
+                    # LinkedInProfilePageV2 normally closes it during get_profile(),
+                    # but this finally block guarantees cleanup on every success,
+                    # rejection, exception, or early-return path.
+                    try:
+                        temporary_profile_page = None
+
+                        if profile is not None:
+                            temporary_profile_page = getattr(
+                                profile,
+                                "_temporary_profile_page",
+                                None
+                            )
+
+                        if (
+                            temporary_profile_page is not None
+                            and not temporary_profile_page.is_closed()
+                        ):
+                            temporary_profile_page.close()
+                            print("PROFILE TAB CLOSED.")
+
+                    except Exception as cleanup_ex:
+                        print(
+                            "PROFILE TAB CLEANUP WARNING:",
+                            repr(cleanup_ex)
+                        )
+
+                    # Re-anchor the workflow and CompanyPage to the SAME
+                    # authenticated employee-search page before the next candidate
+                    # and before pagination.
+                    if not self._restore_employee_search_page():
+                        print(
+                            "SEARCH PAGE RESTORE WARNING: "
+                            "employee-search page could not be re-anchored."
+                        )
 
             # -------------------------------------------------
             # Maximum reached after exhausting candidates

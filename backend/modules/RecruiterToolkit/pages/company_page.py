@@ -1181,273 +1181,224 @@ class CompanyPage(BasePage):
         # ============================================================
         # PASS 2
         #
-        # MUTUAL-SAFE LOCAL PLAYWRIGHT EXTRACTION
+        # VIRTUALIZED-DOM PRIMARY EMPLOYEE EXTRACTION
         #
-        # LinkedIn can place a mutual-connection /in/ link inside the
-        # same employee result. That nested person must never become
-        # the employee candidate.
+        # LinkedIn can virtualize employee rows. Scan multiple scroll
+        # positions instead of taking one snapshot of visible /in/ links.
+        #
+        # CRITICAL RULE:
+        # For each local employee result container, ONLY its first
+        # /in/ link is the employee. Nested /in/ links are ignored.
+        # Connection degree is never used as a filter.
         # ============================================================
 
         print("=" * 60)
-        print("PASS 2 - MUTUAL-SAFE LOCAL PLAYWRIGHT EXTRACTION")
+        print("PASS 2 - VIRTUALIZED-DOM PRIMARY EMPLOYEE EXTRACTION")
         print("=" * 60)
 
         if len(profiles) < 5:
 
             try:
-                links = self.page.locator(
-                    "a[href*='/in/']:visible"
-                )
-                link_count = links.count()
-            except Exception as ex:
-                print(
-                    "Visible /in/ link lookup failed:",
-                    repr(ex)
-                )
-                links = None
-                link_count = 0
+                self.page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
 
-            print("Visible /in/ links found:", link_count)
+            total_rounds = 16
+            empty_rounds_at_bottom = 0
 
-            result_groups = []
-
-            if links is not None and link_count > 0:
-
-                for link_index in range(link_count):
-
-                    if len(profiles) >= 5:
-                        break
-
-                    try:
-                        link = links.nth(link_index)
-
-                        if not link.is_visible():
-                            continue
-
-                        href = (
-                            link.get_attribute("href") or ""
-                        ).strip()
-
-                        profile_url = canonical_profile_url(href)
-
-                        if not profile_url:
-                            continue
-
-                        name = normalize_text(
-                            link.inner_text(timeout=1500)
-                        )
-
-                        if not name or len(name) > 180:
-                            continue
-
-                        chosen_text = ""
-                        chosen_level = -1
-                        chosen_link_count = 0
-
-                        fallback_text = ""
-                        fallback_level = -1
-                        fallback_link_count = 0
-
-                        for level in range(0, 9):
-
-                            try:
-                                ancestor = link.locator(
-                                    "xpath=" + "/.." * (level + 1)
-                                )
-
-                                if not ancestor.count():
-                                    continue
-
-                                if not ancestor.is_visible():
-                                    continue
-
-                                ancestor_text = normalize_text(
-                                    ancestor.inner_text(timeout=1000)
-                                )
-
-                                if (
-                                    len(ancestor_text) < 20
-                                    or len(ancestor_text) > 1800
-                                ):
-                                    continue
-
-                                ancestor_links = ancestor.locator(
-                                    "a[href*='/in/']:visible"
-                                )
-
-                                local_count = ancestor_links.count()
-
-                                if local_count < 1 or local_count > 4:
-                                    continue
-
-                                if not fallback_text:
-                                    fallback_text = ancestor_text
-                                    fallback_level = level
-                                    fallback_link_count = local_count
-
-                                if location_matches(ancestor_text):
-                                    chosen_text = ancestor_text
-                                    chosen_level = level
-                                    chosen_link_count = local_count
-                                    break
-
-                            except Exception:
-                                continue
-
-                        if not chosen_text:
-                            chosen_text = fallback_text
-                            chosen_level = fallback_level
-                            chosen_link_count = fallback_link_count
-
-                        if not chosen_text:
-                            continue
-
-                        # Explicitly reject a nested mutual connection.
-                        link_name_lower = name.lower()
-
-                        mutual_signal = (
-                            "mutual connection" in link_name_lower
-                            or "mutual connections" in link_name_lower
-                        )
-
-                        # IMPORTANT: Do not inspect ancestor/card text for mutual connections.
-                        # The employee result card itself can contain the phrase 'mutual connections'.
-                        # That does NOT mean the employee /in/ link is a mutual-connection profile.
-                        # Only the candidate link's own text is used for mutual rejection.
-                        if mutual_signal:
-                            print(
-                                "REJECTED MUTUAL CONNECTION:",
-                                name[:160],
-                                profile_url
-                            )
-                            continue
-
-                        group_key = chosen_text[:1000].lower()
-
-                        candidate = {
-                            "href": href,
-                            "profile_url": profile_url,
-                            "name": name,
-                            "text": chosen_text,
-                            "level": chosen_level,
-                            "link_count": chosen_link_count,
-                        }
-
-                        existing = None
-
-                        for group in result_groups:
-                            if group["key"] == group_key:
-                                existing = group
-                                break
-
-                        if existing is None:
-                            result_groups.append(
-                                {
-                                    "key": group_key,
-                                    "text": chosen_text,
-                                    "candidates": [candidate],
-                                }
-                            )
-                        else:
-                            existing["candidates"].append(candidate)
-
-                    except Exception as ex:
-                        print(
-                            f"PASS 2 link {link_index + 1} inspection failed:",
-                            repr(ex)
-                        )
-
-            print(
-                "Local employee result groups:",
-                len(result_groups)
-            )
-
-            for group_index, group in enumerate(result_groups):
+            for scan_round in range(1, total_rounds + 1):
 
                 if len(profiles) >= 5:
                     break
 
                 try:
-                    candidates = []
-
-                    for candidate in group.get("candidates", []):
-
-                        candidate_name = normalize_text(
-                            candidate.get("name", "")
-                        )
-
-                        if (
-                            "mutual connection" in candidate_name.lower()
-                            or "mutual connections" in candidate_name.lower()
-                        ):
-                            print(
-                                "REJECTED MUTUAL GROUP CANDIDATE:",
-                                candidate_name[:160]
-                            )
-                            continue
-
-                        candidates.append(candidate)
-
-                    if not candidates:
-                        continue
-
-                    # Preserve LinkedIn DOM order.
-                    # The first /in/ link in the result group is the employee;
-                    # nested mutual-connection /in/ links normally follow it.
-                    # Do not rank candidates by text length.
-                    selected = candidates[0]
-
-                    if add_candidate(
-                        selected.get("href", ""),
-                        selected.get("name", ""),
-                        selected.get("text", ""),
-                        enforce_location=False
-                    ):
-                        print("-" * 60)
-                        print(
-                            "EMPLOYEE CANDIDATE:",
-                            selected.get("profile_url", "")
-                        )
-                        print(
-                            "Primary anchor:",
-                            normalize_text(
-                                selected.get("name", "")
-                            )[:200]
-                        )
-                        print(
-                            "Local ancestor level:",
-                            selected.get("level", -1)
-                        )
-                        print(
-                            "Local /in/ link count:",
-                            selected.get("link_count", 0)
-                        )
-                        print(
-                            "Result group:",
-                            normalize_text(
-                                selected.get("text", "")
-                            )[:500]
-                        )
-                        print("Connection degree: IGNORED")
-                        print(
-                            "Candidates collected:",
-                            len(profiles),
-                            "/ 5"
-                        )
-
+                    links = self.page.locator("a[href*='/in/']:visible")
+                    link_count = links.count()
                 except Exception as ex:
-                    print(
-                        f"PASS 2 result group {group_index + 1} failed:",
-                        repr(ex)
-                    )
+                    print("Visible /in/ link lookup failed:", repr(ex))
+                    links = None
+                    link_count = 0
 
-        else:
-            print(
-                "PASS 2 skipped because 5 employee candidates "
-                "are already available."
-            )
+                round_added = 0
+
+                if links is not None and link_count > 0:
+
+                    for link_index in range(link_count):
+
+                        if len(profiles) >= 5:
+                            break
+
+                        try:
+                            link = links.nth(link_index)
+
+                            if not link.is_visible():
+                                continue
+
+                            chosen_container = None
+                            chosen_text = ""
+                            chosen_level = -1
+                            chosen_link_count = 0
+                            fallback_container = None
+                            fallback_text = ""
+                            fallback_level = -1
+                            fallback_link_count = 0
+
+                            for level in range(0, 9):
+                                try:
+                                    ancestor = link.locator(
+                                        "xpath=" + "/.." * (level + 1)
+                                    )
+
+                                    if not ancestor.count() or not ancestor.is_visible():
+                                        continue
+
+                                    ancestor_text = normalize_text(
+                                        ancestor.inner_text(timeout=1000)
+                                    )
+
+                                    if len(ancestor_text) < 20 or len(ancestor_text) > 1800:
+                                        continue
+
+                                    ancestor_links = ancestor.locator(
+                                        "a[href*='/in/']:visible"
+                                    )
+                                    local_count = ancestor_links.count()
+
+                                    if local_count < 1 or local_count > 4:
+                                        continue
+
+                                    if fallback_container is None:
+                                        fallback_container = ancestor
+                                        fallback_text = ancestor_text
+                                        fallback_level = level
+                                        fallback_link_count = local_count
+
+                                    if location_matches(ancestor_text):
+                                        chosen_container = ancestor
+                                        chosen_text = ancestor_text
+                                        chosen_level = level
+                                        chosen_link_count = local_count
+                                        break
+
+                                except Exception:
+                                    continue
+
+                            if chosen_container is None:
+                                chosen_container = fallback_container
+                                chosen_text = fallback_text
+                                chosen_level = fallback_level
+                                chosen_link_count = fallback_link_count
+
+                            if chosen_container is None:
+                                continue
+
+                            local_links = chosen_container.locator(
+                                "a[href*='/in/']:visible"
+                            )
+                            local_count = local_links.count()
+
+                            if local_count < 1:
+                                continue
+
+                            # FIRST /in/ LINK = EMPLOYEE.
+                            # Any later /in/ links inside this container
+                            # are nested people/mutual connections and are ignored.
+                            primary_link = local_links.nth(0)
+
+                            primary_href = (
+                                primary_link.get_attribute("href") or ""
+                            ).strip()
+                            primary_url = canonical_profile_url(primary_href)
+
+                            if not primary_url:
+                                continue
+
+                            primary_name = normalize_text(
+                                primary_link.inner_text(timeout=1500)
+                            )
+
+                            if not primary_name or len(primary_name) > 180:
+                                continue
+
+                            primary_name_lower = primary_name.lower()
+                            if (
+                                "mutual connection" in primary_name_lower
+                                or "mutual connections" in primary_name_lower
+                            ):
+                                print("REJECTED MUTUAL PRIMARY LINK:", primary_name[:160])
+                                continue
+
+                            if add_candidate(
+                                primary_href,
+                                primary_name,
+                                chosen_text or primary_name,
+                                enforce_location=False,
+                            ):
+                                round_added += 1
+                                print("-" * 60)
+                                print("EMPLOYEE CANDIDATE:", primary_url)
+                                print("Primary anchor:", primary_name[:200])
+                                print("Local ancestor level:", chosen_level)
+                                print("Local /in/ link count:", chosen_link_count)
+                                print("Result group:", (chosen_text or primary_name)[:500])
+                                print("Connection degree: IGNORED")
+
+                        except Exception as ex:
+                            print(
+                                f"PASS 2 link {link_index + 1} inspection failed:",
+                                repr(ex),
+                            )
+
+                try:
+                    metrics = self.page.evaluate(
+                        "() => ({top: window.scrollY, height: document.documentElement.scrollHeight, viewport: window.innerHeight})"
+                    )
+                    current_top = float(metrics.get("top", 0))
+                    height = float(metrics.get("height", 0))
+                    viewport = float(metrics.get("viewport", 0))
+                    at_bottom = (current_top + viewport) >= (height - 40)
+                except Exception:
+                    at_bottom = False
+
+                print(
+                    f"PASS 2 scan {scan_round}/{total_rounds}: {link_count} visible /in/ links, "
+                    f"{round_added} new employees, profiles={len(profiles)}, at_bottom={at_bottom}"
+                )
+
+                if at_bottom:
+                    if round_added == 0:
+                        empty_rounds_at_bottom += 1
+                    else:
+                        empty_rounds_at_bottom = 0
+
+                    if empty_rounds_at_bottom >= 2:
+                        break
+
+                try:
+                    self.page.mouse.wheel(0, 900)
+                except Exception:
+                    pass
+
+            try:
+                self.page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
 
         # ============================================================
+        # FINAL RESULT
+        # ============================================================
+
+        print("=" * 60)
+
+        print(
+            "EMPLOYEE PROFILES EXTRACTED:",
+            len(profiles)
+        )
+
+        print("=" * 60)
+
+        return profiles
+
         # FINAL RESULT
         # ============================================================
 
@@ -1699,7 +1650,11 @@ class CompanyPage(BasePage):
 
             rendered_profiles = 0
             rendered_cards = 0
-            rendered_result_text = False
+
+            try:
+                self.page.evaluate("window.scrollTo(0, 0)")
+            except Exception:
+                pass
 
             for attempt in range(1, 41):
                 self.page.wait_for_timeout(500)
@@ -1736,74 +1691,17 @@ class CompanyPage(BasePage):
                 except Exception:
                     rendered_cards = 0
 
-                try:
-                    body_text = self.page.locator(
-                        "body"
-                    ).inner_text(timeout=2000)
-
-                    normalized_body = re.sub(
-                        r"\s+",
-                        " ",
-                        body_text or ""
-                    ).strip().lower()
-
-                    role_signals = (
-                        "recruiter",
-                        "talent acquisition",
-                        "sales",
-                        "specialist",
-                        "manager",
-                        "engineer",
-                        "developer",
-                        "analyst",
-                        "consultant",
-                        "director",
-                        "staffing",
-                        "human resources",
-                    )
-
-                    role_hits = sum(
-                        1
-                        for signal in role_signals
-                        if signal in normalized_body
-                    )
-
-                    result_words = (
-                        "people",
-                        "employees",
-                        "results",
-                        "connections",
-                    )
-
-                    result_context_hits = sum(
-                        1
-                        for word in result_words
-                        if word in normalized_body
-                    )
-
-                    rendered_result_text = (
-                        len(normalized_body) >= 800
-                        and role_hits >= 2
-                        and result_context_hits >= 1
-                    )
-
-                except Exception:
-                    rendered_result_text = False
-
                 print(
                     f"Result DOM wait {attempt}/40:",
                     rendered_profiles,
                     "visible /in/ links;",
                     rendered_cards,
-                    "recognizable result cards;",
-                    rendered_result_text,
-                    "employee-result text"
+                    "recognizable result cards;"
                 )
 
                 if (
                     rendered_profiles > 0
                     or rendered_cards > 0
-                    or rendered_result_text
                 ):
                     print("=" * 60)
                     print("NEXT PAGE VALIDATED")
@@ -1815,7 +1713,7 @@ class CompanyPage(BasePage):
                     )
                     return True
 
-                if attempt in (10, 20, 30):
+                if attempt in (4, 8, 12, 16, 20, 24, 28, 32, 36):
                     try:
                         self.page.mouse.wheel(0, 1200)
                     except Exception:
