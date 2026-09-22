@@ -419,47 +419,48 @@ class CompanyPage(BasePage):
                 )
                 return False
     
-            # LinkedIn may land on a first-degree-only company people search.
-            # Broaden only the network parameter while preserving currentCompany.
+            # IMPORTANT:
+            # "Connection filter open" means no network/degree filter.
+            # LinkedIn's company people-search link may arrive with
+            # network=["F"]. Remove only that parameter while preserving
+            # currentCompany and every other search parameter.
+
             from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
             parsed = urlsplit(current_url)
-            pairs = parse_qsl(parsed.query, keep_blank_values=True)
+            pairs = parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
 
-            rebuilt = []
-            replaced_network = False
+            unfiltered_pairs = [
+                (key, value)
+                for key, value in pairs
+                if key.lower() != "network"
+            ]
 
-            for key, value in pairs:
-                if key.lower() == "network":
-                    if not replaced_network:
-                        rebuilt.append(("network", '["F","S","O"]'))
-                        replaced_network = True
-                else:
-                    rebuilt.append((key, value))
-
-            if not replaced_network:
-                rebuilt.append(("network", '["F","S","O"]'))
-
-            broadened_url = urlunsplit(
+            unfiltered_url = urlunsplit(
                 (
                     parsed.scheme,
                     parsed.netloc,
                     parsed.path,
-                    urlencode(rebuilt),
+                    urlencode(unfiltered_pairs),
                     parsed.fragment,
                 )
             )
 
-            print("Broadening company people-search network:")
-            print("FROM:", current_url)
-            print("TO:", broadened_url)
+            network_present = len(unfiltered_pairs) != len(pairs)
 
-            # IMPORTANT: keep the known-good authenticated F page alive.
-            # Direct page.goto(F/S/O) is the regression that can send
-            # LinkedIn to /uas/login. Try the broadened URL in a second
-            # authenticated tab first, with the current people-search URL
-            # as the Referer. The original page is never sacrificed until
-            # the new F/S/O page has been validated.
+            if not network_present:
+                print("Connection-degree filter: NONE")
+                print("No network parameter was present.")
+                print("Company scope preserved:", ids)
+                print("Company people search ready.")
+                return True
+
+            print("Removing LinkedIn network/connection-degree filter.")
+            print("FROM:", current_url)
+            print("TO:", unfiltered_url)
 
             original_page = self.page
             navigation_page = None
@@ -467,51 +468,63 @@ class CompanyPage(BasePage):
             try:
                 navigation_page = self.page.context.new_page()
 
-                print("Trying authenticated F/S/O navigation in protected tab...")
+                print("Trying authenticated unfiltered people search in protected tab...")
                 print("Referer:", current_url)
 
                 try:
                     navigation_page.goto(
-                        broadened_url,
+                        unfiltered_url,
                         wait_until="domcontentloaded",
                         timeout=60000,
                         referer=current_url,
                     )
                 except Exception as ex:
-                    print("Protected-tab F/S/O goto raised:", repr(ex))
+                    print("Protected-tab unfiltered goto raised:", repr(ex))
 
                 navigation_page.wait_for_timeout(5000)
 
-                candidate_url = str(navigation_page.url or "").strip()
-                print("Protected-tab final URL:", candidate_url)
+                candidate_url = str(
+                    navigation_page.url or ""
+                ).strip()
+
+                print(
+                    "Protected-tab final URL:",
+                    candidate_url
+                )
+
+                candidate_query = {}
+                try:
+                    candidate_query = parse_qs(
+                        urlsplit(candidate_url).query,
+                        keep_blank_values=True,
+                    )
+                except Exception:
+                    candidate_query = {}
+
+                candidate_network = (
+                    candidate_query.get("network", [])
+                    or candidate_query.get("Network", [])
+                )
 
                 if (
                     not is_blocked_url(candidate_url)
                     and is_people_url(candidate_url)
+                    and company_ids(candidate_url) == ids
+                    and not candidate_network
                 ):
-                    candidate_ids = company_ids(candidate_url)
+                    print("Unfiltered people-search navigation authenticated successfully.")
+                    self.page = navigation_page
 
-                    if candidate_ids != ids:
-                        print("ERROR: Protected F/S/O tab changed company scope.")
-                        print("Expected:", ids)
-                        print("Actual:", candidate_ids)
-                        try:
-                            navigation_page.close()
-                        except Exception:
-                            pass
-                        navigation_page = None
-                    else:
-                        print("Protected F/S/O navigation authenticated successfully.")
-                        self.page = navigation_page
-                        try:
-                            original_page.close()
-                        except Exception:
-                            pass
-                        navigation_page = None
+                    try:
+                        original_page.close()
+                    except Exception:
+                        pass
+
+                    navigation_page = None
 
                 else:
                     print(
-                        "Protected F/S/O navigation was blocked; "
+                        "Protected-tab unfiltered navigation was not accepted; "
                         "preserving original authenticated page."
                     )
 
@@ -519,49 +532,99 @@ class CompanyPage(BasePage):
                         navigation_page.close()
                     except Exception:
                         pass
+
                     navigation_page = None
                     self.page = original_page
 
-                    print("Retrying F/S/O with browser-side same-site navigation...")
+                    print(
+                        "Retrying unfiltered search with browser-side "
+                        "same-site navigation..."
+                    )
+
                     self.page.evaluate(
                         "(url) => { window.location.assign(url); }",
-                        broadened_url,
+                        unfiltered_url,
                     )
+
                     self.page.wait_for_timeout(5000)
 
-                    retry_url = str(self.page.url or "").strip()
-                    print("Browser-side F/S/O final URL:", retry_url)
+                    retry_url = str(
+                        self.page.url or ""
+                    ).strip()
 
-                    if is_blocked_url(retry_url) or not is_people_url(retry_url):
-                        print("Browser-side F/S/O was blocked; retrying goto with Referer.")
+                    print(
+                        "Browser-side unfiltered final URL:",
+                        retry_url
+                    )
+
+                    retry_query = parse_qs(
+                        urlsplit(retry_url).query,
+                        keep_blank_values=True,
+                    )
+
+                    retry_network = (
+                        retry_query.get("network", [])
+                        or retry_query.get("Network", [])
+                    )
+
+                    if (
+                        is_blocked_url(retry_url)
+                        or not is_people_url(retry_url)
+                        or company_ids(retry_url) != ids
+                        or retry_network
+                    ):
+                        print(
+                            "Browser-side unfiltered navigation was not accepted; "
+                            "retrying goto with Referer."
+                        )
+
                         self.page.goto(
-                            broadened_url,
+                            unfiltered_url,
                             wait_until="domcontentloaded",
                             timeout=60000,
                             referer=current_url,
                         )
+
                         self.page.wait_for_timeout(5000)
 
             except Exception as ex:
-                print("ERROR: F/S/O navigation recovery failed:", repr(ex))
+                print(
+                    "ERROR: Unfiltered connection-filter recovery failed:",
+                    repr(ex),
+                )
                 self.page = original_page
+
                 if navigation_page is not None:
                     try:
                         navigation_page.close()
                     except Exception:
                         pass
 
-            final_url = str(self.page.url or "").strip()
+            final_url = str(
+                self.page.url or ""
+            ).strip()
 
-            if is_blocked_url(final_url) or not is_people_url(final_url):
-                print("ERROR: Broadening network left company people search.")
-                print("Final URL:", final_url)
+            if (
+                is_blocked_url(final_url)
+                or not is_people_url(final_url)
+            ):
+                print(
+                    "ERROR: Removing the connection filter left the "
+                    "company people search."
+                )
+                print(
+                    "Final URL:",
+                    final_url
+                )
                 return False
 
             final_ids = company_ids(final_url)
 
             if final_ids != ids:
-                print("ERROR: currentCompany changed while broadening network.")
+                print(
+                    "ERROR: currentCompany changed while removing "
+                    "the connection filter."
+                )
                 print("Expected:", ids)
                 print("Actual:", final_ids)
                 return False
@@ -570,22 +633,28 @@ class CompanyPage(BasePage):
                 urlsplit(final_url).query,
                 keep_blank_values=True,
             )
-            final_network = " ".join(
+
+            final_network = (
                 final_query.get("network", [])
                 or final_query.get("Network", [])
-            ).lower()
+            )
 
-            if '"s"' not in final_network or '"o"' not in final_network:
-                print("ERROR: Network was not broadened to F/S/O.")
-                print("Final network:", final_network)
+            if final_network:
+                print(
+                    "ERROR: LinkedIn network parameter is still present."
+                )
+                print(
+                    "Final network:",
+                    final_network
+                )
                 return False
 
-            print("Connection-degree filter: URL scope F/S/O")
-            print("Network parameter:", final_network)
+            print("Connection-degree filter: NONE")
+            print("Network parameter: removed")
             print("Company scope preserved:", final_ids)
             print("Company people search ready.")
             return True
-    
+
         # CASE 2:
         # We are still on the company page. Use LinkedIn's own
         # company-scoped people-search link. Never construct a generic
@@ -689,10 +758,10 @@ class CompanyPage(BasePage):
         print("COMPANY PEOPLE SEARCH READY")
         print("=" * 60)
         print("Final URL:", final_url)
-        print("Connection-degree filter: URL scope F/S/O")
-        print("Network parameter:", final_network if "final_network" in locals() else "verified above")
+        print("Connection-degree filter: UNTOUCHED")
+        print("LinkedIn network parameter was not modified.")
         print("Company scope preserved:", final_ids)
-    
+
         return True
 
     def apply_location(self, location):
@@ -860,6 +929,57 @@ class CompanyPage(BasePage):
                 )
             )
 
+        def extract_primary_name(anchor_text, result_text=""):
+            """
+            Return the employee identity represented by the PRIMARY /in/
+            anchor inside a single LinkedIn employee search-result row.
+
+            LinkedIn sometimes renders the anchor text as the whole result
+            card, including degree text or mutual-connection text. Never use
+            connection-degree labels as identity data, and never treat a
+            mutual-connection suffix as the employee's name.
+
+            For anonymized rows, preserve the literal 'LinkedIn Member'
+            label instead of rejecting the profile.
+            """
+            text = normalize_text(anchor_text)
+
+            if not text:
+                text = normalize_text(result_text)
+
+            if not text:
+                return ""
+
+            lower = text.lower()
+
+            if lower.startswith("linkedin member"):
+                return "LinkedIn Member"
+
+            for marker in (
+                " connect ",
+                " • ",
+            ):
+                parts = text.split(marker, 1)
+                if parts[0].strip():
+                    text = parts[0].strip()
+
+            lower = text.lower()
+
+            if "mutual connection" in lower:
+                text = re.split(
+                    r",\s+|\s+&\s+",
+                    text,
+                    maxsplit=1,
+                )[0].strip()
+
+            if text.lower().startswith("linkedin member"):
+                return "LinkedIn Member"
+
+            if len(text) > 180:
+                text = text[:180].strip()
+
+            return text
+
         def add_candidate(
             href,
             name,
@@ -886,7 +1006,10 @@ class CompanyPage(BasePage):
             )
 
             if not clean_name:
-                return False
+                if "linkedin member" in clean_text.lower():
+                    clean_name = "LinkedIn Member"
+                else:
+                    return False
 
             if enforce_location and not location_matches(
                 clean_text
@@ -1229,12 +1352,17 @@ class CompanyPage(BasePage):
                         or ""
                     )
 
-                    name = (
+                    raw_name = (
                         link
                         .inner_text(
                             timeout=1500
                         )
                         .strip()
+                    )
+
+                    name = extract_primary_name(
+                        raw_name,
+                        card_text,
                     )
 
                     if add_candidate(
@@ -1274,20 +1402,21 @@ class CompanyPage(BasePage):
 
         # ============================================================
         # PASS 2
+        # VIRTUALIZED-DOM EMPLOYEE RESULT-ROW EXTRACTION
         #
-        # VIRTUALIZED-DOM PRIMARY EMPLOYEE EXTRACTION
+        # The result row is the boundary. We never use a page-level /in/
+        # link as an employee by itself.
         #
-        # LinkedIn can virtualize employee rows. Scan multiple scroll
-        # positions instead of taking one snapshot of visible /in/ links.
-        #
-        # CRITICAL RULE:
-        # For each local employee result container, ONLY its first
-        # /in/ link is the employee. Nested /in/ links are ignored.
-        # Connection degree is never used as a filter.
+        # For each visible /in/ link:
+        #   1. Walk local ancestors only.
+        #   2. Prefer a local ancestor that looks like an employee result row.
+        #   3. Treat ONLY the first /in/ link inside that row as the employee.
+        #   4. Ignore later /in/ links (mutual/nested profiles).
+        #   5. Ignore 1st/2nd/3rd-degree labels completely.
         # ============================================================
 
         print("=" * 60)
-        print("PASS 2 - VIRTUALIZED-DOM PRIMARY EMPLOYEE EXTRACTION")
+        print("PASS 2 - VIRTUALIZED-DOM EMPLOYEE RESULT-ROW EXTRACTION")
         print("=" * 60)
 
         if len(profiles) < 5:
@@ -1300,20 +1429,52 @@ class CompanyPage(BasePage):
             total_rounds = 16
             empty_rounds_at_bottom = 0
 
+            row_role_signals = (
+                "recruiter",
+                "talent acquisition",
+                "sales",
+                "specialist",
+                "manager",
+                "engineer",
+                "developer",
+                "analyst",
+                "consultant",
+                "director",
+                "staffing",
+                "human resources",
+                "president",
+                "administrator",
+                "architect",
+            )
+
+            row_class_signals = (
+                "reusable-search__result",
+                "entity-result",
+                "search-result",
+                "base-search-card",
+                "pvs-entity",
+            )
+
             for scan_round in range(1, total_rounds + 1):
 
                 if len(profiles) >= 5:
                     break
 
                 try:
-                    links = self.page.locator("a[href*='/in/']:visible")
+                    links = self.page.locator(
+                        "a[href*='/in/']:visible"
+                    )
                     link_count = links.count()
                 except Exception as ex:
-                    print("Visible /in/ link lookup failed:", repr(ex))
+                    print(
+                        "Visible /in/ link lookup failed:",
+                        repr(ex)
+                    )
                     links = None
                     link_count = 0
 
                 round_added = 0
+                processed_rows = set()
 
                 if links is not None and link_count > 0:
 
@@ -1328,118 +1489,195 @@ class CompanyPage(BasePage):
                             if not link.is_visible():
                                 continue
 
-                            chosen_container = None
-                            chosen_text = ""
-                            chosen_level = -1
-                            chosen_link_count = 0
-                            fallback_container = None
-                            fallback_text = ""
-                            fallback_level = -1
-                            fallback_link_count = 0
+                            best_container = None
+                            best_text = ""
+                            best_level = -1
+                            best_link_count = 0
+                            best_score = -1
 
-                            for level in range(0, 9):
+                            for level in range(0, 10):
+
                                 try:
                                     ancestor = link.locator(
                                         "xpath=" + "/.." * (level + 1)
                                     )
 
-                                    if not ancestor.count() or not ancestor.is_visible():
+                                    if (
+                                        not ancestor.count()
+                                        or not ancestor.is_visible()
+                                    ):
                                         continue
 
                                     ancestor_text = normalize_text(
-                                        ancestor.inner_text(timeout=1000)
+                                        ancestor.inner_text(
+                                            timeout=1000
+                                        )
                                     )
 
-                                    if len(ancestor_text) < 20 or len(ancestor_text) > 1800:
+                                    if (
+                                        len(ancestor_text) < 20
+                                        or len(ancestor_text) > 2200
+                                    ):
                                         continue
 
                                     ancestor_links = ancestor.locator(
                                         "a[href*='/in/']:visible"
                                     )
+
                                     local_count = ancestor_links.count()
 
-                                    if local_count < 1 or local_count > 4:
+                                    if local_count < 1 or local_count > 5:
                                         continue
 
-                                    if fallback_container is None:
-                                        fallback_container = ancestor
-                                        fallback_text = ancestor_text
-                                        fallback_level = level
-                                        fallback_link_count = local_count
+                                    try:
+                                        class_text = (
+                                            ancestor.get_attribute("class")
+                                            or ""
+                                        ).lower()
+                                    except Exception:
+                                        class_text = ""
 
-                                    if location_matches(ancestor_text):
-                                        chosen_container = ancestor
-                                        chosen_text = ancestor_text
-                                        chosen_level = level
-                                        chosen_link_count = local_count
-                                        break
+                                    lower_text = ancestor_text.lower()
+
+                                    score = 0
+
+                                    if location_matches(
+                                        ancestor_text
+                                    ):
+                                        score += 60
+
+                                    if any(
+                                        signal in lower_text
+                                        for signal in row_role_signals
+                                    ):
+                                        score += 40
+
+                                    if "linkedin member" in lower_text:
+                                        score += 35
+
+                                    if any(
+                                        signal in class_text
+                                        for signal in row_class_signals
+                                    ):
+                                        score += 30
+
+                                    if len(ancestor_text) >= 80:
+                                        score += 10
+
+                                    score -= level
+
+                                    # Do not promote a tiny mutual-profile
+                                    # fragment to an employee result. A real
+                                    # result row should expose at least one
+                                    # strong signal: location, role, known
+                                    # result-row class, or LinkedIn Member.
+                                    if score < 25:
+                                        continue
+
+                                    if score > best_score:
+                                        best_container = ancestor
+                                        best_text = ancestor_text
+                                        best_level = level
+                                        best_link_count = local_count
+                                        best_score = score
 
                                 except Exception:
                                     continue
 
-                            if chosen_container is None:
-                                chosen_container = fallback_container
-                                chosen_text = fallback_text
-                                chosen_level = fallback_level
-                                chosen_link_count = fallback_link_count
-
-                            if chosen_container is None:
+                            if best_container is None:
                                 continue
 
-                            local_links = chosen_container.locator(
+                            local_links = best_container.locator(
                                 "a[href*='/in/']:visible"
                             )
+
                             local_count = local_links.count()
 
                             if local_count < 1:
                                 continue
 
-                            # FIRST /in/ LINK = EMPLOYEE.
-                            # Any later /in/ links inside this container
-                            # are nested people/mutual connections and are ignored.
+                            # The first /in/ link inside the employee result
+                            # row is the employee. Later /in/ links are mutual
+                            # or nested profiles and are ignored.
                             primary_link = local_links.nth(0)
 
                             primary_href = (
-                                primary_link.get_attribute("href") or ""
+                                primary_link.get_attribute(
+                                    "href"
+                                )
+                                or ""
                             ).strip()
-                            primary_url = canonical_profile_url(primary_href)
+
+                            primary_url = canonical_profile_url(
+                                primary_href
+                            )
 
                             if not primary_url:
                                 continue
 
-                            primary_name = normalize_text(
-                                primary_link.inner_text(timeout=1500)
+                            if primary_url in processed_rows:
+                                continue
+
+                            processed_rows.add(primary_url)
+
+                            raw_primary_name = (
+                                primary_link.inner_text(
+                                    timeout=1500
+                                ).strip()
                             )
 
-                            if not primary_name or len(primary_name) > 180:
-                                continue
+                            primary_name = extract_primary_name(
+                                raw_primary_name,
+                                best_text,
+                            )
 
-                            primary_name_lower = primary_name.lower()
-                            if (
-                                "mutual connection" in primary_name_lower
-                                or "mutual connections" in primary_name_lower
-                            ):
-                                print("REJECTED MUTUAL PRIMARY LINK:", primary_name[:160])
-                                continue
+                            # Do NOT reject:
+                            #   - 1st/2nd/3rd-degree labels
+                            #   - mutual-connection wording in the primary anchor
+                            #   - LinkedIn Member
+                            if not primary_name:
+                                if "linkedin member" in best_text.lower():
+                                    primary_name = "LinkedIn Member"
+                                else:
+                                    continue
 
                             if add_candidate(
                                 primary_href,
                                 primary_name,
-                                chosen_text or primary_name,
+                                best_text or primary_name,
                                 enforce_location=False,
                             ):
                                 round_added += 1
+
                                 print("-" * 60)
-                                print("EMPLOYEE CANDIDATE:", primary_url)
-                                print("Primary anchor:", primary_name[:200])
-                                print("Local ancestor level:", chosen_level)
-                                print("Local /in/ link count:", chosen_link_count)
-                                print("Result group:", (chosen_text or primary_name)[:500])
-                                print("Connection degree: IGNORED")
+                                print(
+                                    "EMPLOYEE CANDIDATE:",
+                                    primary_url,
+                                )
+                                print(
+                                    "Primary anchor:",
+                                    primary_name[:200],
+                                )
+                                print(
+                                    "Local ancestor level:",
+                                    best_level,
+                                )
+                                print(
+                                    "Local /in/ link count:",
+                                    best_link_count,
+                                )
+                                print(
+                                    "Result group:",
+                                    (best_text or primary_name)[:500],
+                                )
+                                print(
+                                    "Connection degree: IGNORED",
+                                )
 
                         except Exception as ex:
                             print(
-                                f"PASS 2 link {link_index + 1} inspection failed:",
+                                f"PASS 2 link {link_index + 1} "
+                                f"inspection failed:",
                                 repr(ex),
                             )
 
@@ -1447,19 +1685,34 @@ class CompanyPage(BasePage):
                     metrics = self.page.evaluate(
                         "() => ({top: window.scrollY, height: document.documentElement.scrollHeight, viewport: window.innerHeight})"
                     )
-                    current_top = float(metrics.get("top", 0))
-                    height = float(metrics.get("height", 0))
-                    viewport = float(metrics.get("viewport", 0))
-                    at_bottom = (current_top + viewport) >= (height - 40)
+
+                    current_top = float(
+                        metrics.get("top", 0)
+                    )
+                    height = float(
+                        metrics.get("height", 0)
+                    )
+                    viewport = float(
+                        metrics.get("viewport", 0)
+                    )
+
+                    at_bottom = (
+                        current_top + viewport
+                    ) >= (height - 40)
+
                 except Exception:
                     at_bottom = False
 
                 print(
-                    f"PASS 2 scan {scan_round}/{total_rounds}: {link_count} visible /in/ links, "
-                    f"{round_added} new employees, profiles={len(profiles)}, at_bottom={at_bottom}"
+                    f"PASS 2 scan {scan_round}/{total_rounds}: "
+                    f"{link_count} visible /in/ links, "
+                    f"{round_added} new employees, "
+                    f"profiles={len(profiles)}, "
+                    f"at_bottom={at_bottom}"
                 )
 
                 if at_bottom:
+
                     if round_added == 0:
                         empty_rounds_at_bottom += 1
                     else:
@@ -1469,12 +1722,17 @@ class CompanyPage(BasePage):
                         break
 
                 try:
-                    self.page.mouse.wheel(0, 900)
+                    self.page.mouse.wheel(
+                        0,
+                        900
+                    )
                 except Exception:
                     pass
 
             try:
-                self.page.evaluate("window.scrollTo(0, 0)")
+                self.page.evaluate(
+                    "window.scrollTo(0, 0)"
+                )
             except Exception:
                 pass
 
