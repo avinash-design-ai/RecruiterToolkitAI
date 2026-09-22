@@ -1744,6 +1744,29 @@ class CompanyPage(BasePage):
 
             rendered_profiles = 0
             rendered_cards = 0
+            rendered_result_text = False
+
+            role_signals = (
+                "recruiter",
+                "talent acquisition",
+                "sales",
+                "specialist",
+                "manager",
+                "engineer",
+                "developer",
+                "analyst",
+                "consultant",
+                "director",
+                "staffing",
+                "human resources",
+            )
+
+            result_words = (
+                "people",
+                "employees",
+                "results",
+                "connections",
+            )
 
             try:
                 self.page.evaluate("window.scrollTo(0, 0)")
@@ -1785,17 +1808,48 @@ class CompanyPage(BasePage):
                 except Exception:
                     rendered_cards = 0
 
+                try:
+                    body_text = self.page.locator("body").inner_text(timeout=2000)
+                    normalized_body = re.sub(
+                        r"\s+",
+                        " ",
+                        body_text or ""
+                    ).strip().lower()
+
+                    role_hits = sum(
+                        1
+                        for signal in role_signals
+                        if signal in normalized_body
+                    )
+
+                    result_context_hits = sum(
+                        1
+                        for word in result_words
+                        if word in normalized_body
+                    )
+
+                    rendered_result_text = (
+                        len(normalized_body) >= 800
+                        and role_hits >= 2
+                        and result_context_hits >= 1
+                    )
+                except Exception:
+                    rendered_result_text = False
+
                 print(
                     f"Result DOM wait {attempt}/40:",
                     rendered_profiles,
                     "visible /in/ links;",
                     rendered_cards,
-                    "recognizable result cards;"
+                    "recognizable result cards;",
+                    rendered_result_text,
+                    "employee-result text"
                 )
 
                 if (
                     rendered_profiles > 0
                     or rendered_cards > 0
+                    or rendered_result_text
                 ):
                     print("=" * 60)
                     print("NEXT PAGE VALIDATED")
