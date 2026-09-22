@@ -1101,6 +1101,13 @@ class SearchWorkflowV2:
                     print("BEGIN PROFILE DATA EXTRACTION")
 
                     data = LinkedInProfilePageV2.get_profile(profile)
+                    # V3: preserve the bounded employee-row name if the authenticated profile header exposes no name.
+                    if not data.get("full_name"):
+
+                        row_name = str(row.get("full_name", "")).strip()
+                        if row_name:
+                            data["full_name"] = row_name
+                            print("PROFILE NAME FALLBACK FROM SEARCH RESULT:", row_name)
 
                     print(
                         "PROFILE DATA EXTRACTION RETURNED:",
@@ -1181,6 +1188,40 @@ class SearchWorkflowV2:
                         "search_result_text",
                         ""
                     )
+                    # V3: only parse email addresses from this exact bounded employee result row.
+                    result_emails = []
+                    try:
+                        import re as _re
+                        email_pattern = _re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", _re.IGNORECASE)
+                        for match in email_pattern.findall(str(search_result_text or "")):
+                            normalized_email = match.strip().lower()
+                            if normalized_email and normalized_email not in result_emails:
+                                result_emails.append(normalized_email)
+                    except Exception:
+                        result_emails = []
+
+                    if result_emails:
+                        current_email = str(data.get("email", "")).strip().lower()
+
+                        if not current_email:
+                            data["email"] = result_emails[0]
+                            data["email_source"] = "search_result"
+                            current_email = result_emails[0]
+                            print("SEARCH RESULT EMAIL FALLBACK:", current_email)
+
+                        existing_linked = [
+                            item.strip().lower()
+                            for item in str(data.get("linked_email_id", "")).split(";")
+                            if item.strip()
+                        ]
+
+                        merged_linked = []
+                        for item in existing_linked + result_emails:
+                            if item and item != current_email and item not in merged_linked:
+                                merged_linked.append(item)
+
+                        data["linked_email_id"] = "; ".join(merged_linked)
+                        print("SEARCH RESULT EMAILS:", result_emails)
 
                     search_result_company_matches = (
                         search_result_supports_company(

@@ -1141,7 +1141,7 @@ class CompanyPage(BasePage):
                 rendered_profile_links = (
                     self.page
                     .locator(
-                        "a[href*='/in/']:visible"
+                        "a[href*='/in/']"
                     )
                     .count()
                 )
@@ -1157,13 +1157,13 @@ class CompanyPage(BasePage):
             rendered_result_cards = 0
 
             for selector in (
-                "li.reusable-search__result-container:visible",
-                "li[class*='reusable-search__result']:visible",
-                "li.entity-result:visible",
-                "div.entity-result:visible",
-                "li.search-result:visible",
-                "li[class*='search-result']:visible",
-                "ul.reusable-search__entity-result-list > li:visible",
+                "li.reusable-search__result-container",
+                "li[class*='reusable-search__result']",
+                "li.entity-result",
+                "div.entity-result",
+                "li.search-result",
+                "li[class*='search-result']",
+                "ul.reusable-search__entity-result-list > li",
             ):
 
                 try:
@@ -1273,13 +1273,13 @@ class CompanyPage(BasePage):
         print("=" * 60)
 
         card_selectors = (
-            "li.reusable-search__result-container:visible",
-            "li[class*='reusable-search__result']:visible",
-            "li.entity-result:visible",
-            "div.entity-result:visible",
-            "li.search-result:visible",
-            "li[class*='search-result']:visible",
-            "ul.reusable-search__entity-result-list > li:visible",
+            "li.reusable-search__result-container",
+            "li[class*='reusable-search__result']",
+            "li.entity-result",
+            "div.entity-result",
+            "li.search-result",
+            "li[class*='search-result']",
+            "ul.reusable-search__entity-result-list > li",
         )
 
         cards = None
@@ -1330,9 +1330,6 @@ class CompanyPage(BasePage):
                         card_index
                     )
 
-                    if not card.is_visible():
-                        continue
-
                     card_text = normalize_text(
                         card.inner_text()
                     )
@@ -1341,7 +1338,7 @@ class CompanyPage(BasePage):
                         continue
 
                     links = card.locator(
-                        "a[href*='/in/']:visible"
+                        "a[href*='/in/']"
                     )
 
                     link_count = links.count()
@@ -1470,7 +1467,7 @@ class CompanyPage(BasePage):
 
                 try:
                     links = self.page.locator(
-                        "a[href*='/in/']:visible"
+                        "a[href*='/in/']"
                     )
                     link_count = links.count()
                 except Exception as ex:
@@ -1494,9 +1491,6 @@ class CompanyPage(BasePage):
                         try:
                             link = links.nth(link_index)
 
-                            if not link.is_visible():
-                                continue
-
                             best_container = None
                             best_text = ""
                             best_level = -1
@@ -1510,10 +1504,7 @@ class CompanyPage(BasePage):
                                         "xpath=" + "/.." * (level + 1)
                                     )
 
-                                    if (
-                                        not ancestor.count()
-                                        or not ancestor.is_visible()
-                                    ):
+                                    if not ancestor.count():
                                         continue
 
                                     ancestor_text = normalize_text(
@@ -1529,7 +1520,7 @@ class CompanyPage(BasePage):
                                         continue
 
                                     ancestor_links = ancestor.locator(
-                                        "a[href*='/in/']:visible"
+                                        "a[href*='/in/']"
                                     )
 
                                     local_count = ancestor_links.count()
@@ -1596,7 +1587,7 @@ class CompanyPage(BasePage):
                                 continue
 
                             local_links = best_container.locator(
-                                "a[href*='/in/']:visible"
+                                "a[href*='/in/']"
                             )
 
                             local_count = local_links.count()
@@ -1690,25 +1681,82 @@ class CompanyPage(BasePage):
                             )
 
                 try:
-                    metrics = self.page.evaluate(
-                        "() => ({top: window.scrollY, height: document.documentElement.scrollHeight, viewport: window.innerHeight})"
+                    scroll_state = self.page.evaluate(
+                        '''() => {
+                            const candidates = [
+                                document.scrollingElement,
+                                ...Array.from(
+                                    document.querySelectorAll("main, section, article, ul, div")
+                                )
+                            ].filter(Boolean);
+
+                            const seen = new Set();
+                            const scrollables = [];
+
+                            for (const el of candidates) {
+                                if (seen.has(el)) continue;
+                                seen.add(el);
+
+                                try {
+                                    const style = window.getComputedStyle(el);
+                                    const overflowY = style.overflowY || "";
+                                    const scrollable =
+                                        el.scrollHeight > (el.clientHeight + 20) &&
+                                        (
+                                            overflowY === "auto" ||
+                                            overflowY === "scroll" ||
+                                            overflowY === "overlay" ||
+                                            el === document.scrollingElement
+                                        );
+
+                                    if (!scrollable || el.clientHeight < 100) continue;
+                                    scrollables.push(el);
+                                } catch (_) {}
+                            }
+
+                            let moved = false;
+                            let movableCount = 0;
+
+                            for (const el of scrollables) {
+                                try {
+                                    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+                                    if ((el.scrollTop + 8) < maxTop) {
+                                        const before = el.scrollTop;
+                                        el.scrollTop = Math.min(maxTop, before + 900);
+                                        if (el.scrollTop > before + 2) {
+                                            moved = true;
+                                            movableCount += 1;
+                                        }
+                                    }
+                                } catch (_) {}
+                            }
+
+                            window.scrollBy(0, 700);
+
+                            return {
+                                scrollableCount: scrollables.length,
+                                movableCount,
+                                moved
+                            };
+                        }'''
                     )
 
-                    current_top = float(
-                        metrics.get("top", 0)
+                    scrollable_count = int(
+                        scroll_state.get("scrollableCount", 0)
                     )
-                    height = float(
-                        metrics.get("height", 0)
+                    movable_count = int(
+                        scroll_state.get("movableCount", 0)
                     )
-                    viewport = float(
-                        metrics.get("viewport", 0)
+                    scrolled_inner = bool(
+                        scroll_state.get("moved", False)
                     )
 
-                    at_bottom = (
-                        current_top + viewport
-                    ) >= (height - 40)
+                    at_bottom = not scrolled_inner
 
                 except Exception:
+                    scrollable_count = 0
+                    movable_count = 0
+                    scrolled_inner = False
                     at_bottom = False
 
                 print(
@@ -1729,10 +1777,12 @@ class CompanyPage(BasePage):
                     if empty_rounds_at_bottom >= 2:
                         break
 
+                # The JS block above explicitly scrolls LinkedIn's inner result
+                # container(s). Keep a smaller wheel nudge as a virtualization fallback.
                 try:
                     self.page.mouse.wheel(
                         0,
-                        900
+                        700
                     )
                 except Exception:
                     pass
@@ -1749,6 +1799,61 @@ class CompanyPage(BasePage):
         # ============================================================
 
         print("=" * 60)
+
+        if rendered_result_text and not profiles:
+            print(
+                "RESULT-TEXT PRESENT BUT NO EMPLOYEE CANDIDATE WAS EXTRACTED."
+            )
+
+            try:
+                all_dom_links = self.page.locator(
+                    "a[href*='/in/']"
+                )
+                dom_count = all_dom_links.count()
+
+                print(
+                    "All DOM /in/ anchors after extraction:",
+                    dom_count
+                )
+
+                preview = []
+                for i in range(min(dom_count, 20)):
+                    try:
+                        href = (
+                            all_dom_links.nth(i).get_attribute("href")
+                            or ""
+                        )
+                        if href:
+                            preview.append(href)
+                    except Exception:
+                        continue
+
+                print(
+                    "DOM /in/ href preview:",
+                    preview
+                )
+
+            except Exception as ex:
+                print(
+                    "DOM /in/ diagnostic failed:",
+                    repr(ex)
+                )
+
+            try:
+                body_preview = normalize_text(
+                    self.page.locator("body").inner_text(timeout=2000)
+                )
+
+                print(
+                    "Rendered employee-result text preview:",
+                    body_preview[:1800]
+                )
+
+            except Exception as ex:
+                print(
+                    "Rendered text diagnostic failed:",
+                    repr(ex)
+                )
 
         print(
             "EMPLOYEE PROFILES EXTRACTED:",
