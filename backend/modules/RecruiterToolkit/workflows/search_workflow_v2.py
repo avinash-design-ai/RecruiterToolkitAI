@@ -659,7 +659,14 @@ class SearchWorkflowV2:
         # retry the existing CompanyPage employee navigation.
         # -------------------------------------------------
 
-        if not opened:
+        if (
+            not opened
+            and getattr(
+                self.company_page,
+                "_employee_search_scope_ready",
+                False,
+            )
+        ):
 
             # First recover from an already-open authenticated company
             # people-search tab. This is non-navigational and cannot turn a
