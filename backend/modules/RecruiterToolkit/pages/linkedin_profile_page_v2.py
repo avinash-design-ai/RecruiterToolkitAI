@@ -1384,15 +1384,18 @@ class LinkedInProfilePageV2(BasePage):
 
 
     def extract_email_from_visible_content(self):
-        """Extract publicly rendered email addresses from the profile.
+        """Extract email addresses exposed by the rendered public profile DOM.
 
-        The profile owner's public email is stored in ``email``.
-        Every other distinct public email found on the same rendered profile
-        is preserved in ``linked_email_id`` as a semicolon-separated list.
+        The owner email is stored in ``email``. Any other distinct address
+        that is actually exposed by the public page DOM is stored in
+        ``linked_email_id``.
 
-        No Contact Info interaction or private/API endpoint is used.
+        This method never opens Contact Info and never calls a private/API
+        endpoint.
         """
-        print("Searching publicly visible profile content for email...")
+        print(
+            "Searching publicly visible profile content for email..."
+        )
 
         result = {
             "email": "",
@@ -1411,23 +1414,37 @@ class LinkedInProfilePageV2(BasePage):
 
             discovered_emails = []
 
-            def normalize_email_text(value):
+            def normalize_email_source(value):
                 if value is None:
                     return ""
 
                 value = str(value).strip()
 
-                # Decode HTML entities and URL encoding. LinkedIn can encode
-                # mailto targets such as %40 rather than a literal @.
-                for _ in range(3):
-                    decoded = html_module.unescape(value)
+                # Some logs/HTML serializations contain escaped punctuation.
+                value = value.replace(
+                    r"\@",
+                    "@",
+                ).replace(
+                    r"\:",
+                    ":",
+                )
+
+                # Decode HTML entities and percent-encoding repeatedly.
+                for _ in range(4):
+                    previous = value
+
                     try:
-                        decoded = unquote(decoded)
+                        value = html_module.unescape(value)
                     except Exception:
                         pass
-                    if decoded == value:
+
+                    try:
+                        value = unquote(value)
+                    except Exception:
+                        pass
+
+                    if value == previous:
                         break
-                    value = decoded
 
                 value = re.sub(
                     r"[\u200b\u200c\u200d\ufeff]",
@@ -1435,22 +1452,27 @@ class LinkedInProfilePageV2(BasePage):
                     value,
                 )
 
-                if value.lower().startswith("mailto:"):
+                if value.lower().startswith(
+                    "mailto:"
+                ):
                     value = value[7:]
 
                 if "?" in value:
-                    value = value.split("?", 1)[0]
+                    value = value.split(
+                        "?",
+                        1,
+                    )[0]
 
-                # Also handle basic rendered-text obfuscation without
-                # changing normal addresses.
+                # Basic rendered obfuscation support.
                 value = re.sub(
-                    r"\s*\[(?:at|@)\]\s*|\s*\((?:at|@)\)\s*",
+                    r"\s*(?:\[at\]|\(at\)|\bat\b)\s*",
                     "@",
                     value,
                     flags=re.IGNORECASE,
                 )
+
                 value = re.sub(
-                    r"\s*\[(?:dot|\.)\]\s*|\s*\((?:dot|\.)\)\s*",
+                    r"\s*(?:\[dot\]|\(dot\)|\bdot\b)\s*",
                     ".",
                     value,
                     flags=re.IGNORECASE,
@@ -1458,94 +1480,151 @@ class LinkedInProfilePageV2(BasePage):
 
                 return value
 
-            def add_email(value):
-                normalized = normalize_email_text(value)
+            def parse_emails(value):
+                normalized = normalize_email_source(
+                    value
+                )
 
                 if not normalized:
                     return []
 
                 found = []
-                for email in email_pattern.findall(normalized):
+
+                for email in email_pattern.findall(
+                    normalized
+                ):
                     email = email.strip().lower()
 
-                    if (
-                        self.is_valid_email(email)
-                        and email not in discovered_emails
+                    if self.is_valid_email(
+                        email
                     ):
-                        discovered_emails.append(email)
-                        found.append(email)
+                        if email not in found:
+                            found.append(email)
+
+                        if email not in discovered_emails:
+                            discovered_emails.append(email)
 
                 return found
 
-            def scan_rendered_email_sources():
-                before = len(discovered_emails)
+            def scan_email_sources():
+                before = len(
+                    discovered_emails
+                )
 
                 # --------------------------------------------------------
-                # 1. Visible mailto links.
+                # 1. ALL mailto links in the rendered DOM.
+                #
+                # Do not rely only on :visible. LinkedIn can keep a public
+                # mailto anchor in a rendered but currently non-layout
+                # container.
                 # --------------------------------------------------------
                 try:
-                    links = self.page.locator(
-                        "a[href^='mailto:']:visible"
+                    all_mailto = self.page.locator(
+                        "a[href*='mailto:']"
                     )
-                    count = links.count()
-                    print("Visible mailto links:", count)
+
+                    count = all_mailto.count()
+
+                    print(
+                        "All mailto links in DOM:",
+                        count,
+                    )
+
+                    visible_count = 0
 
                     for i in range(count):
                         try:
-                            link = links.nth(i)
-                            raw_href = (
-                                link.get_attribute("href") or ""
-                            ).strip()
+                            link = all_mailto.nth(i)
 
-                            print(
-                                f"Visible mailto link {i + 1}/{count} href:",
-                                raw_href[:500],
-                            )
-
-                            parsed_from_href = add_email(raw_href)
+                            visible = False
 
                             try:
-                                text_value = link.inner_text(timeout=1000)
+                                visible = link.is_visible()
+                            except Exception:
+                                pass
+
+                            if visible:
+                                visible_count += 1
+
+                            raw_href = (
+                                link.get_attribute(
+                                    "href"
+                                )
+                                or ""
+                            ).strip()
+
+                            parsed = parse_emails(
+                                raw_href
+                            )
+
+                            try:
+                                text_value = (
+                                    link.inner_text(
+                                        timeout=1000
+                                    )
+                                )
                             except Exception:
                                 text_value = ""
 
-                            parsed_from_text = add_email(text_value)
-
-                            parsed = list(dict.fromkeys(
-                                parsed_from_href + parsed_from_text
-                            ))
-
-                            print(
-                                f"Visible mailto link {i + 1} parsed emails:",
-                                parsed or "NONE",
+                            parsed_text = parse_emails(
+                                text_value
                             )
 
-                        except Exception:
-                            continue
+                            combined = list(
+                                dict.fromkeys(
+                                    parsed + parsed_text
+                                )
+                            )
+
+                            print(
+                                f"Mailto DOM link "
+                                f"{i + 1}/{count} "
+                                f"(visible={visible}) href:",
+                                raw_href[:500],
+                            )
+
+                            print(
+                                f"Mailto DOM link "
+                                f"{i + 1} parsed emails:",
+                                combined or "NONE",
+                            )
+
+                        except Exception as ex:
+                            print(
+                                "Mailto element scan failed:",
+                                repr(ex),
+                            )
+
+                    print(
+                        "Visible mailto links:",
+                        visible_count,
+                    )
 
                 except Exception as ex:
-                    print("Visible mailto scan failed:", repr(ex))
+                    print(
+                        "Mailto DOM scan failed:",
+                        repr(ex),
+                    )
 
                 # --------------------------------------------------------
-                # 2. Visible rendered profile text.
+                # 2. Rendered page text.
                 # --------------------------------------------------------
                 try:
-                    main = self.page.locator("main").first
-
-                    if main.count() and main.is_visible():
-                        text = main.inner_text(timeout=3000)
-                    else:
-                        text = self.page.locator("body").inner_text(
-                            timeout=3000
-                        )
+                    body_text = self.page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=3000
+                    )
 
                     print(
                         "Rendered profile text length:",
-                        len(text or ""),
+                        len(body_text or ""),
                     )
 
-                    for match in email_pattern.findall(text or ""):
-                        add_email(match)
+                    for match in email_pattern.findall(
+                        body_text or ""
+                    ):
+                        parse_emails(match)
 
                 except Exception as ex:
                     print(
@@ -1554,7 +1633,7 @@ class LinkedInProfilePageV2(BasePage):
                     )
 
                 # --------------------------------------------------------
-                # 3. Visible DOM attributes.
+                # 3. DOM attributes likely to carry a public email.
                 # --------------------------------------------------------
                 try:
                     values = self.page.evaluate(
@@ -1562,25 +1641,10 @@ class LinkedInProfilePageV2(BasePage):
                         () => {
                             const out = [];
 
-                            const visible = (el) => {
-                                if (!el) return false;
-                                const r = el.getBoundingClientRect();
-                                const s = getComputedStyle(el);
-                                return (
-                                    r.width > 0 &&
-                                    r.height > 0 &&
-                                    s.display !== "none" &&
-                                    s.visibility !== "hidden"
-                                );
-                            };
-
                             for (const el of document.querySelectorAll(
-                                "a[href^='mailto:'],[data-email],[aria-label],[title]"
+                                "[data-email],[aria-label],[title]"
                             )) {
-                                if (!visible(el)) continue;
-
                                 for (const v of [
-                                    el.getAttribute("href"),
                                     el.getAttribute("data-email"),
                                     el.getAttribute("aria-label"),
                                     el.getAttribute("title"),
@@ -1596,77 +1660,68 @@ class LinkedInProfilePageV2(BasePage):
                     )
 
                     for value in values or []:
-                        add_email(value)
+                        parse_emails(value)
 
                 except Exception as ex:
-                    print("Rendered DOM email scan failed:", repr(ex))
+                    print(
+                        "DOM-attribute email scan failed:",
+                        repr(ex),
+                    )
 
                 # --------------------------------------------------------
-                # 4. Rendered HTML.
-                # --------------------------------------------------------
-                try:
-                    main = self.page.locator("main").first
-
-                    if main.count():
-                        html = main.inner_html(timeout=3000)
-                    else:
-                        html = self.page.locator("body").inner_html(
-                            timeout=3000
-                        )
-
-                    for match in email_pattern.findall(html or ""):
-                        add_email(match)
-
-                    # Scan raw href attributes in case the address is percent
-                    # encoded and therefore not matched by the normal regex.
-                    for href in re.findall(
-                        r"href\s*=\s*['\"]([^'\"]+)['\"]",
-                        html or "",
-                        flags=re.IGNORECASE,
-                    ):
-                        if href.lower().startswith("mailto:"):
-                            add_email(href)
-
-                except Exception as ex:
-                    print("Rendered HTML email scan failed:", repr(ex))
-
-                # --------------------------------------------------------
-                # 5. Final document HTML fallback.
+                # 4. Rendered HTML + all mailto href attributes.
                 # --------------------------------------------------------
                 try:
                     html = self.page.evaluate(
                         "() => document.documentElement.outerHTML"
                     )
 
-                    for match in email_pattern.findall(html or ""):
-                        add_email(match)
+                    for match in email_pattern.findall(
+                        html or ""
+                    ):
+                        parse_emails(match)
 
                     for href in re.findall(
-                        r"href\s*=\s*['\"]([^'\"]+)['\"]",
+                        r"href\s*=\s*['\"]([^'\"]*mailto:[^'\"]+)['\"]",
                         html or "",
                         flags=re.IGNORECASE,
                     ):
-                        if href.lower().startswith("mailto:"):
-                            add_email(href)
+                        parse_emails(href)
 
                 except Exception as ex:
-                    print("Document HTML email scan failed:", repr(ex))
+                    print(
+                        "Rendered HTML email scan failed:",
+                        repr(ex),
+                    )
 
-                return len(discovered_emails) - before
-
-            empty_rounds = 0
-            max_rounds = 5
-
-            for scan_round in range(1, max_rounds + 1):
-                added_this_round = scan_rendered_email_sources()
-
-                print(
-                    f"Email discovery round {scan_round}/{max_rounds}: "
-                    f"{added_this_round} new, "
-                    f"total={len(discovered_emails)}"
+                added = (
+                    len(discovered_emails)
+                    - before
                 )
 
-                if added_this_round == 0:
+                print(
+                    "Email addresses discovered so far:",
+                    len(discovered_emails),
+                )
+
+                return added
+
+            empty_rounds = 0
+
+            for scan_round in range(
+                1,
+                6,
+            ):
+                added = scan_email_sources()
+
+                print(
+                    f"Email discovery round "
+                    f"{scan_round}/5: "
+                    f"{added} new, "
+                    f"total={len(discovered_emails)}",
+                )
+
+                if added == 0:
                     empty_rounds += 1
                 else:
                     empty_rounds = 0
@@ -1674,11 +1729,12 @@ class LinkedInProfilePageV2(BasePage):
                 if empty_rounds >= 2:
                     break
 
-                if scan_round < max_rounds:
-                    try:
-                        self.page.wait_for_timeout(1000)
-                    except Exception:
-                        pass
+                try:
+                    self.page.wait_for_timeout(
+                        1000
+                    )
+                except Exception:
+                    pass
 
             print(
                 "Unique publicly visible emails:",
@@ -1686,18 +1742,31 @@ class LinkedInProfilePageV2(BasePage):
             )
 
             for email in discovered_emails:
-                print("  Email discovered:", email)
+                print(
+                    "  Email discovered:",
+                    email,
+                )
 
             if not discovered_emails:
-                print("No publicly visible email found.")
+                print(
+                    "No publicly visible email found."
+                )
                 return result
 
             try:
-                profile_name = self.extract_name().strip()
+                profile_name = (
+                    self.extract_name()
+                    .strip()
+                )
             except Exception:
                 profile_name = ""
 
-            cleaned = re.sub(r"[^a-zA-Z0-9 ]", " ", profile_name)
+            cleaned = re.sub(
+                r"[^a-zA-Z0-9 ]",
+                " ",
+                profile_name,
+            )
+
             parts = [
                 part.lower()
                 for part in cleaned.split()
@@ -1707,13 +1776,17 @@ class LinkedInProfilePageV2(BasePage):
             first_clean = re.sub(
                 r"[^a-z0-9]",
                 "",
-                parts[0] if parts else "",
+                parts[0]
+                if parts
+                else "",
             )
 
             last_clean = re.sub(
                 r"[^a-z0-9]",
                 "",
-                parts[-1] if len(parts) >= 2 else "",
+                parts[-1]
+                if len(parts) >= 2
+                else "",
             )
 
             owner_email = ""
@@ -1729,27 +1802,49 @@ class LinkedInProfilePageV2(BasePage):
                 score = 0
 
                 if first_clean:
-                    if local_clean.startswith(first_clean):
-                        score = max(score, 100)
+                    if local_clean.startswith(
+                        first_clean
+                    ):
+                        score = max(
+                            score,
+                            100,
+                        )
 
                     if (
                         len(first_clean) >= 5
                         and len(local_clean) >= 3
-                        and first_clean.startswith(local_clean[:3])
+                        and first_clean.startswith(
+                            local_clean[:3]
+                        )
                     ):
-                        score = max(score, 60)
+                        score = max(
+                            score,
+                            60,
+                        )
 
-                if first_clean and last_clean:
-                    compact = first_clean + last_clean
+                if (
+                    first_clean
+                    and last_clean
+                ):
+                    compact = (
+                        first_clean
+                        + last_clean
+                    )
 
                     if compact in local_clean:
-                        score = max(score, 95)
+                        score = max(
+                            score,
+                            95,
+                        )
 
                     if (
                         first_clean in local_clean
                         and last_clean in local_clean
                     ):
-                        score = max(score, 90)
+                        score = max(
+                            score,
+                            90,
+                        )
 
                 if score > owner_score:
                     owner_score = score
@@ -1767,17 +1862,30 @@ class LinkedInProfilePageV2(BasePage):
             result["email"] = owner_email
             result["email_source"] = "profile"
             result["linked_email_id"] = "; ".join(
-                dict.fromkeys(linked_emails)
+                dict.fromkeys(
+                    linked_emails
+                )
             )
 
-            print("Primary email:", result["email"])
-            print("Linked email IDs:", result["linked_email_id"])
+            print(
+                "Primary email:",
+                result["email"],
+            )
+
+            print(
+                "Linked email IDs:",
+                result["linked_email_id"],
+            )
 
             return result
 
         except Exception as ex:
-            print("Profile email extraction failed:", repr(ex))
+            print(
+                "Profile email extraction failed:",
+                repr(ex),
+            )
             return result
+
 
     @staticmethod
     def is_valid_email(email):

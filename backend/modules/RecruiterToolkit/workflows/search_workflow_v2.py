@@ -1189,6 +1189,26 @@ class SearchWorkflowV2:
                         )
                     )
 
+                    search_result_location_normalized = (
+                        normalize_location(
+                            search_result_text
+                        )
+                    )
+
+                    search_result_location_matches = (
+                        bool(
+                            search_result_location_normalized
+                        )
+                        and
+                        bool(
+                            requested_location_normalized
+                        )
+                        and
+                        requested_location_normalized
+                        in
+                        search_result_location_normalized
+                    )
+
                     company_matches = (
                         (
                             bool(actual_company_normalized)
@@ -1199,18 +1219,26 @@ class SearchWorkflowV2:
                         search_result_company_matches
                     )
 
+                    # Prefer the authoritative profile location whenever it
+                    # exists. If LinkedIn does not expose a profile location,
+                    # allow the bounded employee-result row to supply the
+                    # location evidence instead.
                     location_matches = (
-                        bool(
+                        (
+                            bool(actual_location_normalized)
+                            and
+                            bool(requested_location_normalized)
+                            and
+                            requested_location_normalized
+                            in
                             actual_location_normalized
                         )
-                        and
-                        bool(
-                            requested_location_normalized
+                        or
+                        (
+                            not actual_location_normalized
+                            and
+                            search_result_location_matches
                         )
-                        and
-                        requested_location_normalized
-                        in
-                        actual_location_normalized
                     )
 
                     print(
@@ -1250,6 +1278,11 @@ class SearchWorkflowV2:
                     print(
                         "LOCATION MATCH:",
                         location_matches
+                    )
+
+                    print(
+                        "SEARCH RESULT LOCATION MATCH:",
+                        search_result_location_matches
                     )
 
                     # -------------------------------------------------
