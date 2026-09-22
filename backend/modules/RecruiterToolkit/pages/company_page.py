@@ -1220,40 +1220,10 @@ class CompanyPage(BasePage):
                             or "mutual connections" in link_name_lower
                         )
 
-                        if not mutual_signal:
-
-                            for mutual_level in range(0, 4):
-
-                                try:
-                                    mutual_parent = link.locator(
-                                        "xpath=" + "/.." * (mutual_level + 1)
-                                    )
-
-                                    if (
-                                        not mutual_parent.count()
-                                        or not mutual_parent.is_visible()
-                                    ):
-                                        continue
-
-                                    mutual_parent_text = normalize_text(
-                                        mutual_parent.inner_text(timeout=800)
-                                    ).lower()
-
-                                    if (
-                                        (
-                                            "mutual connection"
-                                            in mutual_parent_text
-                                            or "mutual connections"
-                                            in mutual_parent_text
-                                        )
-                                        and len(name) <= 120
-                                    ):
-                                        mutual_signal = True
-                                        break
-
-                                except Exception:
-                                    continue
-
+                        # IMPORTANT: Do not inspect ancestor/card text for mutual connections.
+                        # The employee result card itself can contain the phrase 'mutual connections'.
+                        # That does NOT mean the employee /in/ link is a mutual-connection profile.
+                        # Only the candidate link's own text is used for mutual rejection.
                         if mutual_signal:
                             print(
                                 "REJECTED MUTUAL CONNECTION:",
@@ -1331,22 +1301,10 @@ class CompanyPage(BasePage):
                     if not candidates:
                         continue
 
-                    candidates.sort(
-                        key=lambda item: (
-                            len(
-                                normalize_text(
-                                    item.get("text", "")
-                                )
-                            ),
-                            len(
-                                normalize_text(
-                                    item.get("name", "")
-                                )
-                            ),
-                        ),
-                        reverse=True,
-                    )
-
+                    # Preserve LinkedIn DOM order.
+                    # The first /in/ link in the result group is the employee;
+                    # nested mutual-connection /in/ links normally follow it.
+                    # Do not rank candidates by text length.
                     selected = candidates[0]
 
                     if add_candidate(
