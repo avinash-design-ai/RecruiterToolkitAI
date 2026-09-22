@@ -450,28 +450,69 @@ class CompanyPage(BasePage):
             return re.sub(
                 r"\s+",
                 " ",
-                str(value or "").replace("\\xa0", " ")
+                str(value or "").replace("\xa0", " "),
             ).strip().lower()
 
 
         def filter_dialog():
-            # Prefer the visible All Filters modal/dialog. This prevents
-            # employee result cards behind the modal from being considered.
+            """Locate the active LinkedIn All Filters panel robustly."""
             selectors = (
-                "[role='dialog']:visible",
-                ".artdeco-modal:visible",
+                "[role='dialog']",
+                ".artdeco-modal",
+                "[data-test-modal]",
+                "[class*='artdeco-modal']",
+                "[class*='modal']",
             )
 
             for selector in selectors:
                 try:
                     loc = self.page.locator(selector)
-                    for i in range(min(loc.count(), 20)):
+                    count = min(loc.count(), 50)
+                    for i in range(count):
                         item = loc.nth(i)
                         if not item.is_visible():
                             continue
                         txt = normalized_label(label_for(item))
-                        if "connections" in txt or "all filters" in txt:
+                        if txt and (
+                            "all filters" in txt
+                            or "connections" in txt
+                            or "show results" in txt
+                        ):
                             return item
+                except Exception:
+                    continue
+
+            for exact_text in ("Connections", "All Filters"):
+                try:
+                    loc = self.page.get_by_text(exact_text, exact=True)
+                    count = min(loc.count(), 20)
+                    for i in range(count):
+                        seed = loc.nth(i)
+                        if not seed.is_visible():
+                            continue
+                        node = seed
+                        for _ in range(9):
+                            try:
+                                if node.is_visible():
+                                    txt = normalized_label(label_for(node))
+                                    classes = (node.get_attribute("class") or "").lower()
+                                    modal_class = (
+                                        "modal" in classes
+                                        or "dialog" in classes
+                                        or "overlay" in classes
+                                    )
+                                    filter_content = (
+                                        ("connections" in txt and "show results" in txt)
+                                        or ("all filters" in txt and "show results" in txt)
+                                    )
+                                    if modal_class or filter_content:
+                                        return node
+                            except Exception:
+                                pass
+                            try:
+                                node = node.locator("xpath=../")
+                            except Exception:
+                                break
                 except Exception:
                     continue
 
@@ -479,60 +520,66 @@ class CompanyPage(BasePage):
 
 
         def open_connections_section():
-            dialog = filter_dialog()
-
-            if dialog is None:
-                print("ERROR: All Filters dialog not found.")
-                return False
-
-            # If degree options are already visible, no section click is needed.
-            for label in ("1st", "2nd", "3rd+"):
+            dialog = None
+            for attempt in range(1, 16):
+                dialog = filter_dialog()
+                if dialog is not None:
+                    if attempt > 1:
+                        print("All Filters panel detected after wait:", attempt)
+                    break
                 try:
-                    if dialog.get_by_text(label, exact=True).count() > 0:
-                        return True
+                    self.page.wait_for_timeout(250)
                 except Exception:
                     pass
 
-            # Open the exact Connections section inside the dialog.
-            candidates = (
-                dialog.get_by_text("Connections", exact=True),
-                dialog.locator("button:visible"),
-                dialog.locator("[role='button']:visible"),
-                dialog.locator("label:visible"),
-                dialog.locator("li:visible"),
-            )
-
-            for loc in candidates:
+            if dialog is None:
                 try:
-                    for i in range(min(loc.count(), 200)):
+                    loc = self.page.get_by_text("Connections", exact=True)
+                    for i in range(min(loc.count(), 20)):
                         item = loc.nth(i)
                         if not item.is_visible():
                             continue
+                        item.scroll_into_view_if_needed()
+                        item.click(timeout=10000)
+                        self.page.wait_for_timeout(700)
+                        print("Connections section opened via exact visible text fallback.")
+                        return True
+                except Exception:
+                    pass
+                print("ERROR: All Filters panel could not be located after opening.")
+                return False
 
-                        label = normalized_label(label_for(item))
-
-                        if label == "connections":
-                            item.scroll_into_view_if_needed()
-                            item.click(timeout=10000)
-                            self.page.wait_for_timeout(700)
-                            print("Connections section opened inside All Filters.")
+            for label in ("1st", "2nd", "3rd+"):
+                try:
+                    exact = dialog.get_by_text(label, exact=True)
+                    for i in range(min(exact.count(), 10)):
+                        if exact.nth(i).is_visible():
                             return True
                 except Exception:
+                    pass
+
+            candidates = (
+                dialog.get_by_text("Connections", exact=True),
+                dialog.locator("button"),
+                dialog.locator("[role='button']"),
+                dialog.locator("label"),
+                dialog.locator("li"),
+            )
+            for loc in candidates:
+                try:
+                    for i in range(min(loc.count(), 250)):
+                        item = loc.nth(i)
+                        if not item.is_visible():
+                            continue
+                        if normalized_label(label_for(item)) != "connections":
+                            continue
+                        item.scroll_into_view_if_needed()
+                        item.click(timeout=10000)
+                        self.page.wait_for_timeout(700)
+                        print("Connections section opened inside All Filters.")
+                        return True
+                except Exception:
                     continue
-
-            # Some LinkedIn versions render the section as a text heading
-            # whose parent is the clickable control.
-            try:
-                heading = dialog.get_by_text("Connections", exact=True).first
-                if heading.count() > 0 and heading.is_visible():
-                    heading.scroll_into_view_if_needed()
-                    heading.click(timeout=10000)
-                    self.page.wait_for_timeout(700)
-                    print("Connections section opened inside All Filters.")
-                    return True
-            except Exception:
-                pass
-
             print("ERROR: Connections section not found inside All Filters.")
             return False
 
