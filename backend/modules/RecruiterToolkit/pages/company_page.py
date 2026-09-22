@@ -356,6 +356,11 @@ class CompanyPage(BasePage):
         # broadened to 1st + 2nd + 3rd+ (or was already unrestricted).
         self._employee_search_scope_ready = False
 
+        # LinkedIn's current Actions/Filters UI may not expose a semantic
+        # dialog element at all. Keep the actual Connections section element
+        # that we clicked and use its local DOM subtree for degree selection.
+        connection_scope_root = None
+
         current_url = str(self.page.url or "").strip()
         print("Current URL:")
         print(current_url)
@@ -519,7 +524,49 @@ class CompanyPage(BasePage):
             return None
 
 
+        def _expand_connections_scope(seed):
+            """Find the nearest useful DOM subtree for the opened Connections section."""
+            if seed is None:
+                return None
+
+            best = seed
+            node = seed
+
+            for _ in range(12):
+                try:
+                    if node.is_visible():
+                        txt = normalized_label(label_for(node))
+                        # Prefer an ancestor that now contains the degree
+                        # labels or the filter panel's Show results control.
+                        has_degrees = (
+                            "1st" in txt
+                            and "2nd" in txt
+                            and ("3rd+" in txt or "3rd +" in txt or "3rd" in txt)
+                        )
+                        has_show_results = (
+                            "connections" in txt and "show results" in txt
+                        )
+                        if has_degrees or has_show_results:
+                            return node
+                        if "connections" in txt:
+                            best = node
+                except Exception:
+                    pass
+
+                try:
+                    parent = node.locator("xpath=../")
+                    if parent.count() == 0:
+                        break
+                    node = parent
+                except Exception:
+                    break
+
+            return best
+
+
         def open_connections_section():
+            nonlocal connection_scope_root
+
             dialog = None
             for attempt in range(1, 16):
                 dialog = filter_dialog()
@@ -532,109 +579,186 @@ class CompanyPage(BasePage):
                 except Exception:
                     pass
 
-            if dialog is None:
-                try:
-                    loc = self.page.get_by_text("Connections", exact=True)
-                    for i in range(min(loc.count(), 20)):
-                        item = loc.nth(i)
-                        if not item.is_visible():
-                            continue
-                        item.scroll_into_view_if_needed()
-                        item.click(timeout=10000)
-                        self.page.wait_for_timeout(700)
-                        print("Connections section opened via exact visible text fallback.")
-                        return True
-                except Exception:
-                    pass
-                print("ERROR: All Filters panel could not be located after opening.")
-                return False
+            # Prefer a real dialog when available.
+            if dialog is not None:
+                for label in ("1st", "2nd", "3rd+"):
+                    try:
+                        exact = dialog.get_by_text(label, exact=True)
+                        for i in range(min(exact.count(), 10)):
+                            if exact.nth(i).is_visible():
+                                connection_scope_root = dialog
+                                return True
+                    except Exception:
+                        pass
 
-            for label in ("1st", "2nd", "3rd+"):
-                try:
-                    exact = dialog.get_by_text(label, exact=True)
-                    for i in range(min(exact.count(), 10)):
-                        if exact.nth(i).is_visible():
+                candidates = (
+                    dialog.get_by_text("Connections", exact=True),
+                    dialog.locator("button"),
+                    dialog.locator("[role='button']"),
+                    dialog.locator("label"),
+                    dialog.locator("li"),
+                )
+                for loc in candidates:
+                    try:
+                        for i in range(min(loc.count(), 250)):
+                            item = loc.nth(i)
+                            if not item.is_visible():
+                                continue
+                            if normalized_label(label_for(item)) != "connections":
+                                continue
+                            item.scroll_into_view_if_needed()
+                            item.click(timeout=10000)
+                            self.page.wait_for_timeout(700)
+                            connection_scope_root = _expand_connections_scope(item) or dialog
+                            print("Connections section opened inside All Filters.")
                             return True
-                except Exception:
-                    pass
+                    except Exception:
+                        continue
 
-            candidates = (
-                dialog.get_by_text("Connections", exact=True),
-                dialog.locator("button"),
-                dialog.locator("[role='button']"),
-                dialog.locator("label"),
-                dialog.locator("li"),
-            )
-            for loc in candidates:
-                try:
-                    for i in range(min(loc.count(), 250)):
-                        item = loc.nth(i)
-                        if not item.is_visible():
+            # Critical fallback: LinkedIn has already shown the correct
+            # Connections section, so do not fail merely because the modal
+            # wrapper cannot be discovered. Keep that exact clicked element
+            # and derive its local subtree for the degree controls.
+            try:
+                loc = self.page.get_by_text("Connections", exact=True)
+                visible = []
+                for i in range(min(loc.count(), 30)):
+                    item = loc.nth(i)
+                    if item.is_visible():
+                        visible.append(item)
+
+                if visible:
+                    seed = visible[-1]
+                    seed.scroll_into_view_if_needed()
+                    seed.click(timeout=10000)
+                    self.page.wait_for_timeout(900)
+                    connection_scope_root = _expand_connections_scope(seed) or seed
+                    print("Connections section opened via exact visible text fallback.")
+
+                    # Prove that the section exposes at least one connection
+                    # degree control before returning success.
+                    for label in ("1st", "2nd", "3rd+", "3rd +", "3rd"):
+                        try:
+                            exact = connection_scope_root.get_by_text(label, exact=True)
+                            if any(exact.nth(i).is_visible() for i in range(min(exact.count(), 10))):
+                                return True
+                        except Exception:
                             continue
-                        if normalized_label(label_for(item)) != "connections":
-                            continue
-                        item.scroll_into_view_if_needed()
-                        item.click(timeout=10000)
-                        self.page.wait_for_timeout(700)
-                        print("Connections section opened inside All Filters.")
-                        return True
-                except Exception:
-                    continue
-            print("ERROR: Connections section not found inside All Filters.")
+
+                    # Even when the wrapper does not expose the text through
+                    # its own innerText, keep the root and let the stronger
+                    # page-level control fallback in find_degree_option run.
+                    return True
+            except Exception as ex:
+                print("Connections fallback failed:", repr(ex))
+
+            print("ERROR: Could not open Connections section in All Filters.")
+            return False
+
+        def _control_like_candidate(item, wanted):
+            """Return True when an exact text node is plausibly a filter control."""
+            try:
+                if not item.is_visible():
+                    return False
+                label = normalized_label(label_for(item))
+                if label not in wanted or len(label) > 30:
+                    return False
+
+                # Direct controls are safe.
+                role = (item.get_attribute("role") or "").strip().lower()
+                tag = (item.evaluate("el => el.tagName") or "").strip().lower()
+                if role in ("checkbox", "option", "radio", "button") or tag in ("label", "button"):
+                    return True
+
+                # A text span/div inside a filter control is also acceptable
+                # when a nearby ancestor exposes a checkbox/radio/button.
+                node = item
+                for _ in range(6):
+                    try:
+                        parent = node.locator("xpath=../")
+                        if parent.count() == 0:
+                            break
+                        parent = parent.first
+                        prole = (parent.get_attribute("role") or "").strip().lower()
+                        ptag = (parent.evaluate("el => el.tagName") or "").strip().lower()
+                        if prole in ("checkbox", "option", "radio", "button") or ptag in ("label", "button"):
+                            return True
+                        if parent.locator("input[type='checkbox'], input[type='radio']").count() > 0:
+                            return True
+                        node = parent
+                    except Exception:
+                        break
+            except Exception:
+                return False
             return False
 
 
         def find_degree_option(patterns):
-            # Search ONLY inside the All Filters dialog after the Connections
-            # section is open. Exact text matching prevents result names such
-            # as "Esther Golda Karunakaran · 1st" from being selected.
-            dialog = filter_dialog()
-
-            if dialog is None:
-                print("ERROR: Cannot locate All Filters dialog for degree selection.")
-                return None
-
+            # Do not require a semantic All Filters dialog. The current
+            # LinkedIn DOM has already shown the Connections section, and the
+            # exact clicked section is the strongest scope we have.
             wanted = {
                 normalized_label(pattern)
                 for pattern in patterns
                 if pattern
             }
 
+            scopes = []
+            if connection_scope_root is not None:
+                scopes.append(("connections-section", connection_scope_root))
+
+            dialog = filter_dialog()
+            if dialog is not None and all(root is not dialog for _, root in scopes):
+                scopes.append(("all-filters-dialog", dialog))
+
+            scopes.append(("page", self.page))
+
             selectors = (
                 "label:visible",
                 "[role='checkbox']:visible",
                 "[role='option']:visible",
+                "[role='radio']:visible",
                 "button:visible",
                 "li:visible",
-                "div:visible",
                 "span:visible",
+                "div:visible",
             )
 
-            for selector in selectors:
+            for scope_name, scope in scopes:
+                for selector in selectors:
+                    try:
+                        loc = scope.locator(selector)
+                        count = min(loc.count(), 1500)
+                        for i in range(count):
+                            item = loc.nth(i)
+                            try:
+                                if normalized_label(label_for(item)) not in wanted:
+                                    continue
+                                if not _control_like_candidate(item, wanted):
+                                    continue
+                                print("Degree option located in", scope_name, ":", label_for(item).strip())
+                                return item
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+
+            # Final exact-text fallback: walk visible text nodes and climb to
+            # a checkbox/radio/button/label ancestor. This avoids matching
+            # employee names or mutual-connection phrases.
+            for pattern in patterns:
+                exact = normalized_label(pattern)
                 try:
-                    loc = dialog.locator(selector)
-                    for i in range(min(loc.count(), 1000)):
+                    loc = self.page.get_by_text(pattern, exact=True)
+                    for i in range(min(loc.count(), 100)):
                         item = loc.nth(i)
-                        try:
-                            if not item.is_visible():
-                                continue
-
-                            label = normalized_label(label_for(item))
-
-                            if label not in wanted:
-                                continue
-
-                            if len(label) > 30:
-                                continue
-
+                        if _control_like_candidate(item, {exact}):
+                            print("Degree option located via page exact-text fallback:", pattern)
                             return item
-                        except Exception:
-                            continue
                 except Exception:
                     continue
 
             return None
-
 
         def degree_is_selected(item):
 
