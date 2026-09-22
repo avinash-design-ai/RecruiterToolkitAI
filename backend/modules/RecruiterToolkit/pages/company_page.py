@@ -515,10 +515,18 @@ class CompanyPage(BasePage):
                     print("Unfiltered people-search navigation authenticated successfully.")
                     self.page = navigation_page
 
-                    try:
-                        original_page.close()
-                    except Exception:
-                        pass
+                    # IMPORTANT: keep the original authenticated company-search
+                    # tab alive. The unfiltered tab is now the active employee
+                    # search owned by CompanyPage, while the original F tab is
+                    # retained only as a recovery fallback. Closing the original
+                    # tab breaks SearchWorkflowV2 / LinkedInProfilePageV2 because
+                    # their profile handoff requires a live authenticated search
+                    # page in the browser context.
+                    self._employee_search_fallback_page = original_page
+                    print(
+                        "Original filtered employee-search tab preserved as "
+                        "recovery fallback."
+                    )
 
                     navigation_page = None
 

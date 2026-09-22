@@ -100,54 +100,89 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
         """
         Locate the live authenticated company-scoped employee-search page.
 
-        Do not assume self.page is still the search page: during profile
-        extraction self.page is intentionally switched to a temporary profile
-        tab. The browser context is the authoritative source.
+        The page passed into SearchWorkflowProfilePage is CompanyPage's active
+        employee-search tab. Prefer that page explicitly so that, when both the
+        original F-filtered tab and the new unfiltered tab are open, profile
+        navigation never falls back to the wrong people-search tab.
         """
+
+        def is_valid_search_page(candidate):
+            try:
+                if candidate is None or candidate.is_closed():
+                    return False
+                url = str(candidate.url or "")
+                lower = url.lower()
+                return (
+                    "/search/results/people/" in lower
+                    and "currentcompany=" in lower
+                    and "/login" not in lower
+                    and "/authwall" not in lower
+                    and "/checkpoint" not in lower
+                    and "/ssr-login" not in lower
+                    and "remember-me-auto-login" not in lower
+                )
+            except Exception:
+                return False
+
+        # Highest priority: the exact page supplied to this wrapper by
+        # SearchWorkflowV2. This is CompanyPage.page and therefore the active
+        # unfiltered company people-search tab.
+        preferred = getattr(self, "_original_profile_page", None)
+        if is_valid_search_page(preferred):
+            print("Using CompanyPage-owned employee-search tab:")
+            print(preferred.url)
+            return preferred
+
+        # Second priority: current self.page, provided it is actually a
+        # company-scoped people search rather than a temporary profile tab.
+        try:
+            current = self.page
+        except Exception:
+            current = None
+
+        if is_valid_search_page(current):
+            print("Using current authenticated employee-search tab:")
+            print(current.url)
+            return current
+
         try:
             context = self.page.context
         except Exception:
             return None
 
-        pages = []
         try:
             pages = list(context.pages)
         except Exception:
             return None
 
-        # Prefer a company people-search page. This also survives the case
-        # where self.page is currently a profile tab or LinkedIn feed.
-        for candidate in pages:
+        # Prefer an unfiltered people-search page if multiple company-scoped
+        # search tabs remain open (for example the preserved original F tab).
+        for candidate in reversed(pages):
+            if not is_valid_search_page(candidate):
+                continue
             try:
-                if candidate.is_closed():
-                    continue
-                url = str(candidate.url or "")
-                lower = url.lower()
-                if (
-                    "/search/results/people/" in lower
-                    and "currentcompany=" in lower
-                    and "/login" not in lower
-                    and "/authwall" not in lower
-                    and "/ssr-login" not in lower
-                ):
-                    print("Authenticated employee search page found in browser context:")
-                    print(url)
+                from urllib.parse import parse_qs, urlsplit
+                query = parse_qs(
+                    urlsplit(candidate.url).query,
+                    keep_blank_values=True,
+                )
+                network = (
+                    query.get("network", [])
+                    or query.get("Network", [])
+                )
+                if not network:
+                    print("Authenticated unfiltered employee-search page found in browser context:")
+                    print(candidate.url)
                     return candidate
             except Exception:
                 continue
 
-        # Preserve the original-page fallback if it is still usable.
-        try:
-            original = getattr(self, "_original_profile_page", None)
-            if original and not original.is_closed():
-                lower = str(original.url or "").lower()
-                if (
-                    "/search/results/people/" in lower
-                    and "currentcompany=" in lower
-                ):
-                    return original
-        except Exception:
-            pass
+        # Final fallback: any valid company-scoped employee search page.
+        for candidate in reversed(pages):
+            if is_valid_search_page(candidate):
+                print("Authenticated employee-search page found in browser context:")
+                print(candidate.url)
+                return candidate
 
         print("No authenticated company-scoped employee-search page found in browser context.")
         return None
@@ -407,7 +442,28 @@ class SearchWorkflowV2:
         except Exception:
             pass
 
-        # Otherwise choose the newest live people-search tab.
+        # Otherwise prefer an unfiltered company people-search tab.
+        # The original filtered F tab may remain open as a recovery fallback,
+        # but it must not silently become the active workflow search page.
+        if selected is None:
+            for candidate in reversed(valid_pages):
+                try:
+                    from urllib.parse import parse_qs, urlsplit
+                    query = parse_qs(
+                        urlsplit(str(candidate.url or "")).query,
+                        keep_blank_values=True,
+                    )
+                    network = (
+                        query.get("network", [])
+                        or query.get("Network", [])
+                    )
+                    if not network:
+                        selected = candidate
+                        break
+                except Exception:
+                    continue
+
+        # Final fallback: choose the newest live people-search tab.
         if selected is None:
             selected = valid_pages[-1]
 
