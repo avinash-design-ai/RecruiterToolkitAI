@@ -262,8 +262,9 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
             if self._blocked_url(profile_page.url):
                 print("AUTHWALL/LOGIN DETECTED ON PROFILE TAB.")
                 print(
-                    "Trying a fresh temporary-tab direct profile navigation "
-                    "fallback without touching the employee-search page."
+                    "Skipping redundant direct-profile retry. The authenticated "
+                    "company/location search row will be used as the fallback "
+                    "when its evidence is sufficient."
                 )
 
                 try:
@@ -273,63 +274,7 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
                     pass
 
                 self._temporary_profile_page = None
-
-                try:
-                    fallback_page = search_page.context.new_page()
-                    self._temporary_profile_page = fallback_page
-                    self.page = fallback_page
-
-                    fallback_page.goto(
-                        str(profile_url).strip(),
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
-                    fallback_page.wait_for_timeout(4000)
-
-                    fallback_url = fallback_page.url
-                    print("PROFILE DIRECT-FALLBACK URL:", fallback_url)
-
-                    if (
-                        not self._blocked_url(fallback_url)
-                        and self._canonical_profile_url(fallback_url) == requested
-                        and "/in/" in fallback_url.lower()
-                    ):
-                        print(
-                            "EXACT AUTHENTICATED EMPLOYEE PROFILE OPENED "
-                            "USING TEMPORARY DIRECT-NAVIGATION FALLBACK."
-                        )
-                        return True
-
-                    print(
-                        "DIRECT-NAVIGATION FALLBACK ALSO REACHED "
-                        "AUTHWALL/LOGIN OR WRONG URL."
-                    )
-
-                    try:
-                        if not fallback_page.is_closed():
-                            fallback_page.close()
-                    except Exception:
-                        pass
-
-                    self._temporary_profile_page = None
-                    self.page = search_page
-
-                except Exception as fallback_ex:
-                    print(
-                        "DIRECT-NAVIGATION PROFILE FALLBACK FAILED:",
-                        repr(fallback_ex)
-                    )
-
-                    try:
-                        if self._temporary_profile_page is not None:
-                            if not self._temporary_profile_page.is_closed():
-                                self._temporary_profile_page.close()
-                    except Exception:
-                        pass
-
-                    self._temporary_profile_page = None
-                    self.page = search_page
-
+                self.page = search_page
                 return False
 
             if actual != requested:
