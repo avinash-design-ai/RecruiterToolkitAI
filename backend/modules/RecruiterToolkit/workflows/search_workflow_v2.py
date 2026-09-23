@@ -507,13 +507,27 @@ class SearchWorkflowV2:
         authwall remain blank.
         """
 
+        import re
+
+        search_text = str(row.get("search_result_text", "") or "")
+        email = ""
+        try:
+            matches = re.findall(
+                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+                search_text,
+            )
+            if matches:
+                email = matches[0].strip()
+        except Exception:
+            email = ""
+
         return {
             "full_name": row.get("full_name", ""),
             "headline": row.get("headline", ""),
             "location": row.get("location", ""),
             "company": row.get("company", ""),
-            "email": "",
-            "email_source": "",
+            "email": email,
+            "email_source": "search_result" if email else "",
             "profile_url": row.get("profile_url", ""),
             "linked_email_id": "",
             "search_company": company,
@@ -1005,8 +1019,52 @@ class SearchWorkflowV2:
 
                     if not profile_opened:
 
+                        row_text = str(row.get("search_result_text", "") or "")
+                        requested_location_normalized = normalize_location(location)
+                        row_location_normalized = normalize_location(row_text)
+                        row_location_matches = (
+                            bool(requested_location_normalized)
+                            and requested_location_normalized in row_location_normalized
+                        )
+
+                        if row_location_matches:
+                            fallback = self._search_result_fallback(
+                                row, company, location
+                            )
+                            if fallback.get("full_name"):
+                                fallback["profile_url"] = requested_profile_url
+                                results.append(fallback)
+                                seen_urls.add(candidate_url)
+
+                                print(
+                                    "SEARCH-RESULT FALLBACK COLLECTED:",
+                                    fallback.get("full_name"),
+                                )
+                                print(
+                                    "Reason: profile navigation hit authwall/blocked profile; "
+                                    "bounded company/location result row retained."
+                                )
+
+                                try:
+                                    autosave = Exporter.export_csv(
+                                        results,
+                                        f"{company}_{location}_v2_autosave.csv",
+                                    )
+                                    print("Autosave:", autosave)
+                                except Exception as ex:
+                                    print("Autosave failed:", repr(ex))
+
+                                if len(results) >= max_profiles:
+                                    print("Maximum profile limit reached.")
+                                    break
+
+                                continue
+
                         print("PROFILE PAGE COULD NOT BE OPENED.")
-                        print("Candidate NOT counted as collected.")
+                        print(
+                            "Candidate not retained because the bounded "
+                            "search-result row did not prove the requested location."
+                        )
                         print("Continuing to next candidate...")
                         continue
 
@@ -1153,6 +1211,19 @@ class SearchWorkflowV2:
                             print("Continuing to next candidate...")
                             continue
 
+                    if not data.get("email"):
+                        try:
+                            search_result_email_matches = re.findall(
+                                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+                                str(row.get("search_result_text", "") or ""),
+                            )
+                            if search_result_email_matches:
+                                data["email"] = search_result_email_matches[0].strip()
+                                data["email_source"] = "search_result"
+                                print("SEARCH RESULT EMAIL FALLBACK:", data["email"])
+                        except Exception:
+                            pass
+
                     actual_company = (
                         data.get(
                             "company",
@@ -1257,6 +1328,19 @@ class SearchWorkflowV2:
                         search_result_location_normalized
                     )
 
+                    row_company_normalized = normalize_company(
+                        row.get("company", "")
+                    )
+
+                    # The candidate was obtained from CompanyPage.get_profiles()
+                    # while the browser was on currentCompany-scoped people search.
+                    # When LinkedIn masks the employer on the profile page, keep the
+                    # company scope already established by the search row.
+                    row_company_scope_matches = (
+                        bool(row_company_normalized)
+                        and row_company_normalized == requested_company_normalized
+                    )
+
                     company_matches = (
                         (
                             bool(actual_company_normalized)
@@ -1265,6 +1349,8 @@ class SearchWorkflowV2:
                         )
                         or
                         search_result_company_matches
+                        or
+                        row_company_scope_matches
                     )
 
                     # Prefer the authoritative profile location whenever it
