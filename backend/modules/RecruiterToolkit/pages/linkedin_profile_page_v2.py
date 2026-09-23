@@ -1706,12 +1706,124 @@ class LinkedInProfilePageV2(BasePage):
 
                 return added
 
+            def trigger_profile_lazy_rendering():
+                """Trigger LinkedIn lazy-loaded public profile sections without opening Contact Info."""
+                print("Triggering controlled profile lazy rendering...")
+
+                try:
+                    metrics = self.page.evaluate(
+                        """
+                        () => ({
+                            height: Math.max(
+                                document.body?.scrollHeight || 0,
+                                document.documentElement?.scrollHeight || 0
+                            ),
+                            viewport: window.innerHeight || 900
+                        })
+                        """
+                    ) or {}
+
+                    height = int(metrics.get("height") or 0)
+                    viewport = int(metrics.get("viewport") or 900)
+
+                    if height <= viewport:
+                        try:
+                            self.page.evaluate(
+                                "() => window.scrollTo(0, 0)"
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                    max_position = min(
+                        max(height - viewport, 0),
+                        18000,
+                    )
+
+                    step = max(
+                        int(viewport * 0.85),
+                        700,
+                    )
+
+                    position = 0
+                    steps = 0
+
+                    while position <= max_position and steps < 24:
+                        self.page.evaluate(
+                            "(y) => window.scrollTo(0, y)",
+                            position,
+                        )
+
+                        try:
+                            self.page.wait_for_timeout(350)
+                        except Exception:
+                            pass
+
+                        # LinkedIn can extend document height while sections render.
+                        try:
+                            latest_height = self.page.evaluate(
+                                """
+                                () => Math.max(
+                                    document.body?.scrollHeight || 0,
+                                    document.documentElement?.scrollHeight || 0
+                                )
+                                """
+                            )
+                            if latest_height:
+                                max_position = min(
+                                    max(
+                                        max_position,
+                                        int(latest_height) - viewport,
+                                    ),
+                                    18000,
+                                )
+                        except Exception:
+                            pass
+
+                        position += step
+                        steps += 1
+
+                    # Return to the profile header for the next extraction stage.
+                    self.page.evaluate(
+                        "() => window.scrollTo(0, 0)"
+                    )
+
+                    try:
+                        self.page.wait_for_timeout(700)
+                    except Exception:
+                        pass
+
+                    print(
+                        "Lazy-render scroll completed:",
+                        steps,
+                        "steps; initial document height=",
+                        height,
+                    )
+
+                except Exception as ex:
+                    print(
+                        "Controlled lazy-render scroll failed:",
+                        repr(ex),
+                    )
+
+            # --------------------------------------------------------
+            # LinkedIn profile sections such as posts, activity, and
+            # experience-related content may be lazy-rendered only after
+            # the page is scrolled. Trigger that rendering before the
+            # repeated email scans. This does not open Contact Info or
+            # call any private/API endpoint.
+            # --------------------------------------------------------
+            trigger_profile_lazy_rendering()
+
             empty_rounds = 0
 
             for scan_round in range(
                 1,
                 6,
             ):
+                if scan_round == 4:
+                    trigger_profile_lazy_rendering()
+
                 added = scan_email_sources()
 
                 print(
