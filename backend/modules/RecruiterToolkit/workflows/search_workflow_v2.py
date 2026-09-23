@@ -1183,6 +1183,64 @@ class SearchWorkflowV2:
                         )
                     )
 
+                    # LinkedIn can expose a numeric company ID instead of the
+                    # company name. It is not a usable employer value. Prefer the
+                    # bounded authenticated search-result row in that case.
+                    row_company_value = str(
+                        row.get("company", "")
+                    ).strip()
+
+                    row_location_value = str(
+                        row.get("location", "")
+                    ).strip()
+
+                    normalized_profile_company = normalize_company(
+                        actual_company
+                    )
+
+                    if (
+                        row_company_value
+                        and (
+                            not actual_company
+                            or (
+                                normalized_profile_company.isdigit()
+                                and len(normalized_profile_company) >= 3
+                            )
+                        )
+                    ):
+                        print(
+                            "PROFILE COMPANY NORMALIZED FROM SEARCH RESULT:",
+                            repr(actual_company),
+                            "->",
+                            repr(row_company_value),
+                        )
+                        actual_company = row_company_value
+                        data["company"] = row_company_value
+
+                    normalized_profile_location = normalize_location(
+                        actual_location
+                    )
+
+                    requested_location_for_fill = normalize_location(
+                        location
+                    )
+
+                    if (
+                        not actual_location
+                        and row_location_value
+                        and requested_location_for_fill
+                        and requested_location_for_fill
+                        in normalize_location(row_location_value)
+                    ):
+                        print(
+                            "PROFILE LOCATION NORMALIZED FROM SEARCH RESULT:",
+                            repr(actual_location),
+                            "->",
+                            repr(row_location_value),
+                        )
+                        actual_location = row_location_value
+                        data["location"] = row_location_value
+
                     requested_company_normalized = (
                         normalize_company(
                             company
