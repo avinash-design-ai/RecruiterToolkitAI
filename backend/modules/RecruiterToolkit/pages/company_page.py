@@ -922,26 +922,140 @@ class CompanyPage(BasePage):
 
 
         def click_show_results():
+            # LinkedIn may render "Show results", "Show 100 results", or
+            # "Show 500+ results", and the text may live inside a nested span/div.
+            show_results_pattern = re.compile(
+                r"^show(?:\s+[0-9][0-9,]*\+?)?\s+results?$",
+                re.IGNORECASE,
+            )
+
+            def matches_show_results(label):
+                normalized = re.sub(
+                    r"\s+",
+                    " ",
+                    str(label or "").replace("\xa0", " "),
+                ).strip()
+                return bool(show_results_pattern.fullmatch(normalized))
+
+            # 1) Prefer real interactive controls.
             for selector in (
-                "button:visible",
-                "[role='button']:visible",
-                "a:visible",
+                "button",
+                "[role='button']",
+                "a",
+                "input[type='button']",
+                "input[type='submit']",
             ):
                 try:
                     loc = self.page.locator(selector)
-                    for i in range(loc.count()):
+                    count = min(loc.count(), 300)
+                    for i in range(count):
                         item = loc.nth(i)
                         if not item.is_visible():
                             continue
-                        label = label_for(item).strip().lower()
-                        if label == "show results" or label.endswith("show results"):
-                            item.scroll_into_view_if_needed()
-                            item.click(timeout=15000)
-                            self.page.wait_for_timeout(5000)
-                            print("Show results clicked.")
-                            return True
+
+                        label = label_for(item)
+                        if not matches_show_results(label):
+                            continue
+
+                        item.scroll_into_view_if_needed()
+                        item.click(timeout=15000)
+                        self.page.wait_for_timeout(5000)
+                        print("Show results clicked:", label.strip())
+                        return True
                 except Exception:
                     continue
+
+            # 2) Rendered text fallback. The text can live inside a nested
+            # span/div while the clickable control is an ancestor.
+            try:
+                text_matches = self.page.get_by_text(
+                    show_results_pattern,
+                    exact=False,
+                )
+                for i in range(min(text_matches.count(), 100)):
+                    seed = text_matches.nth(i)
+                    if not seed.is_visible():
+                        continue
+
+                    try:
+                        seed.scroll_into_view_if_needed()
+                        seed.click(timeout=10000)
+                        self.page.wait_for_timeout(5000)
+                        print(
+                            "Show results clicked via rendered text:",
+                            label_for(seed).strip(),
+                        )
+                        return True
+                    except Exception:
+                        pass
+
+                    node = seed
+                    for _ in range(6):
+                        try:
+                            parent = node.locator("xpath=../").first
+                            if parent.count() == 0 or not parent.is_visible():
+                                break
+
+                            role = (parent.get_attribute("role") or "").strip().lower()
+                            tag = (parent.evaluate("el => el.tagName") or "").strip().lower()
+                            parent_label = label_for(parent)
+                            parent_type = (parent.get_attribute("type") or "").strip().lower()
+
+                            if (
+                                role == "button"
+                                or tag in ("button", "a")
+                                or parent_type in ("button", "submit")
+                                or matches_show_results(parent_label)
+                            ):
+                                parent.scroll_into_view_if_needed()
+                                parent.click(timeout=10000)
+                                self.page.wait_for_timeout(5000)
+                                print(
+                                    "Show results clicked via text ancestor:",
+                                    parent_label.strip(),
+                                )
+                                return True
+
+                            node = parent
+                        except Exception:
+                            break
+            except Exception:
+                pass
+
+            # 3) Bounded generic fallback for visible text-bearing controls.
+            for selector in (
+                "label",
+                "div",
+                "span",
+                "li",
+            ):
+                try:
+                    loc = self.page.locator(selector)
+                    count = min(loc.count(), 1000)
+                    for i in range(count):
+                        item = loc.nth(i)
+                        if not item.is_visible():
+                            continue
+
+                        label = label_for(item)
+                        if not matches_show_results(label):
+                            continue
+
+                        try:
+                            item.scroll_into_view_if_needed()
+                            item.click(timeout=10000)
+                            self.page.wait_for_timeout(5000)
+                            print(
+                                "Show results clicked via generic text control:",
+                                label.strip(),
+                            )
+                            return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+            print("ERROR: LinkedIn Show Results control could not be located.")
             return False
 
         # ================================================================
@@ -967,8 +1081,32 @@ class CompanyPage(BasePage):
             except Exception:
                 network_text = ""
 
-            if network_text and ("s" in network_text or "o" in network_text):
-                print("Connection-degree filter: already broad enough")
+            network_values = []
+            try:
+                from urllib.parse import urlsplit, parse_qs
+                q = parse_qs(urlsplit(current_url).query, keep_blank_values=True)
+                network_values = q.get("network", []) or q.get("Network", [])
+            except Exception:
+                network_values = []
+
+            network_codes = set()
+            for value in network_values:
+                network_codes.update(
+                    match.upper()
+                    for match in re.findall(r'"([FSO])"', str(value))
+                )
+
+            # No network parameter is LinkedIn's unrestricted/broad state.
+            if not network_values:
+                print("Connection-degree filter: network parameter absent; keeping existing broad scope.")
+                print("Company scope preserved:", ids)
+                self._employee_search_scope_ready = True
+                return True
+
+            # Only accept an already-complete F/S/O scope. Do not treat
+            # S/O as broad because that would silently exclude 1st-degree results.
+            if {"F", "S", "O"}.issubset(network_codes):
+                print("Connection-degree filter: already broad (F + S + O).")
                 print("Company scope preserved:", ids)
                 self._employee_search_scope_ready = True
                 return True
@@ -994,12 +1132,26 @@ class CompanyPage(BasePage):
                 print("ERROR: Could not open Connections section in All Filters.")
                 return False
 
-            # Keep 1st selected and add 2nd + 3rd+. This produces the
-            # equivalent of an unrestricted network while preserving the
-            # authenticated LinkedIn UI state.
-            ok_1 = ensure_degree(("1st",), ("1st",))
-            ok_2 = ensure_degree(("2nd",), ("2nd",))
-            ok_3 = ensure_degree(("3rd+", "3rd +", "3rd"), ("3rd",))
+            # Preserve the initial LinkedIn selection state from the URL.
+            # LinkedIn does not consistently expose checkbox selected-state
+            # through the DOM. Clicking an already selected option can toggle it OFF.
+            if "F" in network_codes:
+                ok_1 = True
+                print("1st-degree already selected in initial LinkedIn scope; preserving it without clicking.")
+            else:
+                ok_1 = ensure_degree(("1st",), ("1st",))
+
+            if "S" in network_codes:
+                ok_2 = True
+                print("2nd-degree already selected in initial LinkedIn scope; preserving it without clicking.")
+            else:
+                ok_2 = ensure_degree(("2nd",), ("2nd",))
+
+            if "O" in network_codes:
+                ok_3 = True
+                print("3rd+/out-of-network already selected in initial LinkedIn scope; preserving it without clicking.")
+            else:
+                ok_3 = ensure_degree(("3rd+", "3rd +", "3rd"), ("3rd",))
 
             print("Connection option results (exact filter options):", ok_1, ok_2, ok_3)
 
@@ -1040,14 +1192,31 @@ class CompanyPage(BasePage):
             except Exception:
                 pass
 
-            broad_network = (
-                '"s"' in network_text
-                or '"o"' in network_text
-                or ("2nd" in body_text and ("3rd" in body_text or "3rd+" in body_text))
-            )
+            final_network_codes = set()
+            try:
+                for value in network:
+                    final_network_codes.update(
+                        match.upper()
+                        for match in re.findall(r'"([FSO])"', str(value))
+                    )
+            except Exception:
+                final_network_codes = set()
+
+            # LinkedIn normally returns F/S/O when all three are selected.
+            # Some unrestricted UI states omit the network parameter entirely.
+            # Reject incomplete values such as F-only or S/O-only.
+            if network:
+                broad_network = {"F", "S", "O"}.issubset(final_network_codes)
+            else:
+                broad_network = True
 
             if not broad_network:
-                print("ERROR: UI filter did not broaden the connection scope; refusing to continue with F-only results.")
+                print(
+                    "ERROR: UI filter did not produce an unrestricted "
+                    "F + S + O connection scope; refusing to continue."
+                )
+                print("Final network values:", network)
+                print("Detected network codes:", sorted(final_network_codes))
                 return False
 
             print("=" * 60)
