@@ -433,11 +433,7 @@ class CompanyPage(BasePage):
                 return []
 
         # CASE 1:
-        # The company click may land directly on a people-search URL that still
-        # contains LinkedIn's inherited network=["F"] connection-degree filter.
-        # Connection-degree filtering is intentionally disabled in V2, so remove
-        # ONLY the network parameter while preserving currentCompany and all
-        # other LinkedIn-supplied parameters.
+        # Company-result click already landed directly on the people search.
         if is_people_url(current_url):
             ids = company_ids(current_url)
 
@@ -451,125 +447,24 @@ class CompanyPage(BasePage):
                 return False
 
             if not ids:
-                print("ERROR: Current people-search page has no currentCompany.")
+                print(
+                    "ERROR: Current people-search page has no currentCompany."
+                )
                 return False
 
-            from urllib.parse import (
-                urlsplit,
-                parse_qsl,
-                parse_qs,
-                urlencode,
-                urlunsplit,
-            )
+            print("Connection-degree handling: DISABLED")
+            print("Preserving LinkedIn's returned search URL unchanged.")
+            print("Company scope preserved:", ids)
 
-            parsed = urlsplit(current_url)
-            pairs = parse_qsl(parsed.query, keep_blank_values=True)
-            unfiltered_pairs = [
-                (key, value)
-                for key, value in pairs
-                if key.lower() != "network"
-            ]
+            self._employee_search_scope_ready = True
 
-            unfiltered_url = urlunsplit(
-                (
-                    parsed.scheme,
-                    parsed.netloc,
-                    parsed.path,
-                    urlencode(unfiltered_pairs),
-                    parsed.fragment,
-                )
-            )
+            print("=" * 60)
+            print("COMPANY PEOPLE SEARCH READY")
+            print("=" * 60)
+            print("Final URL:", current_url)
+            print("Company scope preserved:", ids)
 
-            if len(unfiltered_pairs) == len(pairs):
-                print("Connection-degree handling: NONE")
-                print("No network parameter present.")
-                print("Company scope preserved:", ids)
-                self._employee_search_scope_ready = True
-                print("Company people search ready.")
-                print("Final URL:", current_url)
-                return True
-
-            print("Removing inherited LinkedIn network/connection-degree filter.")
-            print("FROM:", current_url)
-            print("TO:", unfiltered_url)
-
-            original_page = self.page
-            navigation_page = None
-
-            try:
-                navigation_page = self.page.context.new_page()
-                print("Trying authenticated unfiltered company people search...")
-                print("Referer:", current_url)
-
-                try:
-                    navigation_page.goto(
-                        unfiltered_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                        referer=current_url,
-                    )
-                except Exception as ex:
-                    print("Unfiltered people-search goto raised:", repr(ex))
-
-                try:
-                    navigation_page.wait_for_timeout(5000)
-                except Exception:
-                    pass
-
-                candidate_url = str(navigation_page.url or "").strip()
-                print("Unfiltered people-search final URL:", candidate_url)
-
-                try:
-                    candidate_query = parse_qs(
-                        urlsplit(candidate_url).query,
-                        keep_blank_values=True,
-                    )
-                except Exception:
-                    candidate_query = {}
-
-                candidate_network = (
-                    candidate_query.get("network", [])
-                    or candidate_query.get("Network", [])
-                )
-
-                if (
-                    not is_blocked_url(candidate_url)
-                    and is_people_url(candidate_url)
-                    and company_ids(candidate_url) == ids
-                    and not candidate_network
-                ):
-                    self.page = navigation_page
-                    self._employee_search_fallback_page = original_page
-                    navigation_page = None
-
-                    print("Authenticated unfiltered company people search confirmed.")
-                    print("Connection-degree handling: NONE")
-                    print("Network parameter: removed")
-                    print("Company scope preserved:", ids)
-                    print("Original filtered employee-search tab preserved as recovery fallback.")
-                    print("Final URL:", candidate_url)
-
-                    self._employee_search_scope_ready = True
-                    return True
-
-                print("Unfiltered people-search navigation was not accepted.")
-
-            except Exception as ex:
-                print("Unfiltered company people-search recovery failed:", repr(ex))
-
-            finally:
-                if navigation_page is not None:
-                    try:
-                        if not navigation_page.is_closed():
-                            navigation_page.close()
-                    except Exception:
-                        pass
-
-            self.page = original_page
-            print("ERROR: Could not establish authenticated unfiltered company people search.")
-            print("Original authenticated people-search page preserved:", original_page.url)
-            return False
-
+            return True
 
         # CASE 2:
         # Still on the company page. Use LinkedIn's own company-scoped
@@ -1777,9 +1672,9 @@ class CompanyPage(BasePage):
 
         Root-cause pagination strategy:
         1. Directly navigate to page=N in a fresh authenticated tab.
-        2. Remove any inherited connection-degree `network` parameter.
+        2. Preserve LinkedIn's returned `network` scope exactly as supplied.
         3. Preserve currentCompany and every other legitimate query parameter.
-        4. Validate company scope, page advancement, no network filter, and
+        4. Validate company scope and page advancement without rewriting network scope.
            rendered employee-result content before promoting the new tab.
         5. Use LinkedIn's live Next control only as a secondary compatibility path.
         """
@@ -1850,11 +1745,7 @@ class CompanyPage(BasePage):
                         query.get("currentCompany", [])
                         or query.get("currentcompany", [])
                     )
-                    network = (
-                        query.get("network", [])
-                        or query.get("Network", [])
-                    )
-                    return actual_company_ids == company_ids and not network
+                    return actual_company_ids == company_ids
                 except Exception:
                     return False
 
@@ -1937,7 +1828,7 @@ class CompanyPage(BasePage):
                 pairs = []
 
                 for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-                    if key.lower() in {"network", "page"}:
+                    if key.lower() == "page":
                         continue
                     pairs.append((key, value))
 
@@ -1964,7 +1855,7 @@ class CompanyPage(BasePage):
 
             print("Direct next-page URL:", direct_next_url)
             print("Connection-degree handling: NONE")
-            print("Network parameter: removed for pagination")
+            print("Network parameter: preserved from LinkedIn")
 
             # ============================================================
             # PRIMARY PATH: direct authenticated page=N navigation.
@@ -2011,7 +1902,7 @@ class CompanyPage(BasePage):
                         print("Final next-page URL:", candidate_url)
                         print("Company scope preserved:", company_ids)
                         print("Connection-degree handling: NONE")
-                        print("Network parameter: absent")
+                        print("Network parameter: preserved from LinkedIn")
                         print("Page number:", page_number(candidate_url))
 
                         try:
@@ -2169,7 +2060,7 @@ class CompanyPage(BasePage):
                     print("Final next-page URL:", destination)
                     print("Company scope preserved:", company_ids)
                     print("Connection-degree handling: NONE")
-                    print("Network parameter: absent")
+                    print("Network parameter: preserved from LinkedIn")
                     return True
 
             # Never intentionally leave the workflow on LinkedIn auth/SSR.
