@@ -820,11 +820,14 @@ class SearchWorkflowV2:
             )
             print("=" * 60)
 
+            remaining_profiles = max_profiles - len(results)
+
             page_results = (
                 self.company_page
                 .get_profiles(
                     company,
-                    location
+                    location,
+                    remaining_profiles,
                 )
             )
 
