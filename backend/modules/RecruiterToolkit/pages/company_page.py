@@ -1668,427 +1668,988 @@ class CompanyPage(BasePage):
 
 
     def next_page(self):
-        """Move to the next company-scoped LinkedIn people-search page.
-
-        Root-cause pagination strategy:
-        1. Directly navigate to page=N in a fresh authenticated tab.
-        2. Preserve LinkedIn's returned `network` scope exactly as supplied.
-        3. Preserve currentCompany and every other legitimate query parameter.
-        4. Validate company scope and page advancement without rewriting network scope.
-           rendered employee-result content before promoting the new tab.
-        5. Use LinkedIn's live Next control only as a secondary compatibility path.
         """
-        before_page = None
+        Advance the authenticated company-scoped LinkedIn people search.
 
-        try:
-            from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+        This is a fail-safe pagination state machine:
+        - Preserve LinkedIn's returned query parameters, including network.
+        - Change ONLY page=N when constructing an explicit next-page URL.
+        - First try SAME-PAGE authenticated page=N navigation.
+        - Then try a FRESH authenticated tab using the same exact URL.
+        - Then use LinkedIn's own Next href.
+        - Finally click the live Next control.
+        - Validate company scope, exact page number, authentication, and
+          employee-result DOM before accepting a transition.
+        - Restore the previous authenticated employee-search page after
+          failed navigation.
+        - Return False only when LinkedIn explicitly exposes a disabled Next
+          control. Any unresolved navigation failure raises so the workflow
+          cannot falsely report "No more employee pages."
+        """
+        from hashlib import sha1
+        from urllib.parse import (
+            parse_qs,
+            parse_qsl,
+            urlencode,
+            urljoin,
+            urlsplit,
+            urlunsplit,
+        )
 
-            before_page = self.page
-            before_url = str(before_page.url or "").strip()
-            before_lower = before_url.lower()
+        owner_page = self.page
+        before_url = str(owner_page.url or "").strip()
 
-            print("=" * 60)
-            print("PAGINATION")
-            print("=" * 60)
-            print("Current URL:", before_url)
+        print("=" * 60)
+        print("PAGINATION - FAIL-SAFE STATE MACHINE")
+        print("=" * 60)
+        print("Current URL:", before_url)
 
-            if (
-                "/search/results/people/" not in before_lower
-                or "currentcompany=" not in before_lower
-            ):
-                print("NEXT ABORTED - current page is not company-scoped people search.")
-                return False
-
-            before_query = parse_qs(urlsplit(before_url).query, keep_blank_values=True)
-            company_ids = (
-                before_query.get("currentCompany", [])
-                or before_query.get("currentcompany", [])
+        def blocked(url):
+            value = str(url or "").lower()
+            return any(
+                marker in value
+                for marker in (
+                    "/login",
+                    "/authwall",
+                    "/checkpoint",
+                    "/uas/login",
+                    "/signup",
+                    "/ssr-login",
+                    "remember-me-auto-login",
+                )
             )
 
-            if not company_ids:
-                print("NEXT ABORTED - currentCompany is missing.")
+        def parse_query(url):
+            return parse_qs(
+                urlsplit(str(url or "")).query,
+                keep_blank_values=True,
+            )
+
+        def company_ids(url):
+            query = parse_query(url)
+            return (
+                query.get("currentCompany", [])
+                or query.get("currentcompany", [])
+            )
+
+        def page_number(url):
+            query = parse_query(url)
+            try:
+                raw = (query.get("page", ["1"]) or ["1"])[0]
+                return max(1, int(str(raw).strip()))
+            except Exception:
+                return 1
+
+        def is_company_people_search(url):
+            value = str(url or "").lower()
+            if blocked(value):
                 return False
+            if "/search/results/people/" not in value:
+                return False
+            return bool(company_ids(url))
 
-            print("Current company ID:", company_ids)
+        def non_page_query_map(url):
+            query = parse_query(url)
+            return {
+                key.lower(): tuple(values)
+                for key, values in query.items()
+                if key.lower() != "page"
+            }
 
-            def blocked(url):
-                value = str(url or "").lower()
-                return any(
-                    part in value
-                    for part in (
-                        "/login",
-                        "/authwall",
-                        "/checkpoint",
-                        "/uas/login",
-                        "/signup",
-                        "/ssr-login",
-                        "remember-me-auto-login",
-                    )
-                )
+        def result_signature(active_page):
+            chunks = []
 
-            def company_people_url(url):
-                value = str(url or "").lower()
-                if blocked(value):
-                    return False
-                if (
-                    "/search/results/people/" not in value
-                    or "currentcompany=" not in value
-                ):
-                    return False
-
+            for selector in (
+                "li.reusable-search__result-container",
+                "li[class*='reusable-search__result']",
+                "li.entity-result",
+                "div.entity-result",
+                "li.search-result",
+                "li[class*='search-result']",
+                "ul.reusable-search__entity-result-list > li",
+            ):
                 try:
-                    query = parse_qs(
-                        urlsplit(str(url)).query,
-                        keep_blank_values=True,
-                    )
-                    actual_company_ids = (
-                        query.get("currentCompany", [])
-                        or query.get("currentcompany", [])
-                    )
-                    return actual_company_ids == company_ids
-                except Exception:
-                    return False
+                    rows = active_page.locator(selector)
+                    count = min(rows.count(), 12)
 
-            def page_number(url):
-                try:
-                    query = parse_qs(
-                        urlsplit(str(url or "")).query,
-                        keep_blank_values=True,
-                    )
-                    raw = (query.get("page", ["1"]) or ["1"])[0]
-                    return max(1, int(str(raw).strip()))
-                except Exception:
-                    return 1
-
-            def result_dom_ready(page):
-                role_signals = (
-                    "recruiter", "talent acquisition", "sales", "specialist",
-                    "manager", "engineer", "developer", "analyst", "consultant",
-                    "director", "staffing", "human resources",
-                )
-                result_words = ("people", "employees", "results", "connections")
-
-                for attempt in range(1, 41):
-                    try:
-                        page.wait_for_timeout(500)
-                    except Exception:
-                        pass
-
-                    try:
-                        visible_links = page.locator("a[href*='/in/']:visible").count()
-                    except Exception:
-                        visible_links = 0
-
-                    rendered_cards = 0
-                    for selector in (
-                        "li.reusable-search__result-container:visible",
-                        "li[class*='reusable-search__result']:visible",
-                        "li.entity-result:visible",
-                        "div.entity-result:visible",
-                        "li.search-result:visible",
-                        "li[class*='search-result']:visible",
-                        "ul.reusable-search__entity-result-list > li:visible",
-                    ):
+                    for index in range(count):
                         try:
-                            rendered_cards = max(rendered_cards, page.locator(selector).count())
+                            text = rows.nth(index).inner_text(
+                                timeout=1000
+                            )
                         except Exception:
                             continue
 
-                    rendered_result_text = False
-                    try:
-                        body_text = page.locator("body").inner_text(timeout=2000)
-                        normalized = re.sub(r"\s+", " ", body_text or "").strip().lower()
-                        role_hits = sum(1 for signal in role_signals if signal in normalized)
-                        result_hits = sum(1 for word in result_words if word in normalized)
-                        rendered_result_text = (
-                            len(normalized) >= 800
-                            and role_hits >= 2
-                            and result_hits >= 1
-                        )
-                    except Exception:
-                        pass
+                        text = " ".join(
+                            str(text or "").split()
+                        ).strip()
 
-                    print(
-                        f"Next-page DOM wait {attempt}/40:",
-                        visible_links,
-                        "visible /in/ links;",
-                        rendered_cards,
-                        "result cards;",
-                        rendered_result_text,
-                        "employee-result text",
-                    )
+                        if text:
+                            chunks.append(text[:1600])
 
-                    if visible_links > 0 or rendered_cards > 0 or rendered_result_text:
-                        return True
-
-                return False
-
-            def build_direct_next_url(start_url):
-                parsed = urlsplit(start_url)
-                pairs = []
-
-                for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-                    if key.lower() == "page":
-                        continue
-                    pairs.append((key, value))
-
-                existing_keys = {str(key).lower() for key, _ in pairs}
-                if "spellcorrectionenabled" not in existing_keys:
-                    pairs.append(("spellCorrectionEnabled", "true"))
-                if "prioritizemessage" not in existing_keys:
-                    pairs.append(("prioritizeMessage", "false"))
-
-                pairs.append(("page", str(page_number(start_url) + 1)))
-
-                return urlunsplit(
-                    (
-                        parsed.scheme,
-                        parsed.netloc,
-                        parsed.path,
-                        urlencode(pairs),
-                        parsed.fragment,
-                    )
-                )
-
-            start_page_number = page_number(before_url)
-            direct_next_url = build_direct_next_url(before_url)
-
-            print("Direct next-page URL:", direct_next_url)
-            print("Connection-degree handling: NONE")
-            print("Network parameter: preserved from LinkedIn")
-
-            # ============================================================
-            # PRIMARY PATH: direct authenticated page=N navigation.
-            # This is the path that historically reached page 2+ successfully.
-            # ============================================================
-            navigation_page = None
+                    if chunks:
+                        break
+                except Exception:
+                    continue
 
             try:
-                navigation_page = before_page.context.new_page()
+                links = active_page.locator("a[href*='/in/']")
+                count = min(links.count(), 25)
 
-                print("Trying authenticated direct next-page navigation...")
-                print("Referer:", before_url)
+                for index in range(count):
+                    try:
+                        href = (
+                            links.nth(index)
+                            .get_attribute("href")
+                            or ""
+                        ).strip()
+                    except Exception:
+                        continue
 
+                    if href:
+                        chunks.append(
+                            href.split("?", 1)[0]
+                            .split("#", 1)[0]
+                            .rstrip("/")
+                            .lower()
+                        )
+            except Exception:
+                pass
+
+            if not chunks:
                 try:
-                    navigation_page.goto(
-                        direct_next_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                        referer=before_url,
+                    body = active_page.locator("body").inner_text(
+                        timeout=1500
                     )
-                except Exception as ex:
-                    print("Direct next-page goto raised:", repr(ex))
+                    body = " ".join(
+                        str(body or "").split()
+                    ).strip()
 
-                try:
-                    navigation_page.wait_for_timeout(5000)
+                    if body:
+                        chunks.append(body[:5000])
                 except Exception:
                     pass
 
-                candidate_url = str(navigation_page.url or "").strip()
-                print("Direct next-page final URL:", candidate_url)
+            payload = "\n".join(chunks).strip()
 
-                if (
-                    company_people_url(candidate_url)
-                    and page_number(candidate_url) >= start_page_number + 1
-                ):
-                    if result_dom_ready(navigation_page):
-                        old_page = before_page
-                        self.page = navigation_page
-                        navigation_page = None
+            return sha1(
+                payload.encode(
+                    "utf-8",
+                    errors="ignore",
+                )
+            ).hexdigest()
 
-                        print("=" * 60)
-                        print("NEXT PAGE VALIDATED VIA DIRECT URL")
-                        print("=" * 60)
-                        print("Final next-page URL:", candidate_url)
-                        print("Company scope preserved:", company_ids)
-                        print("Connection-degree handling: NONE")
-                        print("Network parameter: preserved from LinkedIn")
-                        print("Page number:", page_number(candidate_url))
+        def result_state(active_page):
+            visible_links = 0
+            result_cards = 0
+            body_text = ""
 
-                        try:
-                            if old_page is not self.page and not old_page.is_closed():
-                                old_page.close()
-                                print("Previous employee-search tab closed after new page validation.")
-                        except Exception as ex:
-                            print("Previous employee-search tab cleanup warning:", repr(ex))
+            try:
+                visible_links = active_page.locator(
+                    "a[href*='/in/']:visible"
+                ).count()
+            except Exception:
+                visible_links = 0
 
-                        return True
+            for selector in (
+                "li.reusable-search__result-container:visible",
+                "li[class*='reusable-search__result']:visible",
+                "li.entity-result:visible",
+                "div.entity-result:visible",
+                "li.search-result:visible",
+                "li[class*='search-result']:visible",
+                "ul.reusable-search__entity-result-list > li:visible",
+            ):
+                try:
+                    count = active_page.locator(selector).count()
+                    if count > result_cards:
+                        result_cards = count
+                except Exception:
+                    continue
 
-                print("Direct next-page navigation was not accepted.")
+            try:
+                body_text = " ".join(
+                    str(
+                        active_page.locator("body").inner_text(
+                            timeout=2000
+                        )
+                        or ""
+                    ).split()
+                ).lower()
+            except Exception:
+                body_text = ""
 
-            except Exception as ex:
-                print("Direct next-page recovery failed:", repr(ex))
+            no_results = any(
+                marker in body_text
+                for marker in (
+                    "no results",
+                    "no people found",
+                    "no results found",
+                    "we couldn't find",
+                )
+            )
 
-            finally:
-                if navigation_page is not None:
-                    try:
-                        if not navigation_page.is_closed():
-                            navigation_page.close()
-                    except Exception:
-                        pass
+            return (
+                visible_links,
+                result_cards,
+                no_results,
+            )
 
-            # ============================================================
-            # SECONDARY PATH: LinkedIn's live Next control.
-            # ============================================================
-            def find_next_control(page):
-                selectors = (
-                    "button[data-testid='pagination-controls-next-button-visible']:visible",
-                    "button[data-testid*='pagination-controls-next-button']:visible",
-                    "nav[aria-label*='Pagination' i] button:visible",
-                    "nav[aria-label*='Pagination' i] a:visible",
-                    "div.artdeco-pagination button:visible",
-                    "div.artdeco-pagination a:visible",
+        def employee_dom_ready(
+            active_page,
+            previous_signature,
+        ):
+            """
+            Require the destination page to render employee-search content.
+            A changed signature is preferred; if LinkedIn virtualizes identical
+            shell text, populated result DOM is still accepted after the URL
+            has advanced and the destination is authenticated.
+            """
+            for attempt in range(1, 61):
+                try:
+                    active_page.wait_for_timeout(300)
+                except Exception:
+                    pass
+
+                current_url = str(
+                    active_page.url or ""
+                ).strip()
+
+                if blocked(current_url):
+                    print(
+                        "Destination reached auth/login state:",
+                        current_url,
+                    )
+                    return False
+
+                if not is_company_people_search(current_url):
+                    continue
+
+                if company_ids(current_url) != original_company_ids:
+                    print(
+                        "Destination company scope changed:",
+                        current_url,
+                    )
+                    return False
+
+                if page_number(current_url) != target_page_number:
+                    continue
+
+                visible_links, result_cards, no_results = result_state(
+                    active_page
                 )
 
-                for selector in selectors:
-                    try:
-                        controls = page.locator(selector)
-                        for i in range(controls.count()):
-                            control = controls.nth(i)
-                            parts = []
+                current_signature = result_signature(
+                    active_page
+                )
 
-                            for attr in ("aria-label", "title", "data-testid"):
-                                try:
-                                    value = (control.get_attribute(attr) or "").strip()
-                                    if value:
-                                        parts.append(value)
-                                except Exception:
-                                    pass
+                signature_changed = (
+                    bool(current_signature)
+                    and current_signature != previous_signature
+                )
 
-                            try:
-                                text = control.inner_text(timeout=800).strip()
-                                if text:
-                                    parts.append(text)
-                            except Exception:
-                                pass
+                populated = (
+                    visible_links > 0
+                    or result_cards > 0
+                    or no_results
+                )
 
-                            label = " ".join(parts).lower()
-                            if "next" not in label:
-                                continue
+                if signature_changed and populated:
+                    print(
+                        "Destination result signature changed and "
+                        "employee DOM is populated."
+                    )
+                    return True
 
-                            try:
-                                if control.is_disabled():
-                                    continue
-                            except Exception:
-                                pass
+                if populated and previous_signature == "":
+                    print(
+                        "Destination employee DOM is populated; "
+                        "no previous signature was available."
+                    )
+                    return True
 
-                            try:
-                                if not control.is_visible():
-                                    continue
-                            except Exception:
-                                continue
+                if (
+                    populated
+                    and attempt >= 20
+                ):
+                    print(
+                        "Destination page reached correct URL and populated "
+                        "employee DOM after waiting for hydration."
+                    )
+                    return True
 
-                            print("Next control found:", selector, "[", i, "]")
-                            print("Next label:", label)
-                            return control
-                    except Exception as ex:
-                        print("Next selector inspection failed:", selector, repr(ex))
+                if attempt % 10 == 0:
+                    print(
+                        f"Next-page validation {attempt}/60:",
+                        "page=",
+                        page_number(current_url),
+                        "links=",
+                        visible_links,
+                        "cards=",
+                        result_cards,
+                        "no_results=",
+                        no_results,
+                        "signature_changed=",
+                        signature_changed,
+                    )
 
-                return None
+            return False
 
-            # Direct navigation is the primary path. If it failed, restore the
-            # original authenticated page explicitly before trying live Next.
-            try:
-                if not company_people_url(self.page.url):
-                    print("Re-anchoring authenticated employee-search page before live Next fallback...")
-                    self.page.goto(
+        if not is_company_people_search(before_url):
+            raise RuntimeError(
+                "Pagination cannot start: current page is not an "
+                "authenticated company-scoped LinkedIn people search."
+            )
+
+        original_company_ids = company_ids(before_url)
+
+        if not original_company_ids:
+            raise RuntimeError(
+                "Pagination cannot start: currentCompany is missing."
+            )
+
+        current_page_number = page_number(before_url)
+        target_page_number = current_page_number + 1
+        original_query_map = non_page_query_map(before_url)
+        previous_signature = result_signature(owner_page)
+
+        print("Current page:", current_page_number)
+        print("Target page:", target_page_number)
+        print("Company scope:", original_company_ids)
+        print(
+            "Network parameter:",
+            parse_query(before_url).get("network", []),
+        )
+
+        def build_page_url(start_url):
+            parsed = urlsplit(start_url)
+
+            pairs = []
+            page_written = False
+
+            for key, value in parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            ):
+                if key.lower() == "page":
+                    if not page_written:
+                        pairs.append(
+                            (
+                                key,
+                                str(target_page_number),
+                            )
+                        )
+                        page_written = True
+                    continue
+
+                pairs.append((key, value))
+
+            if not page_written:
+                pairs.append(
+                    (
+                        "page",
+                        str(target_page_number),
+                    )
+                )
+
+            return urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    urlencode(
+                        pairs,
+                        doseq=True,
+                    ),
+                    parsed.fragment,
+                )
+            )
+
+        def query_contract_ok(destination):
+            if not is_company_people_search(destination):
+                return False
+
+            if company_ids(destination) != original_company_ids:
+                return False
+
+            if page_number(destination) != target_page_number:
+                return False
+
+            if non_page_query_map(destination) != original_query_map:
+                print(
+                    "Query contract mismatch."
+                )
+                print(
+                    "Expected non-page params:",
+                    original_query_map,
+                )
+                print(
+                    "Actual non-page params:",
+                    non_page_query_map(destination),
+                )
+                return False
+
+            return True
+
+        direct_next_url = build_page_url(
+            before_url
+        )
+
+        if non_page_query_map(direct_next_url) != original_query_map:
+            raise RuntimeError(
+                "Safety check failed: constructing page=N changed "
+                "a query parameter other than page."
+            )
+
+        print("Direct next-page URL:", direct_next_url)
+        print(
+            "Non-page query parameters preserved:",
+            original_query_map,
+        )
+
+        def restore_owner_page():
+            for attempt in range(1, 3):
+                try:
+                    print(
+                        f"Restoring authenticated employee page "
+                        f"(attempt {attempt}/2)..."
+                    )
+
+                    owner_page.goto(
                         before_url,
                         wait_until="domcontentloaded",
                         timeout=60000,
                         referer=before_url,
                     )
-                    self.page.wait_for_timeout(3000)
+                    owner_page.wait_for_timeout(3000)
 
-                if not company_people_url(self.page.url):
-                    print("Live Next fallback aborted: authenticated company people-search page not restored.")
-                    return False
-            except Exception as ex:
-                print("Live Next fallback re-anchor failed:", repr(ex))
-                return False
+                    restored_url = str(
+                        owner_page.url or ""
+                    ).strip()
 
-            next_control = find_next_control(self.page)
-            if next_control is None:
-                print("No usable Next control found after direct URL failure.")
-                return False
+                    if (
+                        is_company_people_search(restored_url)
+                        and company_ids(restored_url)
+                        == original_company_ids
+                    ):
+                        print(
+                            "Employee-search page restored:",
+                            restored_url,
+                        )
+                        return True
+                except Exception as exc:
+                    print(
+                        "Restore attempt failed:",
+                        repr(exc),
+                    )
 
+                try:
+                    owner_page.go_back(
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                    owner_page.wait_for_timeout(2000)
+
+                    restored_url = str(
+                        owner_page.url or ""
+                    ).strip()
+
+                    if (
+                        is_company_people_search(restored_url)
+                        and company_ids(restored_url)
+                        == original_company_ids
+                    ):
+                        print(
+                            "Employee-search page restored via history:",
+                            restored_url,
+                        )
+                        return True
+                except Exception:
+                    pass
+
+            return False
+
+        def same_page_attempt():
+            print("=" * 60)
+            print("PAGINATION ATTEMPT: SAME AUTHENTICATED PAGE")
+            print("=" * 60)
+
+            try:
+                owner_page.goto(
+                    direct_next_url,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                    referer=before_url,
+                )
+
+                owner_page.wait_for_timeout(2500)
+
+                destination = str(
+                    owner_page.url or ""
+                ).strip()
+
+                print(
+                    "Same-page destination:",
+                    destination,
+                )
+
+                if (
+                    query_contract_ok(destination)
+                    and employee_dom_ready(
+                        owner_page,
+                        previous_signature,
+                    )
+                ):
+                    print("=" * 60)
+                    print("NEXT PAGE VALIDATED VIA SAME PAGE")
+                    print("=" * 60)
+                    print(
+                        "Page number:",
+                        page_number(destination),
+                    )
+                    print(
+                        "Company scope:",
+                        company_ids(destination),
+                    )
+                    print(
+                        "Network parameter:",
+                        parse_query(destination).get(
+                            "network",
+                            [],
+                        ),
+                    )
+                    return True
+
+            except Exception as exc:
+                print(
+                    "Same-page next-page navigation raised:",
+                    repr(exc),
+                )
+
+            restore_owner_page()
+            return False
+
+        # ------------------------------------------------------------
+        # PRIMARY: same authenticated page.
+        # ------------------------------------------------------------
+        if same_page_attempt():
+            return True
+
+        # ------------------------------------------------------------
+        # SECONDARY: a fresh authenticated tab in the same browser context.
+        # This is retained because older runs successfully advanced this way.
+        # ------------------------------------------------------------
+        print("=" * 60)
+        print("PAGINATION ATTEMPT: FRESH AUTHENTICATED TAB")
+        print("=" * 60)
+
+        fresh_page = None
+
+        try:
+            fresh_page = owner_page.context.new_page()
+
+            fresh_page.goto(
+                direct_next_url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+                referer=before_url,
+            )
+
+            fresh_page.wait_for_timeout(2500)
+
+            destination = str(
+                fresh_page.url or ""
+            ).strip()
+
+            print(
+                "Fresh-tab destination:",
+                destination,
+            )
+
+            if (
+                query_contract_ok(destination)
+                and employee_dom_ready(
+                    fresh_page,
+                    previous_signature,
+                )
+            ):
+                old_page = self.page
+                self.page = fresh_page
+                fresh_page = None
+
+                try:
+                    if (
+                        old_page is not self.page
+                        and not old_page.is_closed()
+                    ):
+                        old_page.close()
+                except Exception as exc:
+                    print(
+                        "Previous employee-page cleanup warning:",
+                        repr(exc),
+                    )
+
+                print("=" * 60)
+                print("NEXT PAGE VALIDATED VIA FRESH TAB")
+                print("=" * 60)
+                print(
+                    "Page number:",
+                    page_number(destination),
+                )
+                print(
+                    "Company scope:",
+                    company_ids(destination),
+                )
+                print(
+                    "Network parameter:",
+                    parse_query(destination).get(
+                        "network",
+                        [],
+                    ),
+                )
+                return True
+
+        except Exception as exc:
+            print(
+                "Fresh-tab next-page navigation raised:",
+                repr(exc),
+            )
+        finally:
+            if fresh_page is not None:
+                try:
+                    if not fresh_page.is_closed():
+                        fresh_page.close()
+                except Exception:
+                    pass
+
+        restore_owner_page()
+
+        # ------------------------------------------------------------
+        # SECONDARY: LinkedIn-provided Next href.
+        # ------------------------------------------------------------
+        print("=" * 60)
+        print("PAGINATION ATTEMPT: LINKEDIN NEXT HREF")
+        print("=" * 60)
+
+        next_href = ""
+
+        for selector in (
+            "a[aria-label*='next' i]:visible",
+            "a[title*='next' i]:visible",
+            "a[data-test*='next' i]:visible",
+            "a[href*='page=']:visible",
+        ):
+            try:
+                locator = owner_page.locator(selector)
+                count = locator.count()
+
+                for index in range(
+                    min(count, 100)
+                ):
+                    item = locator.nth(index)
+
+                    try:
+                        href = (
+                            item.get_attribute("href")
+                            or ""
+                        ).strip()
+                    except Exception:
+                        href = ""
+
+                    if not href:
+                        continue
+
+                    absolute = urljoin(
+                        str(owner_page.url or ""),
+                        href,
+                    )
+
+                    if (
+                        is_company_people_search(
+                            absolute
+                        )
+                        and page_number(absolute)
+                        > current_page_number
+                        and company_ids(absolute)
+                        == original_company_ids
+                    ):
+                        next_href = absolute
+                        break
+
+                if next_href:
+                    break
+            except Exception:
+                continue
+
+        if next_href:
+            print(
+                "LinkedIn Next href:",
+                next_href,
+            )
+
+            if next_href != direct_next_url:
+                try:
+                    owner_page.goto(
+                        next_href,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                        referer=before_url,
+                    )
+                    owner_page.wait_for_timeout(2500)
+
+                    destination = str(
+                        owner_page.url or ""
+                    ).strip()
+
+                    if (
+                        page_number(destination)
+                        > current_page_number
+                        and query_contract_ok(
+                            destination
+                        )
+                        and employee_dom_ready(
+                            owner_page,
+                            previous_signature,
+                        )
+                    ):
+                        print("=" * 60)
+                        print("NEXT PAGE VALIDATED VIA LINKEDIN HREF")
+                        print("=" * 60)
+                        print(
+                            "Final URL:",
+                            destination,
+                        )
+                        return True
+
+                except Exception as exc:
+                    print(
+                        "LinkedIn Next href navigation raised:",
+                        repr(exc),
+                    )
+
+                restore_owner_page()
+        else:
+            print(
+                "No usable LinkedIn Next href found."
+            )
+
+        # ------------------------------------------------------------
+        # FINAL NAVIGATION FALLBACK: live Next control.
+        # ------------------------------------------------------------
+        print("=" * 60)
+        print("PAGINATION ATTEMPT: LIVE NEXT CONTROL")
+        print("=" * 60)
+
+        next_control = None
+        disabled_next_found = False
+
+        for selector in (
+            "button[data-testid='pagination-controls-next-button-visible']:visible",
+            "button[data-testid*='pagination-controls-next-button']:visible",
+            "nav[aria-label*='Pagination' i] button:visible",
+            "nav[aria-label*='Pagination' i] a:visible",
+            "div.artdeco-pagination button:visible",
+            "div.artdeco-pagination a:visible",
+            "button:visible",
+            "[role='button']:visible",
+            "a:visible",
+        ):
+            try:
+                controls = owner_page.locator(selector)
+
+                for index in range(
+                    min(
+                        controls.count(),
+                        250,
+                    )
+                ):
+                    control = controls.nth(index)
+
+                    parts = []
+
+                    for attr in (
+                        "aria-label",
+                        "title",
+                        "data-testid",
+                        "data-test",
+                        "data-control-name",
+                    ):
+                        try:
+                            value = (
+                                control.get_attribute(attr)
+                                or ""
+                            ).strip()
+
+                            if value:
+                                parts.append(value)
+                        except Exception:
+                            pass
+
+                    try:
+                        text_value = (
+                            control.inner_text(
+                                timeout=500
+                            )
+                            or ""
+                        ).strip()
+
+                        if text_value:
+                            parts.append(text_value)
+                    except Exception:
+                        pass
+
+                    label = " ".join(
+                        parts
+                    ).lower()
+
+                    if "next" not in label:
+                        continue
+
+                    if "previous" in label:
+                        continue
+
+                    is_disabled = False
+
+                    try:
+                        aria_disabled = (
+                            control.get_attribute(
+                                "aria-disabled"
+                            )
+                            or ""
+                        ).lower()
+
+                        is_disabled = (
+                            aria_disabled == "true"
+                        )
+                    except Exception:
+                        pass
+
+                    try:
+                        if control.is_disabled():
+                            is_disabled = True
+                    except Exception:
+                        pass
+
+                    try:
+                        class_name = (
+                            control.get_attribute(
+                                "class"
+                            )
+                            or ""
+                        ).lower()
+
+                        if "disabled" in class_name:
+                            is_disabled = True
+                    except Exception:
+                        pass
+
+                    if is_disabled:
+                        disabled_next_found = True
+                        print(
+                            "Disabled Next control found:",
+                            label[:200],
+                        )
+                        continue
+
+                    try:
+                        if not control.is_visible():
+                            continue
+                    except Exception:
+                        continue
+
+                    next_control = control
+                    print(
+                        "Enabled Next control found:",
+                        label[:200],
+                    )
+                    break
+
+                if next_control is not None:
+                    break
+
+            except Exception:
+                continue
+
+        if next_control is not None:
             try:
                 next_control.scroll_into_view_if_needed()
             except Exception:
                 pass
 
-            print("Direct URL pagination unavailable; trying LinkedIn's live Next control as compatibility fallback...")
-
             try:
-                next_control.click(timeout=15000, no_wait_after=True)
-            except Exception as ex:
-                print("Live Next click failed:", repr(ex))
-                return False
-
-            destination = ""
-
-            for attempt in range(1, 61):
-                try:
-                    self.page.wait_for_timeout(300)
-                except Exception:
-                    pass
-
-                try:
-                    destination = str(self.page.url or "").strip()
-                except Exception:
-                    destination = ""
-
-                if blocked(destination):
-                    print("LIVE NEXT REDIRECTED TO AUTH/SSR:", destination)
-                    break
-
-                if not company_people_url(destination):
-                    continue
-
-                current_page_no = page_number(destination)
-
-                if attempt % 5 == 0:
-                    print(
-                        f"Live Next validation {attempt}/60:",
-                        "page=",
-                        current_page_no,
-                    )
-
-                if current_page_no > start_page_number:
-                    print("=" * 60)
-                    print("NEXT PAGE VALIDATED VIA LIVE NEXT")
-                    print("=" * 60)
-                    print("Final next-page URL:", destination)
-                    print("Company scope preserved:", company_ids)
-                    print("Connection-degree handling: NONE")
-                    print("Network parameter: preserved from LinkedIn")
-                    return True
-
-            # Never intentionally leave the workflow on LinkedIn auth/SSR.
-            try:
-                if blocked(self.page.url):
-                    print("Restoring authenticated employee-search page after live Next auth redirect...")
-                    self.page.goto(
-                        before_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                        referer=before_url,
-                    )
-                    self.page.wait_for_timeout(3000)
-            except Exception as ex:
-                print("Post-pagination re-anchor failed:", repr(ex))
-
-            if company_people_url(self.page.url):
-                print("LIVE EMPLOYEE-SEARCH PAGE PRESERVED:", self.page.url)
+                next_control.click(
+                    timeout=15000,
+                    no_wait_after=True,
+                )
+            except Exception as exc:
+                print(
+                    "Live Next click raised:",
+                    repr(exc),
+                )
             else:
-                print("WARNING: authenticated employee-search page could not be preserved after pagination failure.")
+                for attempt in range(1, 61):
+                    try:
+                        owner_page.wait_for_timeout(300)
+                    except Exception:
+                        pass
 
+                    destination = str(
+                        owner_page.url or ""
+                    ).strip()
+
+                    if blocked(destination):
+                        print(
+                            "Live Next redirected to auth/SSR:",
+                            destination,
+                        )
+                        break
+
+                    if (
+                        is_company_people_search(
+                            destination
+                        )
+                        and page_number(destination)
+                        == target_page_number
+                        and company_ids(destination)
+                        == original_company_ids
+                    ):
+                        if employee_dom_ready(
+                            owner_page,
+                            previous_signature,
+                        ):
+                            print("=" * 60)
+                            print("NEXT PAGE VALIDATED VIA LIVE NEXT")
+                            print("=" * 60)
+                            print(
+                                "Final URL:",
+                                destination,
+                            )
+                            return True
+
+                    if attempt % 10 == 0:
+                        print(
+                            f"Live Next validation {attempt}/60:",
+                            destination,
+                        )
+
+        if disabled_next_found:
+            print(
+                "LinkedIn explicitly reported the Next control as disabled."
+            )
+            print(
+                "This is treated as a genuine end-of-results state."
+            )
+            restore_owner_page()
             return False
 
-        except Exception as ex:
-            print("Pagination failed:", repr(ex))
-            try:
-                if before_page is not None:
-                    self.page = before_page
-            except Exception:
-                pass
-            return False
+        restore_ok = restore_owner_page()
+
+        raise RuntimeError(
+            "LinkedIn pagination could not be validated. "
+            f"Current page={current_page_number}; "
+            f"target page={target_page_number}; "
+            f"company={original_company_ids}; "
+            f"restored={restore_ok}. "
+            "The workflow was deliberately prevented from treating "
+            "this navigation failure as end-of-results."
+        )
