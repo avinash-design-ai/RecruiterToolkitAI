@@ -559,15 +559,26 @@ class LinkedInProfilePageV2(BasePage):
             )
 
             # ----------------------------------------------------
-            # Verify page has usable profile content.
+            # Verify page has usable and sufficiently stabilized
+            # authenticated profile content.
+            #
+            # LinkedIn can expose a large partial profile before the
+            # profile header and remaining sections finish rendering.
+            # A simple "body >= 300 chars" check can therefore pass too
+            # early and produce an incomplete DOM. Poll for a real profile
+            # header and a stable body snapshot, with a hard upper bound so
+            # authwall/masked profiles never hang the workflow.
             # ----------------------------------------------------
 
             body_text = ""
+            profile_header_name = ""
+            previous_body_text = None
+            stable_header_rounds = 0
+            max_render_attempts = 10
 
-            for attempt in range(1, 4):
+            for attempt in range(1, max_render_attempts + 1):
 
                 try:
-
                     body_text = (
                         self.page
                         .locator("body")
@@ -577,18 +588,75 @@ class LinkedInProfilePageV2(BasePage):
                 except Exception:
                     body_text = ""
 
+                try:
+                    header = self.page.locator(
+                        "main h2"
+                    ).first
+
+                    if header.count():
+                        profile_header_name = (
+                            header
+                            .inner_text(timeout=1500)
+                            .strip()
+                        )
+                    else:
+                        profile_header_name = ""
+
+                except Exception:
+                    profile_header_name = ""
+
+                try:
+                    mailto_count = self.page.locator(
+                        "a[href*='mailto:']"
+                    ).count()
+                except Exception:
+                    mailto_count = 0
+
                 print(
-                    f"Profile body attempt {attempt}/3:",
-                    len(body_text),
-                    "characters"
+                    f"Profile render readiness attempt "
+                    f"{attempt}/{max_render_attempts}: "
+                    f"body={len(body_text)} chars, "
+                    f"name={profile_header_name[:120]!r}, "
+                    f"mailto={mailto_count}"
                 )
 
-                if len(body_text) >= 300:
-                    break
+                current_body = body_text or ""
 
-                self.page.wait_for_timeout(
-                    1500
-                )
+                if (
+                    profile_header_name
+                    and len(current_body) >= 1000
+                ):
+                    if current_body == previous_body_text:
+                        stable_header_rounds += 1
+                    else:
+                        stable_header_rounds = 0
+
+                    if stable_header_rounds >= 1:
+                        print(
+                            "PROFILE RENDER READY: authenticated profile "
+                            "header present and body stabilized."
+                        )
+                        break
+
+                previous_body_text = current_body
+
+                if attempt < max_render_attempts:
+                    try:
+                        self.page.wait_for_timeout(800)
+                    except Exception:
+                        pass
+
+            else:
+                if profile_header_name:
+                    print(
+                        "PROFILE RENDER READY BY TIMEOUT: profile header "
+                        "was present but body did not fully stabilize."
+                    )
+                else:
+                    print(
+                        "PROFILE RENDER READINESS TIMEOUT: no usable profile "
+                        "header detected; continuing with bounded fallback."
+                    )
 
             if not body_text:
 
