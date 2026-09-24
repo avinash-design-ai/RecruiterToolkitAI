@@ -9,127 +9,163 @@ class CompanyPage(BasePage):
         super().__init__(page)
 
     def search_company(self, company):
+        """
+        Search LinkedIn for the requested company and do not report success
+        until the authenticated page has actually produced company-search
+        results.
 
-        # Store the exact requested company so get_profiles() can validate every result card.
-        self._search_company = company
+        No company/location/profile-count value is hardcoded.
+        """
+        from urllib.parse import quote_plus
 
+        requested_company = str(company or "").strip()
+        if not requested_company:
+            print("ERROR: Empty company name.")
+            return False
 
-        search_box = self.page.locator(
-            "input[placeholder*='looking']"
-        ).first
-
-        # PATCH: Dismiss LinkedIn blocking dialogs before global company search
-        # LinkedIn can leave a modal/dialog over the authenticated Feed page.
-        # Playwright finds the search input but its click is intercepted by the
-        # dialog, causing a 30-second Locator.click timeout.
-        try:
-            dialogs = self.page.locator(
-                "dialog[open]:visible, [role='dialog']:visible"
-            )
-
-            dialog_count = dialogs.count()
-
-            if dialog_count:
-                print(
-                    "Open LinkedIn dialog(s) detected before company search:",
-                    dialog_count,
-                )
-
-                for i in range(dialog_count):
-                    try:
-                        dialog = dialogs.nth(i)
-
-                        try:
-                            dialog_text = (
-                                dialog.inner_text(timeout=2000)
-                                .strip()
-                            )
-                        except Exception:
-                            dialog_text = ""
-
-                        if dialog_text:
-                            print(
-                                "Blocking dialog text:",
-                                dialog_text[:500],
-                            )
-                    except Exception:
-                        pass
-
-                # First use LinkedIn's normal modal-dismiss behavior.
-                self.page.keyboard.press("Escape")
-                self.page.wait_for_timeout(750)
-
-                # Some dialogs do not close on Escape. Try an explicit
-                # Close/Dismiss button inside the remaining dialog only.
-                dialogs = self.page.locator(
-                    "dialog[open]:visible, [role='dialog']:visible"
-                )
-
-                remaining = dialogs.count()
-
-                if remaining:
-                    for i in range(remaining):
-                        try:
-                            dialog = dialogs.nth(i)
-                            close_buttons = dialog.get_by_role(
-                                "button",
-                                name=re.compile(
-                                    r"close|dismiss|not now|cancel",
-                                    re.IGNORECASE,
-                                ),
-                            )
-
-                            if close_buttons.count():
-                                close_buttons.first.click(timeout=5000)
-                                self.page.wait_for_timeout(500)
-                                break
-                        except Exception as ex:
-                            print(
-                                "Dialog close-button attempt failed:",
-                                repr(ex),
-                            )
-
-                dialogs = self.page.locator(
-                    "dialog[open]:visible, [role='dialog']:visible"
-                )
-
-                if dialogs.count():
-                    print(
-                        "WARNING: A LinkedIn dialog is still visible before "
-                        "company-search click; allowing the normal Playwright "
-                        "click to surface a precise failure if it remains blocking."
-                    )
-                else:
-                    print(
-                        "LinkedIn blocking dialog dismissed before company search."
-                    )
-
-        except Exception as ex:
-            # Do not fail the workflow merely because dialog inspection itself
-            # is unavailable. Continue with the existing search behavior.
-            print(
-                "Dialog dismissal check failed; continuing with company search:",
-                repr(ex),
-            )
-
-        search_box.click()
-        search_box.fill(company)
-        search_box.press("Enter")
+        self._search_company = requested_company
 
         print("=" * 60)
-        print("CHECKING PAGE BEFORE WAIT")
+        print("SEARCHING LINKEDIN COMPANY")
         print("=" * 60)
+        print("Requested company:", requested_company)
+        print("Current URL:", self.page.url)
+
+        def is_blocked_url(url):
+            value = str(url or "").lower()
+            return any(
+                marker in value
+                for marker in (
+                    "/login",
+                    "/authwall",
+                    "/checkpoint",
+                    "/uas/login",
+                    "/signup",
+                    "/ssr-login",
+                    "remember-me-auto-login",
+                )
+            )
+
+        def is_company_search_url(url):
+            value = str(url or "").lower()
+            return "/search/results/companies/" in value
+
+        def visible_company_link_count():
+            try:
+                return self.page.locator("a[href*='/company/']:visible").count()
+            except Exception:
+                return 0
+
+        def visible_search_input():
+            selectors = (
+                "input[placeholder*='looking' i]:visible",
+                "input[aria-label*='search' i]:visible",
+                "input[type='search']:visible",
+            )
+            for selector in selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    if locator.count() > 0:
+                        return locator.first
+                except Exception:
+                    continue
+            return None
+
+        search_box = visible_search_input()
+        if search_box is None:
+            print("ERROR: LinkedIn search box was not found.")
+            return False
 
         try:
-            print("URL:", self.page.url)
-            print("TITLE:", self.page.title())
+            search_box.click(timeout=10000)
+            search_box.fill(requested_company)
+            print("Entering company into LinkedIn search:", requested_company)
+            search_box.press("Enter")
+            print("Company search submitted.")
         except Exception as ex:
-            print("PAGE ALREADY CRASHED:", repr(ex))
-            raise
+            print("Primary company-search submission failed:", repr(ex))
+            return False
 
-        self.page.wait_for_timeout(5000)
+        # Wait for the actual result state; never assume five seconds means success.
+        last_url = ""
+        for attempt in range(1, 31):
+            try:
+                self.page.wait_for_timeout(500)
+            except Exception:
+                pass
 
-        print("PAGE SURVIVED WAIT")
+            current_url = str(self.page.url or "").strip()
+            last_url = current_url
+            links = visible_company_link_count()
+
+            if is_blocked_url(current_url):
+                print("ERROR: LinkedIn redirected company search to a blocked page:", current_url)
+                return False
+
+            if links > 0:
+                print(f"Company search results detected: {links} visible company links on attempt {attempt}/30.")
+                return True
+
+            if is_company_search_url(current_url):
+                print(f"Company search results URL detected on attempt {attempt}/30:", current_url)
+                try:
+                    self.page.wait_for_timeout(1000)
+                except Exception:
+                    pass
+                if visible_company_link_count() > 0:
+                    print("Company links hydrated after navigation.")
+                    return True
+
+            if attempt in (8, 16, 24):
+                try:
+                    search_box.press("Enter")
+                    print(f"Re-submitted company search on attempt {attempt}/30.")
+                except Exception:
+                    pass
+
+        print("Company result DOM was not detected after normal LinkedIn search.")
+        print("URL after normal search:", last_url)
+
+        # Generic same-page fallback. The requested company is the only input.
+        fallback_url = (
+            "https://www.linkedin.com/search/results/companies/?keywords="
+            + quote_plus(requested_company)
+        )
+        print("Trying controlled same-page company-search URL fallback:", fallback_url)
+
+        try:
+            self.page.goto(
+                fallback_url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+                referer="https://www.linkedin.com/feed/",
+            )
+            self.page.wait_for_timeout(3000)
+        except Exception as ex:
+            print("Company-search URL fallback failed:", repr(ex))
+            return False
+
+        for attempt in range(1, 21):
+            try:
+                self.page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+            current_url = str(self.page.url or "").strip()
+            links = visible_company_link_count()
+            print(f"Company fallback DOM wait {attempt}/20:", links, "visible /company/ links |", current_url)
+
+            if is_blocked_url(current_url):
+                print("ERROR: Company-search URL fallback reached a blocked page:", current_url)
+                return False
+
+            if links > 0:
+                print("Company search results successfully synchronized.")
+                return True
+
+        print("ERROR: LinkedIn company-search results could not be synchronized.")
+        print("Final company-search URL:", self.page.url)
+        return False
 
     def open_company_result(self, company):
 
