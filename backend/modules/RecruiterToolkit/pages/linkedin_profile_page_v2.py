@@ -296,7 +296,8 @@ class LinkedInProfilePageV2(BasePage):
                         ):
 
                             print(
-                                "PROFILE TAB HIT AUTH/LOGIN PAGE."
+                                "PROFILE TAB HIT AUTH/LOGIN PAGE. "
+                                "Falling through to controlled temporary-tab fallback."
                             )
 
                             try:
@@ -304,7 +305,42 @@ class LinkedInProfilePageV2(BasePage):
                             except Exception:
                                 pass
 
-                            return False
+                        elif "/in/" not in current_url:
+
+                            print(
+                                "PROFILE TAB DID NOT OPEN "
+                                "A REAL /in/ PROFILE. "
+                                "Falling through to controlled temporary-tab fallback."
+                            )
+
+                            try:
+                                profile_page.close()
+                            except Exception:
+                                pass
+
+                        else:
+
+                            # ------------------------------------------------
+                            # Keep the authenticated search page alive.
+                            # Temporarily switch self.page to the profile tab.
+                            # ------------------------------------------------
+
+                            self._original_profile_page = (
+                                search_page
+                            )
+
+                            self._temporary_profile_page = (
+                                profile_page
+                            )
+
+                            self.page = profile_page
+
+                            print(
+                                "Authenticated employee profile "
+                                "opened successfully."
+                            )
+
+                            return True
 
                         if "/in/" not in current_url:
 
@@ -391,9 +427,13 @@ class LinkedInProfilePageV2(BasePage):
             profile_page.goto(
                 profile_url,
                 wait_until="domcontentloaded",
-                timeout=60000
+                timeout=60000,
+                referer=(
+                    search_page.url
+                    if search_page is not None
+                    else "https://www.linkedin.com/feed/"
+                ),
             )
-
             profile_page.wait_for_timeout(
                 4000
             )
