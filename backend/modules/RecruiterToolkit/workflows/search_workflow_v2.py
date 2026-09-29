@@ -98,35 +98,47 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
 
     def _employee_search_page(self):
         """
-        Locate the live authenticated company-scoped employee-search page.
+        Locate a CLEAN authenticated company-scoped employee-search page.
 
-        The page passed into SearchWorkflowProfilePage is CompanyPage's active
-        employee-search tab. Prefer that page explicitly so that, when both the
-        original F-filtered tab and the new unfiltered tab are open, profile
-        navigation never falls back to the wrong people-search tab.
+        Never use a tab containing:
+          - network
+          - pastCompany
         """
-
         def is_valid_search_page(candidate):
             try:
                 if candidate is None or candidate.is_closed():
                     return False
+
                 url = str(candidate.url or "")
                 lower = url.lower()
-                return (
-                    "/search/results/people/" in lower
-                    and "currentcompany=" in lower
-                    and "/login" not in lower
-                    and "/authwall" not in lower
-                    and "/checkpoint" not in lower
-                    and "/ssr-login" not in lower
-                    and "remember-me-auto-login" not in lower
+
+                if (
+                    "/search/results/people/" not in lower
+                    or "currentcompany=" not in lower
+                    or "/login" in lower
+                    or "/authwall" in lower
+                    or "/checkpoint" in lower
+                    or "/ssr-login" in lower
+                    or "remember-me-auto-login" in lower
+                ):
+                    return False
+
+                from urllib.parse import parse_qs, urlsplit
+                query = parse_qs(
+                    urlsplit(url).query,
+                    keep_blank_values=True,
                 )
+
+                if any(str(key).lower() == "network" for key in query):
+                    return False
+
+                if any(str(key).lower() == "pastcompany" for key in query):
+                    return False
+
+                return True
             except Exception:
                 return False
 
-        # IMPORTANT: do not automatically prefer CompanyPage.page here.
-        # An older CompanyPage tab can still contain network=["F"].
-        # Search the browser context for an unfiltered people-search tab first.
         try:
             context = self.page.context
         except Exception:
@@ -137,36 +149,18 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
         except Exception:
             return None
 
-        # Prefer an unfiltered people-search page if multiple company-scoped
-        # search tabs remain open (for example the preserved original F tab).
-        for candidate in reversed(pages):
-            if not is_valid_search_page(candidate):
-                continue
-            try:
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(
-                    urlsplit(candidate.url).query,
-                    keep_blank_values=True,
-                )
-                network = (
-                    query.get("network", [])
-                    or query.get("Network", [])
-                )
-                if not network:
-                    print("Authenticated unfiltered employee-search page found in browser context:")
-                    print(candidate.url)
-                    return candidate
-            except Exception:
-                continue
-
-        # Final fallback: any valid company-scoped employee search page.
         for candidate in reversed(pages):
             if is_valid_search_page(candidate):
-                print("Authenticated employee-search page found in browser context:")
+                print(
+                    "Authenticated CLEAN employee-search page found in browser context:"
+                )
                 print(candidate.url)
                 return candidate
 
-        print("No authenticated company-scoped employee-search page found in browser context.")
+        print(
+            "No authenticated CLEAN company-scoped employee-search page "
+            "found in browser context."
+        )
         return None
 
 
@@ -298,20 +292,10 @@ class SearchWorkflowV2:
 
     def _restore_employee_search_page(self):
         """
-        Re-anchor BOTH SearchWorkflowV2.page and CompanyPage.page to the live
-        authenticated company-scoped LinkedIn people-search tab.
+        Re-anchor workflow and CompanyPage to the CLEAN authenticated
+        company-scoped employee-search tab.
 
-        This is the critical state invariant for V2:
-
-            self.page == self.company_page.page == employee-search Page
-
-        Profile extraction is allowed to use a temporary profile tab, but that
-        tab must never become the page used for the next candidate or for
-        pagination.
-
-        The method never navigates a tab. It only inspects existing Playwright
-        context pages, so it cannot turn a working authenticated session into
-        a login redirect.
+        A tab containing network or pastCompany is never selected.
         """
         context = None
 
@@ -330,7 +314,10 @@ class SearchWorkflowV2:
         try:
             pages = list(context.pages)
         except Exception as ex:
-            print("SEARCH PAGE RESTORE FAILED: could not inspect context pages:", repr(ex))
+            print(
+                "SEARCH PAGE RESTORE FAILED: could not inspect context pages:",
+                repr(ex),
+            )
             return False
 
         valid_pages = []
@@ -344,52 +331,49 @@ class SearchWorkflowV2:
                 lower = url.lower()
 
                 if (
-                    "/search/results/people/" in lower
-                    and "currentcompany=" in lower
-                    and "/login" not in lower
-                    and "/authwall" not in lower
-                    and "/checkpoint" not in lower
-                    and "/ssr-login" not in lower
-                    and "remember-me-auto-login" not in lower
+                    "/search/results/people/" not in lower
+                    or "currentcompany=" not in lower
+                    or "/login" in lower
+                    or "/authwall" in lower
+                    or "/checkpoint" in lower
+                    or "/ssr-login" in lower
+                    or "remember-me-auto-login" in lower
                 ):
-                    valid_pages.append(candidate)
+                    continue
+
+                from urllib.parse import parse_qs, urlsplit
+                query = parse_qs(
+                    urlsplit(url).query,
+                    keep_blank_values=True,
+                )
+
+                if any(str(key).lower() == "network" for key in query):
+                    continue
+
+                if any(str(key).lower() == "pastcompany" for key in query):
+                    continue
+
+                valid_pages.append(candidate)
             except Exception:
                 continue
 
         if not valid_pages:
-            print("SEARCH PAGE RESTORE FAILED: no authenticated company people-search tab exists.")
+            print(
+                "SEARCH PAGE RESTORE FAILED: no CLEAN authenticated "
+                "company people-search tab exists."
+            )
             return False
 
-        # IMPORTANT: prefer an UNFILTERED company people-search tab first.
-        # The original filtered F tab may remain open as a recovery fallback,
-        # but it must never become the active workflow search page.
-        selected = None
-        for candidate in reversed(valid_pages):
-                try:
-                    from urllib.parse import parse_qs, urlsplit
-                    query = parse_qs(
-                        urlsplit(str(candidate.url or "")).query,
-                        keep_blank_values=True,
-                    )
-                    network = (
-                        query.get("network", [])
-                        or query.get("Network", [])
-                    )
-                    if not network:
-                        selected = candidate
-                        break
-                except Exception:
-                    continue
-
-        # Final fallback: choose the newest live people-search tab.
-        if selected is None:
-            selected = valid_pages[-1]
+        selected = valid_pages[-1]
 
         try:
             self.page = selected
             self.company_page.page = selected
         except Exception as ex:
-            print("SEARCH PAGE RESTORE FAILED: could not assign page ownership:", repr(ex))
+            print(
+                "SEARCH PAGE RESTORE FAILED: could not assign page ownership:",
+                repr(ex),
+            )
             return False
 
         print("=" * 60)
@@ -398,6 +382,8 @@ class SearchWorkflowV2:
         print("Workflow page URL:", self.page.url)
         print("CompanyPage page URL:", self.company_page.page.url)
         print("Company-scoped people search:", True)
+        print("Verified: network parameter ABSENT.")
+        print("Verified: pastCompany parameter ABSENT.")
 
         return True
 
