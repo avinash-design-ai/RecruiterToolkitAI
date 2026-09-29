@@ -1377,7 +1377,7 @@ class CompanyPage(BasePage):
                         href,
                         name,
                         card_text,
-                        enforce_location=True
+                        enforce_location=False
                     ):
 
                         print("-" * 60)
@@ -1587,7 +1587,61 @@ class CompanyPage(BasePage):
                                     continue
 
                             if best_container is None:
-                                continue
+                                # LinkedIn sometimes renders a valid employee row
+                                # without exposing a recognizable role/location/class
+                                # signal in the ancestor text. Do not discard the
+                                # candidate at discovery time; profile validation
+                                # remains authoritative for company/location.
+                                fallback_container = None
+                                fallback_text = ""
+                                fallback_level = -1
+                                fallback_link_count = 0
+
+                                for fallback_level_candidate in range(0, 7):
+                                    try:
+                                        fallback_ancestor = link.locator(
+                                            "xpath=" + "/.." * (fallback_level_candidate + 1)
+                                        )
+
+                                        if not fallback_ancestor.count():
+                                            continue
+
+                                        fallback_ancestor_text = normalize_text(
+                                            fallback_ancestor.inner_text(timeout=1000)
+                                        )
+
+                                        if (
+                                            len(fallback_ancestor_text) < 10
+                                            or len(fallback_ancestor_text) > 1800
+                                        ):
+                                            continue
+
+                                        fallback_links = fallback_ancestor.locator(
+                                            "a[href*='/in/']"
+                                        )
+                                        fallback_count = fallback_links.count()
+
+                                        # A real employee row normally contains the
+                                        # employee link plus zero/few related links.
+                                        if fallback_count < 1 or fallback_count > 4:
+                                            continue
+
+                                        fallback_container = fallback_ancestor
+                                        fallback_text = fallback_ancestor_text
+                                        fallback_link_count = fallback_count
+                                        break
+
+                                    except Exception:
+                                        continue
+
+                                if fallback_container is None:
+                                    continue
+
+                                best_container = fallback_container
+                                best_text = fallback_text
+                                best_level = fallback_level
+                                best_link_count = fallback_link_count
+                                best_score = 0
 
                             local_links = best_container.locator(
                                 "a[href*='/in/']"
@@ -1647,7 +1701,7 @@ class CompanyPage(BasePage):
                                 primary_href,
                                 primary_name,
                                 best_text or primary_name,
-                                enforce_location=True,
+                                enforce_location=False,
                             ):
                                 round_added += 1
 
@@ -1862,6 +1916,13 @@ class CompanyPage(BasePage):
             "EMPLOYEE PROFILES EXTRACTED:",
             len(profiles)
         )
+
+        if not profiles:
+            print(
+                "WARNING: No candidates survived DOM discovery. "
+                "Location was NOT enforced during discovery; "
+                "inspect the PASS 2 ancestor diagnostics above."
+            )
 
         print("=" * 60)
 
