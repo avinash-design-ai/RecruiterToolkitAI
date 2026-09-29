@@ -432,6 +432,29 @@ class CompanyPage(BasePage):
             except Exception:
                 return []
 
+        def remove_connection_network(url):
+            """Remove only LinkedIn's connection-degree network parameter."""
+            try:
+                from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+                parsed = urlsplit(str(url or ""))
+                rebuilt = [
+                    (key, value)
+                    for key, value in parse_qsl(
+                        parsed.query,
+                        keep_blank_values=True,
+                    )
+                    if str(key).lower() != "network"
+                ]
+                return urlunsplit((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    urlencode(rebuilt, doseq=True),
+                    parsed.fragment,
+                ))
+            except Exception:
+                return str(url or "")
+
         # CASE 1:
         # Company-result click already landed directly on the people search.
         if is_people_url(current_url):
@@ -452,9 +475,48 @@ class CompanyPage(BasePage):
                 )
                 return False
 
+            # LinkedIn can return network=["F"] after the company click.
+            # That is a first-degree filter even though this workflow disables
+            # connection-degree filtering. Remove only that parameter.
+            sanitized_url = remove_connection_network(current_url)
+            if sanitized_url != current_url:
+                print("FIRST-DEGREE NETWORK FILTER DETECTED.")
+                print("Original LinkedIn people-search URL:", current_url)
+                print("Removing network parameter only.")
+                print("Unfiltered company people-search URL:", sanitized_url)
+                try:
+                    self.page.goto(
+                        sanitized_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                        referer=current_url,
+                    )
+                    self.page.wait_for_timeout(2500)
+                except Exception as ex:
+                    print("ERROR: Failed to open sanitized people-search URL:", repr(ex))
+                    return False
+                current_url = str(self.page.url or "").strip()
+
+            final_ids = company_ids(current_url)
+            if is_blocked_url(current_url) or not is_people_url(current_url) or not final_ids:
+                print("ERROR: Sanitized URL is not a valid company people-search page.")
+                print("Final URL:", current_url)
+                return False
+
+            try:
+                from urllib.parse import urlsplit, parse_qs
+                final_query = parse_qs(urlsplit(current_url).query, keep_blank_values=True)
+                remaining_network = final_query.get("network", []) or final_query.get("Network", [])
+            except Exception:
+                remaining_network = []
+
+            if remaining_network:
+                print("ERROR: network parameter still present after sanitization:", remaining_network)
+                return False
+
             print("Connection-degree handling: DISABLED")
-            print("Preserving LinkedIn's returned search URL unchanged.")
-            print("Company scope preserved:", ids)
+            print("Verified: network parameter ABSENT.")
+            print("Company scope preserved:", final_ids)
 
             self._employee_search_scope_ready = True
 
@@ -462,7 +524,7 @@ class CompanyPage(BasePage):
             print("COMPANY PEOPLE SEARCH READY")
             print("=" * 60)
             print("Final URL:", current_url)
-            print("Company scope preserved:", ids)
+            print("Company scope preserved:", final_ids)
 
             return True
 
@@ -535,8 +597,38 @@ class CompanyPage(BasePage):
                 print("Actual:", final_ids)
                 return False
 
+            sanitized_url = remove_connection_network(final_url)
+            if sanitized_url != final_url:
+                print("FIRST-DEGREE NETWORK FILTER DETECTED ON PEOPLE LINK.")
+                print("Removing network parameter only.")
+                print("Sanitized people-search URL:", sanitized_url)
+                try:
+                    self.page.goto(
+                        sanitized_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                        referer=final_url,
+                    )
+                    self.page.wait_for_timeout(2500)
+                except Exception as ex:
+                    print("ERROR: Failed to open sanitized people-search URL:", repr(ex))
+                    return False
+                final_url = str(self.page.url or "").strip()
+                final_ids = company_ids(final_url)
+
+            try:
+                from urllib.parse import urlsplit, parse_qs
+                final_query = parse_qs(urlsplit(final_url).query, keep_blank_values=True)
+                remaining_network = final_query.get("network", []) or final_query.get("Network", [])
+            except Exception:
+                remaining_network = []
+
+            if remaining_network:
+                print("ERROR: network parameter remains after sanitization:", remaining_network)
+                return False
+
             print("Connection-degree handling: DISABLED")
-            print("Preserving LinkedIn's returned search URL unchanged.")
+            print("Verified: network parameter ABSENT.")
             print("Company scope preserved:", final_ids)
 
             self._employee_search_scope_ready = True
@@ -1445,7 +1537,7 @@ class CompanyPage(BasePage):
                                 primary_href,
                                 primary_name,
                                 best_text or primary_name,
-                                enforce_location=False,
+                                enforce_location=True,
                             ):
                                 round_added += 1
 
@@ -1767,7 +1859,7 @@ class CompanyPage(BasePage):
                     tuple(str(item) for item in values),
                 )
                 for key, values in parse_query(url).items()
-                if str(key).lower() != "page"
+                if str(key).lower() not in {"page", "network"}
             )
 
         def build_next_url(start_url):
@@ -1791,6 +1883,9 @@ class CompanyPage(BasePage):
                             )
                         )
                         page_written = True
+                    continue
+
+                if str(key).lower() == "network":
                     continue
 
                 rebuilt.append(

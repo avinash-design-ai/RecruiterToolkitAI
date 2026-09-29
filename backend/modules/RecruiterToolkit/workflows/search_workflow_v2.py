@@ -124,27 +124,9 @@ class SearchWorkflowProfilePage(LinkedInProfilePageV2):
             except Exception:
                 return False
 
-        # Highest priority: the exact page supplied to this wrapper by
-        # SearchWorkflowV2. This is CompanyPage.page and therefore the active
-        # unfiltered company people-search tab.
-        preferred = getattr(self, "_original_profile_page", None)
-        if is_valid_search_page(preferred):
-            print("Using CompanyPage-owned employee-search tab:")
-            print(preferred.url)
-            return preferred
-
-        # Second priority: current self.page, provided it is actually a
-        # company-scoped people search rather than a temporary profile tab.
-        try:
-            current = self.page
-        except Exception:
-            current = None
-
-        if is_valid_search_page(current):
-            print("Using current authenticated employee-search tab:")
-            print(current.url)
-            return current
-
+        # IMPORTANT: do not automatically prefer CompanyPage.page here.
+        # An older CompanyPage tab can still contain network=["F"].
+        # Search the browser context for an unfiltered people-search tab first.
         try:
             context = self.page.context
         except Exception:
@@ -378,20 +360,11 @@ class SearchWorkflowV2:
             print("SEARCH PAGE RESTORE FAILED: no authenticated company people-search tab exists.")
             return False
 
-        # Prefer the currently-owned CompanyPage tab when it is still valid.
-        selected = None
-        try:
-            owned = self.company_page.page
-            if owned in valid_pages:
-                selected = owned
-        except Exception:
-            pass
-
-        # Otherwise prefer an unfiltered company people-search tab.
+        # IMPORTANT: prefer an UNFILTERED company people-search tab first.
         # The original filtered F tab may remain open as a recovery fallback,
-        # but it must not silently become the active workflow search page.
-        if selected is None:
-            for candidate in reversed(valid_pages):
+        # but it must never become the active workflow search page.
+        selected = None
+        for candidate in reversed(valid_pages):
                 try:
                     from urllib.parse import parse_qs, urlsplit
                     query = parse_qs(
@@ -822,12 +795,31 @@ class SearchWorkflowV2:
 
             remaining_profiles = max_profiles - len(results)
 
+            # max_profiles means VALID RETAINED profiles, not candidates attempted.
+            # Over-fetch from the already location-filtered result rows because
+            # authwalls, missing profile data, duplicates and validation failures
+            # can consume candidates without producing a retained profile.
+            candidate_batch_size = min(
+                100,
+                max(
+                    remaining_profiles * 3,
+                    25,
+                ),
+            )
+
+            print(
+                "Candidate discovery batch size:",
+                candidate_batch_size,
+                "| Valid profiles still required:",
+                remaining_profiles,
+            )
+
             page_results = (
                 self.company_page
                 .get_profiles(
                     company,
                     location,
-                    remaining_profiles,
+                    candidate_batch_size,
                 )
             )
 
@@ -1011,7 +1003,7 @@ class SearchWorkflowV2:
                         print("PROFILE PAGE COULD NOT BE OPENED.")
                         print(
                             "Candidate not retained because the bounded "
-                            "search-result row did not prove the requested location."
+                            "search-result TEXT did not prove the requested location."
                         )
                         print("Continuing to next candidate...")
                         continue
@@ -1193,9 +1185,10 @@ class SearchWorkflowV2:
                         row.get("company", "")
                     ).strip()
 
-                    row_location_value = str(
-                        row.get("location", "")
-                    ).strip()
+                    # CompanyPage stores the requested location in row["location"]
+                    # for output compatibility. It is NOT evidence of the person's
+                    # actual location and must never be used for validation/filling.
+                    row_location_value = ""
 
                     normalized_profile_company = normalize_company(
                         actual_company
@@ -1228,21 +1221,15 @@ class SearchWorkflowV2:
                         location
                     )
 
-                    if (
-                        not actual_location
-                        and row_location_value
-                        and requested_location_for_fill
-                        and requested_location_for_fill
-                        in normalize_location(row_location_value)
-                    ):
+                    # NEVER manufacture actual profile location from the
+                    # requested location or row["location"]. If the profile page
+                    # hides location, validation below uses search_result_text as
+                    # the independent bounded-row evidence.
+                    if not actual_location:
                         print(
-                            "PROFILE LOCATION NORMALIZED FROM SEARCH RESULT:",
-                            repr(actual_location),
-                            "->",
-                            repr(row_location_value),
+                            "PROFILE LOCATION NOT EXPOSED BY PROFILE PAGE; "
+                            "using bounded search-result text only for validation."
                         )
-                        actual_location = row_location_value
-                        data["location"] = row_location_value
 
                     requested_company_normalized = (
                         normalize_company(
