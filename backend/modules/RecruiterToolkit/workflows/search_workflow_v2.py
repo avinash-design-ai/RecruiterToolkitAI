@@ -506,13 +506,27 @@ class SearchWorkflowV2:
         print("A - Searching company")
         print("=" * 60)
 
-        self.company_page.search_company(
+        company_search_ok = self.company_page.search_company(
             company
         )
 
         print(
             "Company search completed."
         )
+
+        # Never continue into open_company_result() when company search failed.
+        # Otherwise the workflow can scan unrelated /company/ links already
+        # present on the LinkedIn Feed.
+        if not company_search_ok:
+            print(
+                "Company search failed. SAFE STOP: refusing to scan unrelated "
+                "Feed company links."
+            )
+            return self._finish(
+                results,
+                company,
+                location
+            )
 
         # -------------------------------------------------
         # B - Open Company
