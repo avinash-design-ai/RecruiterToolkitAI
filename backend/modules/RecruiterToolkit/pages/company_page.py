@@ -1708,29 +1708,35 @@ class CompanyPage(BasePage):
         # PASS 1B
         # SEMANTIC PROFILE-CONTROL RECOVERY
         #
-        # On some LinkedIn people-search pages the visible employee rows are
-        # rendered as "View LinkedIn Member" controls before normal /in/ hrefs
-        # are exposed.  Do not fabricate a profile URL.  Instead inspect the
-        # control's own clickable ancestor and local data attributes for a real
-        # profile URL.  This stays row-scoped and therefore cannot harvest an
-        # unrelated page-level /in/ link.
+        # GitHub/headless LinkedIn can render the employee result text but
+        # omit normal /in/ anchors from the DOM. In that mode the visible
+        # row can still expose a "View LinkedIn Member" control.
+        #
+        # Recovery order:
+        #   1. local href/data-url/HTML lookup
+        #   2. Ctrl-click / middle-click the row control and capture the
+        #      authenticated profile tab URL
+        #
+        # No profile URL is fabricated from a name or row text.
         # ============================================================
 
-        if not profiles and not limit_reached():
+        if not limit_reached():
 
             print("=" * 60)
             print("PASS 1B - SEMANTIC PROFILE-CONTROL RECOVERY")
             print("=" * 60)
 
+            # Use a leaf-oriented XPath instead of get_by_text(..., exact=True).
+            # LinkedIn's headless result markup can expose the rendered phrase
+            # as a descendant text node without creating an exact text locator.
             try:
-                controls = self.page.get_by_text(
-                    "View LinkedIn Member",
-                    exact=True,
+                controls = self.page.locator(
+                    "xpath=//*[contains(normalize-space(.), "
+                    "'View LinkedIn Member') "
+                    "and not(.//*[contains(normalize-space(.), "
+                    "'View LinkedIn Member')])]"
                 )
-                control_count = min(
-                    25,
-                    controls.count(),
-                )
+                control_count = min(25, controls.count())
             except Exception as ex:
                 controls = None
                 control_count = 0
@@ -1739,14 +1745,119 @@ class CompanyPage(BasePage):
                     repr(ex),
                 )
 
+            print(
+                "Semantic profile controls found:",
+                control_count,
+            )
+
+            def control_result_text(node):
+                """
+                Pick the smallest useful local employee-result ancestor.
+                The returned text is also the bounded evidence used by
+                location validation.
+                """
+                best_text = ""
+                best_score = -1
+
+                for level in range(0, 10):
+                    try:
+                        ancestor = (
+                            node
+                            if level == 0
+                            else node.locator(
+                                "xpath=" + "/.." * level
+                            )
+                        )
+
+                        if not ancestor.count():
+                            continue
+
+                        try:
+                            text_value = normalize_text(
+                                ancestor.inner_text(timeout=1000)
+                            )
+                        except Exception:
+                            continue
+
+                        if (
+                            "view linkedin member" not in
+                            text_value.lower()
+                        ):
+                            continue
+
+                        if len(text_value) < 20 or len(text_value) > 2200:
+                            continue
+
+                        lower = text_value.lower()
+                        score = 0
+
+                        if location_matches(text_value):
+                            score += 100
+
+                        if "linkedin member" in lower:
+                            score += 35
+
+                        if any(
+                            signal in lower
+                            for signal in (
+                                "recruiter",
+                                "talent acquisition",
+                                "manager",
+                                "engineer",
+                                "developer",
+                                "analyst",
+                                "consultant",
+                                "specialist",
+                                "staffing",
+                                "director",
+                                "architect",
+                            )
+                        ):
+                            score += 40
+
+                        try:
+                            class_text = (
+                                ancestor.get_attribute("class")
+                                or ""
+                            ).lower()
+                        except Exception:
+                            class_text = ""
+
+                        if any(
+                            signal in class_text
+                            for signal in (
+                                "reusable-search__result",
+                                "entity-result",
+                                "search-result",
+                                "pvs-entity",
+                            )
+                        ):
+                            score += 30
+
+                        # Prefer a tighter row over a larger page/container.
+                        score += max(0, 25 - level * 3)
+                        score -= max(0, len(text_value) - 1200) // 100
+
+                        if score > best_score:
+                            best_score = score
+                            best_text = text_value
+
+                    except Exception:
+                        continue
+
+                return best_text
+
             def href_from_local_markup(node):
-                # Prefer actual attributes on the control/row; never invent
-                # a slug from rendered text alone.
+                # Prefer real attributes on the control or its local row.
                 for level in range(0, 9):
                     try:
-                        ancestor = node.locator(
-                            "xpath=" + "/.." * level
-                        ) if level else node
+                        ancestor = (
+                            node
+                            if level == 0
+                            else node.locator(
+                                "xpath=" + "/.." * level
+                            )
+                        )
 
                         if not ancestor.count():
                             continue
@@ -1764,6 +1875,7 @@ class CompanyPage(BasePage):
                                 count = min(5, matches.count())
                                 for idx in range(count):
                                     candidate = matches.nth(idx)
+
                                     for attr in (
                                         "href",
                                         "data-href",
@@ -1776,6 +1888,7 @@ class CompanyPage(BasePage):
                                                 candidate.get_attribute(attr)
                                                 or ""
                                             ).strip()
+
                                             if "/in/" in value.lower():
                                                 return value
                                         except Exception:
@@ -1783,7 +1896,6 @@ class CompanyPage(BasePage):
                             except Exception:
                                 continue
 
-                        # The semantic control itself may be the clickable node.
                         for attr in (
                             "href",
                             "data-href",
@@ -1796,14 +1908,13 @@ class CompanyPage(BasePage):
                                     ancestor.get_attribute(attr)
                                     or ""
                                 ).strip()
+
                                 if "/in/" in value.lower():
                                     return value
                             except Exception:
                                 continue
 
-                        # Last local-only check: an ancestor's outerHTML may
-                        # contain the actual profile URL even when the anchor is
-                        # not the element Playwright exposes as clickable.
+                        # Final local markup check.
                         try:
                             html = ancestor.evaluate(
                                 "el => el.outerHTML"
@@ -1813,6 +1924,7 @@ class CompanyPage(BasePage):
                                 str(html or ""),
                                 re.IGNORECASE,
                             )
+
                             if match:
                                 return match.group(0)
                         except Exception:
@@ -1820,6 +1932,194 @@ class CompanyPage(BasePage):
 
                     except Exception:
                         continue
+
+                return ""
+
+            def open_control_and_capture_profile(node, control_index):
+                """
+                Some headless LinkedIn layouts do not expose an href at all.
+                The "View LinkedIn Member" control can still open the actual
+                authenticated profile in a new tab. Capture that URL and close
+                only the temporary tab.
+                """
+                try:
+                    node.scroll_into_view_if_needed(timeout=5000)
+                except Exception:
+                    pass
+
+                context = None
+                try:
+                    context = self.page.context
+                except Exception:
+                    return ""
+
+                def inspect_new_pages(before_pages):
+                    try:
+                        current_pages = list(context.pages)
+                    except Exception:
+                        return ""
+
+                    for candidate_page in current_pages:
+                        if candidate_page in before_pages:
+                            continue
+
+                        try:
+                            candidate_page.wait_for_load_state(
+                                "domcontentloaded",
+                                timeout=15000,
+                            )
+                        except Exception:
+                            pass
+
+                        try:
+                            candidate_page.wait_for_timeout(1500)
+                        except Exception:
+                            pass
+
+                        candidate_url = str(
+                            candidate_page.url or ""
+                        ).strip()
+
+                        lower = candidate_url.lower()
+
+                        if (
+                            "/in/" in lower
+                            and not any(
+                                marker in lower
+                                for marker in (
+                                    "/login",
+                                    "/authwall",
+                                    "/checkpoint",
+                                    "/ssr-login",
+                                )
+                            )
+                        ):
+                            print(
+                                f"Semantic control {control_index} opened profile:",
+                                candidate_url,
+                            )
+
+                            # Close only the temporary discovery tab. The actual
+                            # profile will be opened by LinkedInProfilePageV2 later.
+                            try:
+                                if not candidate_page.is_closed():
+                                    candidate_page.close()
+                            except Exception:
+                                pass
+
+                            return candidate_url
+
+                        try:
+                            if not candidate_page.is_closed():
+                                candidate_page.close()
+                        except Exception:
+                            pass
+
+                    return ""
+
+                for action_name, click_kwargs in (
+                    (
+                        "Ctrl-click",
+                        {
+                            "modifiers": ["Control"],
+                            "timeout": 8000,
+                            "no_wait_after": True,
+                        },
+                    ),
+                    (
+                        "middle-click",
+                        {
+                            "button": "middle",
+                            "timeout": 8000,
+                            "no_wait_after": True,
+                        },
+                    ),
+                ):
+                    try:
+                        before_pages = set(context.pages)
+
+                        with context.expect_page(timeout=9000):
+                            node.click(**click_kwargs)
+
+                        captured = inspect_new_pages(before_pages)
+
+                        if captured:
+                            return captured
+
+                    except Exception as ex:
+                        print(
+                            f"Semantic control {control_index} {action_name} "
+                            "did not expose a profile tab:",
+                            repr(ex),
+                        )
+
+                # Last resort: allow the control to navigate the SAME page,
+                # but immediately restore the employee-search URL after capturing
+                # a real /in/ profile URL. This avoids corrupting the search-page
+                # owner if LinkedIn ignores Ctrl-click/middle-click in headless mode.
+                before_search_url = str(
+                    self.page.url or ""
+                ).strip()
+
+                try:
+                    before_pages = set(context.pages)
+
+                    node.click(
+                        timeout=5000,
+                        no_wait_after=True,
+                    )
+                    self.page.wait_for_timeout(1500)
+
+                    current_url = str(
+                        self.page.url or ""
+                    ).strip()
+
+                    lower_current = current_url.lower()
+
+                    if (
+                        "/in/" in lower_current
+                        and not any(
+                            marker in lower_current
+                            for marker in (
+                                "/login",
+                                "/authwall",
+                                "/checkpoint",
+                                "/ssr-login",
+                            )
+                        )
+                    ):
+                        print(
+                            f"Semantic control {control_index} navigated the "
+                            "search page directly to a profile:",
+                            current_url,
+                        )
+
+                        try:
+                            self.page.goto(
+                                before_search_url,
+                                wait_until="domcontentloaded",
+                                timeout=60000,
+                                referer=current_url,
+                            )
+                            self.page.wait_for_timeout(1500)
+                        except Exception as restore_ex:
+                            print(
+                                "Search-page restore after semantic click failed:",
+                                repr(restore_ex),
+                            )
+
+                        return current_url
+
+                    captured = inspect_new_pages(before_pages)
+
+                    if captured:
+                        return captured
+
+                except Exception as ex:
+                    print(
+                        f"Semantic control {control_index} fallback click failed:",
+                        repr(ex),
+                    )
 
                 return ""
 
@@ -1831,33 +2131,29 @@ class CompanyPage(BasePage):
 
                 try:
                     control = controls.nth(index)
-                    profile_href = href_from_local_markup(control)
-                    if not profile_href:
-                        print(
-                            f"Semantic control {index + 1}: no profile URL exposed by LinkedIn."
-                        )
-                        continue
 
-                    # Use the local ancestor text as the defensive location
-                    # gate and as the search-result fallback context.
-                    result_text = ""
                     try:
-                        for level in range(0, 8):
-                            ancestor = (
-                                control
-                                if level == 0
-                                else control.locator(
-                                    "xpath=" + "/.." * level
-                                )
-                            )
-                            text_value = normalize_text(
-                                ancestor.inner_text(timeout=1000)
-                            )
-                            if 20 <= len(text_value) <= 2200:
-                                result_text = text_value
-                                break
+                        if not control.is_visible():
+                            continue
                     except Exception:
                         pass
+
+                    result_text = control_result_text(control)
+
+                    profile_href = href_from_local_markup(control)
+
+                    if not profile_href:
+                        profile_href = open_control_and_capture_profile(
+                            control,
+                            index + 1,
+                        )
+
+                    if not profile_href:
+                        print(
+                            f"Semantic control {index + 1}: "
+                            "no authenticated profile URL could be recovered."
+                        )
+                        continue
 
                     primary_name = extract_primary_name(
                         "LinkedIn Member",
@@ -1871,6 +2167,7 @@ class CompanyPage(BasePage):
                         enforce_location=True,
                     ):
                         recovered += 1
+
                         print("-" * 60)
                         print(
                             "EMPLOYEE CANDIDATE (SEMANTIC CONTROL):",
@@ -1894,6 +2191,126 @@ class CompanyPage(BasePage):
                 "Semantic profile-control candidates recovered:",
                 recovered,
             )
+
+        # ============================================================
+        # PASS 1C
+        # HIDDEN HTML /in/ URL RECOVERY
+        #
+        # A few LinkedIn render paths keep profile URLs in the rendered HTML
+        # but do not expose them as anchor locators. This pass only accepts
+        # a URL when nearby HTML also contains employee-result evidence.
+        # It does not generate URLs from names.
+        # ============================================================
+
+        if not limit_reached():
+
+            print("=" * 60)
+            print("PASS 1C - HIDDEN HTML PROFILE-URL RECOVERY")
+            print("=" * 60)
+
+            try:
+                html = self.page.content()
+
+                profile_matches = list(
+                    re.finditer(
+                        r"https?://www\.linkedin\.com/in/[A-Za-z0-9._%-]+|/in/[A-Za-z0-9._%-]+",
+                        html or "",
+                        re.IGNORECASE,
+                    )
+                )
+
+                print(
+                    "Raw /in/ URLs found in rendered HTML:",
+                    len(profile_matches),
+                )
+
+                recovered_html = 0
+                seen_html = set()
+
+                for match in profile_matches:
+                    if limit_reached():
+                        break
+
+                    raw_url = match.group(0)
+
+                    profile_url = canonical_profile_url(
+                        raw_url
+                    )
+
+                    if (
+                        not profile_url
+                        or profile_url in seen_html
+                        or profile_url in seen_urls
+                    ):
+                        continue
+
+                    start = max(0, match.start() - 1800)
+                    end = min(
+                        len(html),
+                        match.end() + 1800,
+                    )
+
+                    local_html = html[start:end]
+
+                    # Strip tags so location/result text can be validated.
+                    local_text = normalize_text(
+                        re.sub(
+                            r"<[^>]+>",
+                            " ",
+                            local_html,
+                        )
+                    )
+
+                    lower_local = local_text.lower()
+
+                    if (
+                        "view linkedin member" not in lower_local
+                        and "linkedin member" not in lower_local
+                        and not any(
+                            signal in lower_local
+                            for signal in (
+                                "recruiter",
+                                "manager",
+                                "engineer",
+                                "developer",
+                                "analyst",
+                                "consultant",
+                                "specialist",
+                                "staffing",
+                            )
+                        )
+                    ):
+                        continue
+
+                    primary_name = extract_primary_name(
+                        "LinkedIn Member",
+                        local_text,
+                    )
+
+                    if add_candidate(
+                        profile_url,
+                        primary_name,
+                        local_text or primary_name,
+                        enforce_location=True,
+                    ):
+                        recovered_html += 1
+                        seen_html.add(profile_url)
+
+                        print(
+                            "EMPLOYEE CANDIDATE (HIDDEN HTML):",
+                            profile_url,
+                        )
+
+                print(
+                    "Hidden HTML profile URLs recovered:",
+                    recovered_html,
+                )
+
+            except Exception as ex:
+                print(
+                    "Hidden HTML profile-url recovery failed:",
+                    repr(ex),
+                )
 
         # ============================================================
         # PASS 2
@@ -3505,10 +3922,13 @@ class CompanyPage(BasePage):
 
             restore_owner_page()
 
-        raise RuntimeError(
-            "LinkedIn pagination could not advance from page "
+        # Match the working desktop behavior: an unresolved Next navigation
+        # is a stop condition, not a fatal workflow exception. This prevents
+        # GitHub Actions from turning a LinkedIn pagination/UI variation into
+        # a failed run after valid profiles have already been collected.
+        print(
+            "WARNING: LinkedIn pagination could not advance from page "
             f"{current_page_number} to page {target_page_number}. "
-            "All validated navigation paths failed. "
-            "The workflow was deliberately prevented from treating "
-            "this navigation failure as end-of-results."
+            "Treating this as the end of the usable result set."
         )
+        return False

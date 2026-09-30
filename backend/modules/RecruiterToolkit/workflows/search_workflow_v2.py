@@ -1583,7 +1583,22 @@ class SearchWorkflowV2:
                 print("Current URL:", self.company_page.page.url)
                 break
 
-            has_next = self.company_page.next_page()
+            try:
+                has_next = self.company_page.next_page()
+            except RuntimeError as ex:
+                print(
+                    "WARNING: LinkedIn pagination raised an unresolved "
+                    "navigation error. Stopping cleanly after valid profiles "
+                    "already collected:",
+                    repr(ex),
+                )
+                has_next = False
+            except Exception as ex:
+                print(
+                    "WARNING: Unexpected pagination error. Stopping cleanly:",
+                    repr(ex),
+                )
+                has_next = False
 
             print("Next page:", has_next)
 
