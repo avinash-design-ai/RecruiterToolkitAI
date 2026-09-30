@@ -4,6 +4,7 @@ from urllib.parse import urlparse, parse_qs
 
 import re
 class CompanyPage(BasePage):
+    # ROOT_CAUSE_LOCATION_FILTER_V2
 
     def __init__(self, page):
         super().__init__(page)
@@ -805,54 +806,272 @@ class CompanyPage(BasePage):
 
     def apply_location(self, location):
         """
-        Keep the already-working company people-search page intact.
+        Apply the requested location to the authenticated company-scoped
+        LinkedIn people-search query using geoUrn.
 
-        IMPORTANT: LinkedIn's autocomplete rows are not exposed reliably to
-        Playwright in the GitHub Actions browser. We therefore do NOT try to
-        click the location picker here anymore. Doing so was the source of the
-        repeated failures.
-
-        Location is verified at result-card level in get_profiles(). Only
-        employee cards whose rendered text contains the requested location are
-        returned for profile/email processing. This preserves company scope and
-        prevents unrelated profiles from being opened.
+        This is the real location-filter stage. Candidate discovery must only
+        start after this method has verified that LinkedIn accepted the geo filter.
         """
-
         print("=" * 60)
-        print("LOCATION CHECK / RESULT-LEVEL FILTER")
+        print("APPLYING LINKEDIN LOCATION FILTER")
         print("=" * 60)
 
         requested_location = str(location or "").strip()
-        current_url = self.page.url
-
+        current_url = str(self.page.url or "").strip()
         print("Requested location:", requested_location)
-        print("Current URL:", current_url)
+        print("Current URL before location filter:", current_url)
+
+        if not requested_location:
+            print("No location requested; location facet remains unset.")
+            return True
+
+        import json
+        from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
+
+        def pairs(url):
+            return parse_qsl(urlsplit(str(url or "")).query, keep_blank_values=True)
+
+        def values(url):
+            result = {}
+            for key, value in pairs(url):
+                result.setdefault(str(key), []).append(value)
+            return result
+
+        def company_ids(url):
+            query = values(url)
+            return query.get("currentCompany", []) or query.get("currentcompany", [])
+
+        def normalized(value):
+            value = str(value or "").replace("\xa0", " ").strip().lower()
+            value = re.sub(r"[^a-z0-9]+", " ", value)
+            return " ".join(value.split())
+
+        def blocked(url):
+            lower = str(url or "").lower()
+            return any(
+                marker in lower
+                for marker in (
+                    "/login", "/authwall", "/checkpoint", "/uas/login",
+                    "/signup", "/ssr-login", "remember-me-auto-login",
+                )
+            )
+
+        if "/search/results/people/" not in current_url.lower() or not company_ids(current_url):
+            print("[LOCATION ERROR] Current page is not a company-scoped people search.")
+            return False
+
+        if blocked(current_url):
+            print("[LOCATION ERROR] Current people-search page is blocked/authwalled.")
+            return False
+
+        expected_company_ids = company_ids(current_url)
+        requested_normalized = normalized(requested_location)
+        requested_tokens = set(requested_normalized.split())
+
+        def extract_geo_candidates(payload):
+            candidates = []
+
+            def walk(value):
+                if isinstance(value, list):
+                    for item in value:
+                        walk(item)
+                    return
+                if not isinstance(value, dict):
+                    return
+
+                display = ""
+                for key in ("displayText", "displayName", "name", "label", "title", "text"):
+                    item = value.get(key)
+                    if isinstance(item, str) and item.strip():
+                        display = item.strip()
+                        break
+
+                geo_id = ""
+                for key in ("geoId", "geoID", "geoUrn", "entityUrn", "entity", "urn", "id"):
+                    item = value.get(key)
+                    if item is None:
+                        continue
+                    match = re.search(r"(?:urn:li:geo:)?([0-9]{3,})", str(item))
+                    if match:
+                        geo_id = match.group(1)
+                        break
+
+                if display and geo_id:
+                    candidates.append((display, geo_id))
+
+                for child in value.values():
+                    walk(child)
+
+            walk(payload)
+            return candidates
+
+        def fetch_geo(endpoint):
+            try:
+                response = self.page.evaluate(
+                    """
+                    async (url) => {
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'same-origin',
+                            headers: { 'Accept': 'application/json, text/plain, */*' }
+                        });
+                        return {
+                            status: response.status,
+                            body: await response.text()
+                        };
+                    }
+                    """,
+                    endpoint,
+                )
+            except Exception as exc:
+                print("GEO TYPEAHEAD REQUEST FAILED:", repr(exc))
+                return None
+
+            if not isinstance(response, dict):
+                return None
+
+            status = int(response.get("status") or 0)
+            body = str(response.get("body") or "").strip()
+            print("GEO TYPEAHEAD HTTP STATUS:", status)
+            if status != 200 or not body:
+                return None
+
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                match = re.search(r"(\[.*\]|\{.*\})", body, re.S)
+                if not match:
+                    return None
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    return None
+
+        base = (
+            "https://www.linkedin.com/jobs-guest/api/typeaheadHits"
+            f"?origin=jserp&typeaheadType=GEO&query={quote_plus(requested_location)}"
+        )
+
+        endpoints = [
+            base,
+            base + "&geoTypes=STATE",
+        ]
+
+        candidates = []
+        for endpoint in endpoints:
+            payload = fetch_geo(endpoint)
+            if payload is None:
+                continue
+            candidates.extend(extract_geo_candidates(payload))
+
+        if not candidates:
+            print("[LOCATION ERROR] GEO typeahead returned no usable location candidate.")
+            return False
+
+        ranked = []
+        seen = set()
+        for display, geo_id in candidates:
+            key = (normalized(display), str(geo_id))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            display_norm = normalized(display)
+            display_tokens = set(display_norm.split())
+            score = 0
+            if display_norm == requested_normalized:
+                score += 1000
+            if requested_normalized and display_norm.startswith(requested_normalized + " "):
+                score += 900
+            if requested_normalized and requested_normalized in display_norm:
+                score += 800
+            if requested_tokens and requested_tokens.issubset(display_tokens):
+                score += 700
+            ranked.append((score, display, str(geo_id)))
+
+        ranked.sort(key=lambda item: (-item[0], item[1].lower(), item[2]))
+        score, display, geo_id = ranked[0]
+
+        if score < 700:
+            print("[LOCATION ERROR] No sufficiently relevant GEO match for:", requested_location)
+            print("Top candidates:", ranked[:8])
+            return False
+
+        print("Resolved LinkedIn location:", display)
+        print("Resolved geo id:", geo_id)
+        print("GEO match score:", score)
+
+        parsed = urlsplit(current_url)
+        rebuilt = []
+        for key, value in pairs(current_url):
+            if str(key).lower() in {"page", "network", "pastcompany", "geourn"}:
+                continue
+            rebuilt.append((key, value))
+        rebuilt.append(("geoUrn", json.dumps([geo_id], separators=(",", ":"))))
+
+        filtered_url = urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, urlencode(rebuilt, doseq=True), parsed.fragment)
+        )
+
+        print("Applying filtered people-search URL:")
+        print(filtered_url)
 
         try:
-            from urllib.parse import urlsplit, parse_qs
-            query = parse_qs(
-                urlsplit(current_url).query,
-                keep_blank_values=True
+            self.page.goto(
+                filtered_url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+                referer=current_url,
             )
-        except Exception as ex:
-            print("[LOCATION ERROR] Could not inspect current URL:", repr(ex))
+            self.page.wait_for_timeout(3000)
+        except Exception as exc:
+            print("[LOCATION ERROR] Geo-filtered navigation failed:", repr(exc))
             return False
 
-        current_company = query.get("currentCompany", [])
+        final_url = str(self.page.url or "").strip()
+        final_values = values(final_url)
+        final_company_ids = company_ids(final_url)
+        final_geo = final_values.get("geoUrn", []) or final_values.get("geoURN", [])
+        final_network = final_values.get("network", []) or final_values.get("Network", [])
+        final_past = final_values.get("pastCompany", []) or final_values.get("pastcompany", [])
 
-        if (
-            "/search/results/people/" not in current_url.lower()
-            or not current_company
-            or "/in/" in current_url.lower()
-        ):
-            print("[LOCATION ERROR] Not on company-scoped people search.")
+        print("Final URL after location filter:", final_url)
+        print("Final company scope:", final_company_ids)
+        print("Final geoUrn:", final_geo)
+        print("Final network:", final_network)
+        print("Final pastCompany:", final_past)
+
+        if blocked(final_url):
+            print("[LOCATION ERROR] Geo-filtered navigation reached an authwall/login.")
+            return False
+        if "/search/results/people/" not in final_url.lower():
+            print("[LOCATION ERROR] Geo-filtered navigation is not a people-search page.")
+            return False
+        if final_company_ids != expected_company_ids:
+            print("[LOCATION ERROR] currentCompany changed during location filtering.")
+            print("Expected:", expected_company_ids)
+            print("Actual:", final_company_ids)
+            return False
+        if final_network:
+            print("[LOCATION ERROR] network parameter survived location filtering.")
+            return False
+        if final_past:
+            print("[LOCATION ERROR] pastCompany parameter survived location filtering.")
+            return False
+        if not final_geo:
+            print("[LOCATION ERROR] geoUrn is missing from the final people-search URL.")
             return False
 
-        print("Company scope preserved:", current_company)
-        print("LinkedIn location autocomplete bypassed safely.")
-        print("Location will be enforced from each employee result card.")
-        print("Ready for profile discovery.")
+        self._employee_search_location = {
+            "requested": requested_normalized,
+            "display": display,
+            "geo_id": geo_id,
+        }
 
+        print("LOCATION FILTER APPLIED TO LINKEDIN SEARCH.")
+        print("Connection-degree filtering: DISABLED (network absent).")
+        print("Company scope preserved:", final_company_ids)
+        print("Location scope preserved by geoUrn:", final_geo)
         return True
 
 
@@ -1431,7 +1650,7 @@ class CompanyPage(BasePage):
                         href,
                         name,
                         card_text,
-                        enforce_location=False
+                        enforce_location=True
                     ):
 
                         print("-" * 60)
@@ -1755,7 +1974,7 @@ class CompanyPage(BasePage):
                                 primary_href,
                                 primary_name,
                                 best_text or primary_name,
-                                enforce_location=False,
+                                enforce_location=True,
                             ):
                                 round_added += 1
 
@@ -2084,7 +2303,7 @@ class CompanyPage(BasePage):
                     tuple(str(item) for item in values),
                 )
                 for key, values in parse_query(url).items()
-                if str(key).lower() not in {"page", "network"}
+                if str(key).lower() not in {"page", "network", "pastcompany"}
             )
 
         def build_next_url(start_url):
@@ -2110,7 +2329,7 @@ class CompanyPage(BasePage):
                         page_written = True
                     continue
 
-                if str(key).lower() == "network":
+                if str(key).lower() in {"network", "pastcompany"}:
                     continue
 
                 rebuilt.append(
