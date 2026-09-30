@@ -1316,6 +1316,9 @@ class CompanyPage(BasePage):
 
             return True
 
+
+        # ROOT_CAUSE_EXTRACTION_PAGINATION_V5: hydration gate + semantic profile-control recovery +
+        # defense-in-depth result-location validation.
         # ============================================================
         # VERIFY COMPANY PEOPLE SEARCH
         # ============================================================
@@ -1510,14 +1513,34 @@ class CompanyPage(BasePage):
                 "employee-result text"
             )
 
+            # A text-only result is NOT enough for candidate extraction.
+            # LinkedIn can paint the search-result text before it hydrates the
+            # profile links/row controls.  The old implementation stopped on
+            # rendered_result_text alone, immediately entered PASS 1/2, saw
+            # zero /in/ links, and then reported a false "no candidates" page.
             if (
                 rendered_profile_links > 0
                 or rendered_result_cards > 0
-                or rendered_result_text
             ):
 
                 print(
-                    "Employee result DOM/text detected."
+                    "Employee result DOM detected."
+                )
+
+                break
+
+            if (
+                rendered_result_text
+                and attempt >= 20
+            ):
+
+                print(
+                    "Employee result text detected, but no profile "
+                    "links/cards hydrated after 20 polling attempts."
+                )
+
+                print(
+                    "Continuing with semantic profile-control recovery."
                 )
 
                 break
@@ -1680,6 +1703,197 @@ class CompanyPage(BasePage):
                         f"{card_index + 1} inspection failed:",
                         repr(ex)
                     )
+
+        # ============================================================
+        # PASS 1B
+        # SEMANTIC PROFILE-CONTROL RECOVERY
+        #
+        # On some LinkedIn people-search pages the visible employee rows are
+        # rendered as "View LinkedIn Member" controls before normal /in/ hrefs
+        # are exposed.  Do not fabricate a profile URL.  Instead inspect the
+        # control's own clickable ancestor and local data attributes for a real
+        # profile URL.  This stays row-scoped and therefore cannot harvest an
+        # unrelated page-level /in/ link.
+        # ============================================================
+
+        if not profiles and not limit_reached():
+
+            print("=" * 60)
+            print("PASS 1B - SEMANTIC PROFILE-CONTROL RECOVERY")
+            print("=" * 60)
+
+            try:
+                controls = self.page.get_by_text(
+                    "View LinkedIn Member",
+                    exact=True,
+                )
+                control_count = min(
+                    25,
+                    controls.count(),
+                )
+            except Exception as ex:
+                controls = None
+                control_count = 0
+                print(
+                    "Semantic profile-control lookup failed:",
+                    repr(ex),
+                )
+
+            def href_from_local_markup(node):
+                # Prefer actual attributes on the control/row; never invent
+                # a slug from rendered text alone.
+                for level in range(0, 9):
+                    try:
+                        ancestor = node.locator(
+                            "xpath=" + "/.." * level
+                        ) if level else node
+
+                        if not ancestor.count():
+                            continue
+
+                        for selector in (
+                            "a[href*='/in/']",
+                            "[href*='/in/']",
+                            "[data-href*='/in/']",
+                            "[data-url*='/in/']",
+                            "[data-profile-url*='/in/']",
+                            "[data-redirect-url*='/in/']",
+                        ):
+                            try:
+                                matches = ancestor.locator(selector)
+                                count = min(5, matches.count())
+                                for idx in range(count):
+                                    candidate = matches.nth(idx)
+                                    for attr in (
+                                        "href",
+                                        "data-href",
+                                        "data-url",
+                                        "data-profile-url",
+                                        "data-redirect-url",
+                                    ):
+                                        try:
+                                            value = (
+                                                candidate.get_attribute(attr)
+                                                or ""
+                                            ).strip()
+                                            if "/in/" in value.lower():
+                                                return value
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                continue
+
+                        # The semantic control itself may be the clickable node.
+                        for attr in (
+                            "href",
+                            "data-href",
+                            "data-url",
+                            "data-profile-url",
+                            "data-redirect-url",
+                        ):
+                            try:
+                                value = (
+                                    ancestor.get_attribute(attr)
+                                    or ""
+                                ).strip()
+                                if "/in/" in value.lower():
+                                    return value
+                            except Exception:
+                                continue
+
+                        # Last local-only check: an ancestor's outerHTML may
+                        # contain the actual profile URL even when the anchor is
+                        # not the element Playwright exposes as clickable.
+                        try:
+                            html = ancestor.evaluate(
+                                "el => el.outerHTML"
+                            )
+                            match = re.search(
+                                r"(?:https?://www\.linkedin\.com)?/in/[A-Za-z0-9._%-]+",
+                                str(html or ""),
+                                re.IGNORECASE,
+                            )
+                            if match:
+                                return match.group(0)
+                        except Exception:
+                            pass
+
+                    except Exception:
+                        continue
+
+                return ""
+
+            recovered = 0
+
+            for index in range(control_count):
+                if limit_reached():
+                    break
+
+                try:
+                    control = controls.nth(index)
+                    profile_href = href_from_local_markup(control)
+                    if not profile_href:
+                        print(
+                            f"Semantic control {index + 1}: no profile URL exposed by LinkedIn."
+                        )
+                        continue
+
+                    # Use the local ancestor text as the defensive location
+                    # gate and as the search-result fallback context.
+                    result_text = ""
+                    try:
+                        for level in range(0, 8):
+                            ancestor = (
+                                control
+                                if level == 0
+                                else control.locator(
+                                    "xpath=" + "/.." * level
+                                )
+                            )
+                            text_value = normalize_text(
+                                ancestor.inner_text(timeout=1000)
+                            )
+                            if 20 <= len(text_value) <= 2200:
+                                result_text = text_value
+                                break
+                    except Exception:
+                        pass
+
+                    primary_name = extract_primary_name(
+                        "LinkedIn Member",
+                        result_text,
+                    )
+
+                    if add_candidate(
+                        profile_href,
+                        primary_name,
+                        result_text or primary_name,
+                        enforce_location=True,
+                    ):
+                        recovered += 1
+                        print("-" * 60)
+                        print(
+                            "EMPLOYEE CANDIDATE (SEMANTIC CONTROL):",
+                            canonical_profile_url(profile_href),
+                        )
+                        print(
+                            "Primary anchor:",
+                            primary_name[:200],
+                        )
+                        print(
+                            "Connection degree: IGNORED",
+                        )
+
+                except Exception as ex:
+                    print(
+                        f"Semantic profile-control {index + 1} inspection failed:",
+                        repr(ex),
+                    )
+
+            print(
+                "Semantic profile-control candidates recovered:",
+                recovered,
+            )
 
         # ============================================================
         # PASS 2
@@ -2192,9 +2406,10 @@ class CompanyPage(BasePage):
 
         if not profiles:
             print(
-                "WARNING: No candidates survived DOM discovery. "
-                "Location was NOT enforced during discovery; "
-                "inspect the PASS 2 ancestor diagnostics above."
+                "WARNING: No extractable profile URL survived DOM discovery. "
+                "The LinkedIn page did render employee-result text, but it "
+                "did not expose usable profile URLs in anchors or semantic "
+                "profile controls."
             )
 
         print("=" * 60)
@@ -2469,6 +2684,85 @@ class CompanyPage(BasePage):
                 )
             ).hexdigest()
 
+        def active_page_indicator(active_page, expected_page):
+            """Return True when LinkedIn itself marks the requested page active."""
+            expected = str(expected_page)
+
+            for selector in (
+                "[aria-current='page']",
+                "button[aria-current='page']",
+                "a[aria-current='page']",
+            ):
+                try:
+                    locator = active_page.locator(selector)
+                    count = min(20, locator.count())
+                    for index in range(count):
+                        try:
+                            text_value = " ".join(
+                                str(
+                                    locator.nth(index).inner_text(timeout=500)
+                                    or ""
+                                ).split()
+                            ).strip()
+                            if text_value == expected:
+                                return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+            # Fallback for LinkedIn controls that expose page state in labels.
+            for selector in (
+                "button:visible",
+                "a:visible",
+                "[role='button']:visible",
+            ):
+                try:
+                    controls = active_page.locator(selector)
+                    count = min(250, controls.count())
+                    for index in range(count):
+                        control = controls.nth(index)
+                        parts = []
+                        for attr in (
+                            "aria-label",
+                            "title",
+                            "data-testid",
+                            "data-control-name",
+                        ):
+                            try:
+                                value = (
+                                    control.get_attribute(attr)
+                                    or ""
+                                ).strip()
+                                if value:
+                                    parts.append(value)
+                            except Exception:
+                                pass
+                        try:
+                            value = (
+                                control.inner_text(timeout=300)
+                                or ""
+                            ).strip()
+                            if value:
+                                parts.append(value)
+                        except Exception:
+                            pass
+
+                        label = " ".join(parts).strip().lower()
+                        if (
+                            expected.lower() == label
+                            or f"page {expected.lower()}" in label
+                        ) and (
+                            "current" in label
+                            or "selected" in label
+                            or "page" in label
+                        ):
+                            return True
+                except Exception:
+                    continue
+
+            return False
+
         def result_state(active_page):
             visible_links = 0
             result_cards = 0
@@ -2619,6 +2913,16 @@ class CompanyPage(BasePage):
                     and current_signature != previous_signature
                 )
 
+                page_identity_confirmed = active_page_indicator(
+                    active_page,
+                    expected_page,
+                )
+
+                print(
+                    "Active page indicator:",
+                    page_identity_confirmed,
+                )
+
                 # Explicit LinkedIn no-results is an END state, not a successful page.
                 if (
                     no_results
@@ -2635,7 +2939,10 @@ class CompanyPage(BasePage):
                     return "END_OF_RESULTS"
 
                 if (
-                    signature_changed
+                    (
+                        signature_changed
+                        or page_identity_confirmed
+                    )
                     and (
                         visible_links > 0
                         or result_cards > 0
