@@ -1077,2858 +1077,550 @@ class CompanyPage(BasePage):
 
 
 
-    def get_profiles(
-        self,
-        company="",
-        location="",
-        max_profiles=None,
-    ):
+    def open_result_profile(self, control_index):
+        """Open one rendered `View LinkedIn Member` result in a temporary tab.
+
+        This is used only when LinkedIn has rendered the employee result but
+        has not exposed a normal `/in/` href in the DOM. The URL is learned
+        from the actual LinkedIn click; it is never fabricated from text.
         """
-        Extract employee candidates from the authenticated company-scoped
-        LinkedIn people-search page.
+        import re
 
-        PASS 1:
-            Use known LinkedIn result-card selectors.
+        try:
+            controls = self.page.locator(
+                "xpath=//*[normalize-space(text())='View LinkedIn Member']"
+            )
+            count = controls.count()
+        except Exception as exc:
+            print("Profile-control lookup failed:", repr(exc))
+            return None, ""
 
-        PASS 2:
-            Inspect each visible /in/ link independently using only local
-            Playwright ancestors. Never select a page-level ancestor that
-            contains many employees.
+        if control_index < 0 or control_index >= count:
+            print(
+                "Profile-control index out of range:",
+                control_index,
+                "of",
+                count,
+            )
+            return None, ""
 
-        Connection degree is ignored.
+        control = controls.nth(control_index)
+        before_url = str(self.page.url or "").strip()
 
-        Location is authoritative at profile-validation level. The DOM
-        discovery stage does not discard a candidate merely because LinkedIn's
-        virtualized result markup does not expose location text.
+        try:
+            clickable = control.locator(
+                "xpath=ancestor-or-self::*[self::a or self::button or @role='button'][1]"
+            )
+            if clickable.count() > 0:
+                control = clickable.first
+        except Exception:
+            pass
+
+        def is_profile_url(url):
+            value = str(url or "").strip().lower()
+            return (
+                "/in/" in value
+                and "/login" not in value
+                and "/authwall" not in value
+                and "/checkpoint" not in value
+                and "/ssr-login" not in value
+            )
+
+        def canonical(url):
+            value = str(url or "").strip()
+            if value.startswith("/"):
+                value = "https://www.linkedin.com" + value
+            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            # Normalize the host so linkedin.com and www.linkedin.com are
+            # treated as the same profile.
+            value = re.sub(
+                r"^https?://(?:www\.)?linkedin\.com",
+                "https://www.linkedin.com",
+                value,
+                flags=re.IGNORECASE,
+            )
+            return value
+
+        try:
+            context = self.page.context
+        except Exception as exc:
+            print("Profile-control browser context unavailable:", repr(exc))
+            return None, ""
+
+        def find_new_profile_page(before_pages):
+            try:
+                pages = list(context.pages)
+            except Exception:
+                return None
+            for candidate in pages:
+                if candidate in before_pages:
+                    continue
+                try:
+                    candidate_url = str(candidate.url or "").strip()
+                    if is_profile_url(candidate_url):
+                        return candidate
+                except Exception:
+                    continue
+            return None
+
+        for action_name, kwargs in (
+            (
+                "Ctrl-click",
+                {
+                    "modifiers": ["Control"],
+                    "no_wait_after": True,
+                    "timeout": 5000,
+                },
+            ),
+            (
+                "Middle-click",
+                {
+                    "button": "middle",
+                    "no_wait_after": True,
+                    "timeout": 5000,
+                },
+            ),
+        ):
+            try:
+                before_pages = set(context.pages)
+                control.click(**kwargs)
+
+                profile_page = None
+                for _ in range(15):
+                    try:
+                        self.page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+                    profile_page = find_new_profile_page(before_pages)
+                    if profile_page is not None:
+                        break
+
+                if profile_page is None:
+                    print(
+                        f"{action_name}: no profile tab appeared for "
+                        f"control {control_index}."
+                    )
+                    continue
+
+                try:
+                    profile_page.wait_for_load_state(
+                        "domcontentloaded",
+                        timeout=15000,
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    profile_page.wait_for_timeout(1200)
+                except Exception:
+                    pass
+
+                actual_url = canonical(profile_page.url)
+                print(
+                    f"{action_name}: resolved profile {control_index}:",
+                    actual_url,
+                )
+                return profile_page, actual_url
+
+            except Exception as exc:
+                print(
+                    f"{action_name} failed for profile control "
+                    f"{control_index}:",
+                    repr(exc),
+                )
+
+        # Do NOT fabricate a URL and do NOT accept the search-result text as a
+        # profile record. This is intentionally a hard candidate skip.
+        print(
+            "No real profile URL was obtained from rendered employee control; "
+            "candidate skipped."
+        )
+
+        # In case a failed click changed the current page, restore the exact
+        # employee-search URL before returning to the workflow.
+        try:
+            current_url = str(self.page.url or "").strip()
+            if current_url != before_url and "/search/results/people/" not in current_url.lower():
+                self.page.goto(
+                    before_url,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                self.page.wait_for_timeout(1000)
+        except Exception as exc:
+            print("Search-page restore after failed profile-control click failed:", repr(exc))
+
+        return None, ""
+
+    def get_profiles(self, company="", location="", max_profiles=None):
+        """Return real employee candidates from the current people-search page.
+
+        Two discovery modes are intentionally used:
+
+        1. Existing `/in/` anchors that are clearly employee result links
+           (the proven desktop rule: multiline text + 1st/2nd/3rd marker).
+        2. When LinkedIn renders employee rows only as `View LinkedIn Member`
+           controls, return the control index and let `open_result_profile()`
+           obtain the real profile URL by clicking the actual LinkedIn action.
+
+        No page-wide secondary `/in/` link is promoted to a profile merely
+        because it exists, and no profile URL is fabricated from a name.
         """
+        import re
 
         print("=" * 60)
         print("EXTRACTING EMPLOYEE PROFILES")
         print("=" * 60)
-
         print("Requested company:", company)
         print("Requested location:", location)
 
-        if max_profiles is not None:
-            try:
+        try:
+            if max_profiles is not None:
                 max_profiles = int(max_profiles)
-            except (TypeError, ValueError):
-                raise ValueError(
-                    "max_profiles must be a positive integer or None."
-                )
+                if max_profiles < 1:
+                    raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError("max_profiles must be a positive integer or None.")
 
-            if max_profiles < 1:
-                raise ValueError(
-                    "max_profiles must be at least 1."
-                )
+        current_url = str(self.page.url or "").strip()
+        lower_url = current_url.lower()
+        if "/search/results/people/" not in lower_url or "currentcompany=" not in lower_url:
+            print("ERROR: Current page is not a company-scoped LinkedIn people search.")
+            print("Current URL:", current_url)
+            return []
 
-        print("Page candidate limit:", max_profiles)
+        # LinkedIn already paints the employee text quickly in Actions. One
+        # short stabilization wait is enough; never poll 20 times after the
+        # employee-result text is already present.
+        try:
+            self.page.wait_for_timeout(1000)
+        except Exception:
+            pass
 
         profiles = []
         seen_urls = set()
 
         def limit_reached():
-            return (
-                max_profiles is not None
-                and len(profiles) >= max_profiles
-            )
+            return max_profiles is not None and len(profiles) >= max_profiles
 
-        # ============================================================
-        # HELPERS
-        # ============================================================
-
-        def normalize_text(value):
-
-            if not value:
-                return ""
-
-            value = (
-                str(value)
-                .replace("\xa0", " ")
-                .replace("\r", " ")
-                .replace("\n", " ")
-            )
-
-            return re.sub(
-                r"\s+",
-                " ",
-                value
-            ).strip()
-
-        def canonical_profile_url(href):
-
+        def canonical(href):
             if not href:
                 return ""
-
             value = str(href).strip()
-
             if value.startswith("/"):
-                value = (
-                    "https://www.linkedin.com"
-                    + value
-                )
-
-            value = (
-                value
-                .split("?", 1)[0]
-                .split("#", 1)[0]
-                .rstrip("/")
-            )
-
+                value = "https://www.linkedin.com" + value
+            value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
             if "/in/" not in value.lower():
                 return ""
-
-            return value.lower()
-
-        requested_location = normalize_text(
-            location
-        ).lower()
-
-        location_tokens = [
-            token
-            for token in re.findall(
-                r"[a-z0-9]+",
-                requested_location
+            value = re.sub(
+                r"^https?://(?:www\.)?linkedin\.com",
+                "https://www.linkedin.com",
+                value,
+                flags=re.IGNORECASE,
             )
-            if len(token) >= 3
-        ]
+            return value
 
-        def location_matches(text):
-
-            value = normalize_text(
-                text
-            ).lower()
-
-            if not requested_location:
-                return True
-
-            if requested_location in value:
-                return True
-
-            return bool(
-                location_tokens
-                and all(
-                    token in value
-                    for token in location_tokens
-                )
-            )
-
-        def extract_primary_name(anchor_text, result_text=""):
-            """
-            Return the employee identity represented by the PRIMARY /in/
-            anchor inside a single LinkedIn employee search-result row.
-
-            LinkedIn sometimes renders the anchor text as the whole result
-            card, including degree text or mutual-connection text. Never use
-            connection-degree labels as identity data, and never treat a
-            mutual-connection suffix as the employee's name.
-
-            For anonymized rows, preserve the literal 'LinkedIn Member'
-            label instead of rejecting the profile.
-            """
-            text = normalize_text(anchor_text)
-
-            if not text:
-                text = normalize_text(result_text)
-
-            if not text:
-                return ""
-
-            lower = text.lower()
-
-            if lower.startswith("linkedin member"):
-                return "LinkedIn Member"
-
-            for marker in (
-                " connect ",
-                " • ",
-            ):
-                parts = text.split(marker, 1)
-                if parts[0].strip():
-                    text = parts[0].strip()
-
-            lower = text.lower()
-
-            if "mutual connection" in lower:
-                text = re.split(
-                    r",\s+|\s+&\s+",
-                    text,
-                    maxsplit=1,
-                )[0].strip()
-
-            if text.lower().startswith("linkedin member"):
-                return "LinkedIn Member"
-
-            if len(text) > 180:
-                text = text[:180].strip()
-
-            return text
-
-        def add_candidate(
-            href,
-            name,
-            result_text,
-            enforce_location=False
-        ):
-
-            profile_url = canonical_profile_url(
-                href
-            )
-
-            if not profile_url:
-                return False
-
-            if profile_url in seen_urls:
-                return False
-
-            clean_name = normalize_text(
-                name
-            )
-
-            clean_text = normalize_text(
-                result_text
-            )
-
-            if not clean_name:
-                if "linkedin member" in clean_text.lower():
-                    clean_name = "LinkedIn Member"
-                else:
+        def add_link_candidate(link):
+            try:
+                href = canonical(link.get_attribute("href"))
+                if not href or href in seen_urls:
                     return False
 
-            if enforce_location and not location_matches(
-                clean_text
-            ):
+                text = link.inner_text().strip()
+                if not text or "\n" not in text:
+                    return False
+
+                has_degree = any(
+                    marker in text
+                    for marker in ("• 1st", "• 2nd", "• 3rd")
+                )
+                if not has_degree:
+                    return False
+
+                lines = [
+                    part.strip()
+                    for part in text.splitlines()
+                    if part.strip()
+                ]
+                if not lines:
+                    return False
+
+                name = lines[0]
+                name = re.sub(
+                    r"\s*•\s*(?:1st|2nd|3rd)\s*",
+                    " ",
+                    name,
+                    flags=re.IGNORECASE,
+                ).strip()
+
+                if not name or len(name) > 100:
+                    return False
+
+                seen_urls.add(href)
+                profiles.append(
+                    {
+                        "full_name": name,
+                        "profile_url": href,
+                        "control_index": None,
+                    }
+                )
+                print(
+                    f"Candidate {len(profiles)}: {name} -> {href}"
+                )
+                return True
+            except Exception as exc:
+                print("Employee-link inspection failed:", repr(exc))
                 return False
 
-            profiles.append(
-                {
-                    "full_name": clean_name,
-                    "profile_url": profile_url,
-                    "company": company,
-                    "location": location,
-                    "search_result_text": clean_text,
-                }
+        # ------------------------------------------------------------------
+        # 1. Proven desktop extraction for genuine visible /in/ employee links.
+        # ------------------------------------------------------------------
+        try:
+            links = self.page.locator("a[href*='/in/']:visible")
+            link_count = links.count()
+        except Exception:
+            links = None
+            link_count = 0
+
+        print("Visible /in/ links:", link_count)
+
+        if links is not None:
+            for i in range(link_count):
+                if limit_reached():
+                    break
+                add_link_candidate(links.nth(i))
+
+        # ------------------------------------------------------------------
+        # 2. Headless/Actions rendering: resolve the actual profile through
+        #    the rendered LinkedIn action. This deliberately does not attempt
+        #    to infer profile slugs from names or search-result text.
+        # ------------------------------------------------------------------
+        if not limit_reached():
+            controls = None
+            control_count = 0
+            selectors = (
+                "xpath=//*[normalize-space(text())='View LinkedIn Member']",
+                "text=View LinkedIn Member",
             )
 
-            seen_urls.add(
-                profile_url
-            )
-
-            return True
-
-
-        # ROOT_CAUSE_EXTRACTION_PAGINATION_V5: hydration gate + semantic profile-control recovery +
-        # defense-in-depth result-location validation.
-        # ============================================================
-        # VERIFY COMPANY PEOPLE SEARCH
-        # ============================================================
-
-        current_url = str(
-            self.page.url or ""
-        ).strip()
-
-        current_lower = current_url.lower()
-
-        if (
-            "/search/results/people/"
-            not in current_lower
-            or "currentcompany="
-            not in current_lower
-        ):
-
-            print(
-                "ERROR: Current page is not a company-scoped "
-                "LinkedIn people search."
-            )
-
-            print(
-                "Current URL:",
-                current_url
-            )
-
-            return profiles
-
-        print(
-            "Company-scoped employee search confirmed."
-        )
-
-        print(
-            "Current URL:",
-            current_url
-        )
-
-        # ============================================================
-        # HYDRATION WAIT
-        #
-        # IMPORTANT:
-        # Page 2 can temporarily have:
-        #
-        #   0 visible /in/ links
-        #   0 recognizable result cards
-        #
-        # while the employee-result text is already rendered.
-        #
-        # next_page() already recognizes this condition. get_profiles()
-        # must use the same third signal.
-        # ============================================================
-
-        print("=" * 60)
-        print("WAITING FOR EMPLOYEE RESULT DOM")
-        print("=" * 60)
-
-        rendered_profile_links = 0
-        rendered_result_cards = 0
-        rendered_result_text = False
-
-        role_signals = (
-            "recruiter",
-            "talent acquisition",
-            "sales",
-            "specialist",
-            "manager",
-            "engineer",
-            "developer",
-            "analyst",
-            "consultant",
-            "director",
-            "staffing",
-            "human resources",
-        )
-
-        result_words = (
-            "people",
-            "employees",
-            "results",
-            "connections",
-        )
-
-        for attempt in range(1, 41):
-
-            try:
-                self.page.wait_for_timeout(
-                    500
-                )
-            except Exception:
-                pass
-
-            # --------------------------------------------------------
-            # Visible profile links
-            # --------------------------------------------------------
-
-            try:
-
-                rendered_profile_links = (
-                    self.page
-                    .locator(
-                        "a[href*='/in/']"
-                    )
-                    .count()
-                )
-
-            except Exception:
-
-                rendered_profile_links = 0
-
-            # --------------------------------------------------------
-            # Recognizable result cards
-            # --------------------------------------------------------
-
-            rendered_result_cards = 0
-
-            for selector in (
-                "li.reusable-search__result-container",
-                "li[class*='reusable-search__result']",
-                "li.entity-result",
-                "div.entity-result",
-                "li.search-result",
-                "li[class*='search-result']",
-                "ul.reusable-search__entity-result-list > li",
-            ):
-
+            for selector in selectors:
                 try:
-
-                    count = (
-                        self.page
-                        .locator(selector)
-                        .count()
-                    )
-
-                    if count > rendered_result_cards:
-                        rendered_result_cards = count
-
+                    candidate_controls = self.page.locator(selector)
+                    if candidate_controls.count() > 0:
+                        controls = candidate_controls
+                        control_count = candidate_controls.count()
+                        break
                 except Exception:
                     continue
 
-            # --------------------------------------------------------
-            # Rendered employee-result text
-            # --------------------------------------------------------
+            print("Rendered employee profile controls:", control_count)
 
-            rendered_result_text = False
-
-            try:
-
-                body_text = (
-                    self.page
-                    .locator("body")
-                    .inner_text(
-                        timeout=2000
-                    )
-                )
-
-                normalized_body = re.sub(
-                    r"\s+",
-                    " ",
-                    body_text or ""
-                ).strip().lower()
-
-                role_hits = sum(
-                    1
-                    for signal in role_signals
-                    if signal in normalized_body
-                )
-
-                result_context_hits = sum(
-                    1
-                    for word in result_words
-                    if word in normalized_body
-                )
-
-                rendered_result_text = (
-                    len(normalized_body) >= 800
-                    and role_hits >= 2
-                    and result_context_hits >= 1
-                )
-
-            except Exception:
-
-                rendered_result_text = False
-
-            print(
-                f"Employee DOM wait {attempt}/40:",
-                rendered_profile_links,
-                "visible /in/ links |",
-                rendered_result_cards,
-                "result cards |",
-                rendered_result_text,
-                "employee-result text"
-            )
-
-            # A text-only result is NOT enough for candidate extraction.
-            # LinkedIn can paint the search-result text before it hydrates the
-            # profile links/row controls.  The old implementation stopped on
-            # rendered_result_text alone, immediately entered PASS 1/2, saw
-            # zero /in/ links, and then reported a false "no candidates" page.
-            if (
-                rendered_profile_links > 0
-                or rendered_result_cards > 0
-            ):
-
-                print(
-                    "Employee result DOM detected."
-                )
-
-                break
-
-            if (
-                rendered_result_text
-                and attempt >= 20
-            ):
-
-                print(
-                    "Employee result text detected, but no profile "
-                    "links/cards hydrated after 20 polling attempts."
-                )
-
-                print(
-                    "Continuing with semantic profile-control recovery."
-                )
-
-                break
-
-            if attempt in (
-                8,
-                16,
-                24,
-                32,
-            ):
-
-                try:
-
-                    self.page.mouse.wheel(
-                        0,
-                        1200
-                    )
-
-                except Exception:
-                    pass
-
-        # ============================================================
-        # PASS 1
-        # KNOWN RESULT-CARD SELECTORS
-        # ============================================================
-
-        print("=" * 60)
-        print("PASS 1 - RESULT CARD EXTRACTION")
-        print("=" * 60)
-
-        card_selectors = (
-            "li.reusable-search__result-container",
-            "li[class*='reusable-search__result']",
-            "li.entity-result",
-            "div.entity-result",
-            "li.search-result",
-            "li[class*='search-result']",
-            "ul.reusable-search__entity-result-list > li",
-        )
-
-        cards = None
-
-        for selector in card_selectors:
-
-            try:
-
-                locator = self.page.locator(
-                    selector
-                )
-
-                count = locator.count()
-
-                if count > 0:
-
-                    cards = locator
-
-                    print(
-                        "Using result-card selector:",
-                        selector
-                    )
-
-                    print(
-                        "Result cards:",
-                        count
-                    )
-
-                    break
-
-            except Exception as ex:
-
-                print(
-                    "Result-card selector failed:",
-                    selector,
-                    repr(ex)
-                )
-
-        if cards is not None:
-
-            for card_index in range(
-                cards.count()
-            ):
-
-                try:
-
-                    card = cards.nth(
-                        card_index
-                    )
-
-                    card_text = normalize_text(
-                        card.inner_text()
-                    )
-
-                    if len(card_text) < 20:
-                        continue
-
-                    links = card.locator(
-                        "a[href*='/in/']"
-                    )
-
-                    link_count = links.count()
-
-                    if link_count == 0:
-                        continue
-
-                    # First /in/ link in a real result card is the
-                    # employee. Mutual-connection links follow it.
-                    link = links.nth(0)
-
-                    href = (
-                        link.get_attribute(
-                            "href"
-                        )
-                        or ""
-                    )
-
-                    raw_name = (
-                        link
-                        .inner_text(
-                            timeout=1500
-                        )
-                        .strip()
-                    )
-
-                    name = extract_primary_name(
-                        raw_name,
-                        card_text,
-                    )
-
-                    if add_candidate(
-                        href,
-                        name,
-                        card_text,
-                        enforce_location=True
-                    ):
-
-                        print("-" * 60)
-
-                        print(
-                            "EMPLOYEE CANDIDATE:",
-                            canonical_profile_url(
-                                href
-                            )
-                        )
-
-                        print(
-                            "Primary anchor:",
-                            normalize_text(
-                                name
-                            )[:200]
-                        )
-
-                        print(
-                            "Connection degree: IGNORED"
-                        )
-
-                except Exception as ex:
-
-                    print(
-                        f"Result-card "
-                        f"{card_index + 1} inspection failed:",
-                        repr(ex)
-                    )
-
-        # ============================================================
-        # PASS 1B
-        # SEMANTIC PROFILE-CONTROL RECOVERY
-        #
-        # GitHub/headless LinkedIn can render the employee result text but
-        # omit normal /in/ anchors from the DOM. In that mode the visible
-        # row can still expose a "View LinkedIn Member" control.
-        #
-        # Recovery order:
-        #   1. local href/data-url/HTML lookup
-        #   2. Ctrl-click / middle-click the row control and capture the
-        #      authenticated profile tab URL
-        #
-        # No profile URL is fabricated from a name or row text.
-        # ============================================================
-
-        if not limit_reached():
-
-            print("=" * 60)
-            print("PASS 1B - SEMANTIC PROFILE-CONTROL RECOVERY")
-            print("=" * 60)
-
-            # Use a leaf-oriented XPath instead of get_by_text(..., exact=True).
-            # LinkedIn's headless result markup can expose the rendered phrase
-            # as a descendant text node without creating an exact text locator.
-            try:
-                controls = self.page.locator(
-                    "xpath=//*[contains(normalize-space(.), "
-                    "'View LinkedIn Member') "
-                    "and not(.//*[contains(normalize-space(.), "
-                    "'View LinkedIn Member')])]"
-                )
-                control_count = min(25, controls.count())
-            except Exception as ex:
-                controls = None
-                control_count = 0
-                print(
-                    "Semantic profile-control lookup failed:",
-                    repr(ex),
-                )
-
-            print(
-                "Semantic profile controls found:",
+            # A page normally contains ten employee result rows. Do not scan
+            # unrelated navigation or secondary content indefinitely.
+            control_limit = min(
                 control_count,
+                20,
             )
 
-            def control_result_text(node):
-                """
-                Pick the smallest useful local employee-result ancestor.
-                The returned text is also the bounded evidence used by
-                location validation.
-                """
-                best_text = ""
-                best_score = -1
-
-                for level in range(0, 10):
-                    try:
-                        ancestor = (
-                            node
-                            if level == 0
-                            else node.locator(
-                                "xpath=" + "/.." * level
-                            )
-                        )
-
-                        if not ancestor.count():
-                            continue
-
-                        try:
-                            text_value = normalize_text(
-                                ancestor.inner_text(timeout=1000)
-                            )
-                        except Exception:
-                            continue
-
-                        if (
-                            "view linkedin member" not in
-                            text_value.lower()
-                        ):
-                            continue
-
-                        if len(text_value) < 20 or len(text_value) > 2200:
-                            continue
-
-                        lower = text_value.lower()
-                        score = 0
-
-                        if location_matches(text_value):
-                            score += 100
-
-                        if "linkedin member" in lower:
-                            score += 35
-
-                        if any(
-                            signal in lower
-                            for signal in (
-                                "recruiter",
-                                "talent acquisition",
-                                "manager",
-                                "engineer",
-                                "developer",
-                                "analyst",
-                                "consultant",
-                                "specialist",
-                                "staffing",
-                                "director",
-                                "architect",
-                            )
-                        ):
-                            score += 40
-
-                        try:
-                            class_text = (
-                                ancestor.get_attribute("class")
-                                or ""
-                            ).lower()
-                        except Exception:
-                            class_text = ""
-
-                        if any(
-                            signal in class_text
-                            for signal in (
-                                "reusable-search__result",
-                                "entity-result",
-                                "search-result",
-                                "pvs-entity",
-                            )
-                        ):
-                            score += 30
-
-                        # Prefer a tighter row over a larger page/container.
-                        score += max(0, 25 - level * 3)
-                        score -= max(0, len(text_value) - 1200) // 100
-
-                        if score > best_score:
-                            best_score = score
-                            best_text = text_value
-
-                    except Exception:
-                        continue
-
-                return best_text
-
-            def href_from_local_markup(node):
-                # Prefer real attributes on the control or its local row.
-                for level in range(0, 9):
-                    try:
-                        ancestor = (
-                            node
-                            if level == 0
-                            else node.locator(
-                                "xpath=" + "/.." * level
-                            )
-                        )
-
-                        if not ancestor.count():
-                            continue
-
-                        for selector in (
-                            "a[href*='/in/']",
-                            "[href*='/in/']",
-                            "[data-href*='/in/']",
-                            "[data-url*='/in/']",
-                            "[data-profile-url*='/in/']",
-                            "[data-redirect-url*='/in/']",
-                        ):
-                            try:
-                                matches = ancestor.locator(selector)
-                                count = min(5, matches.count())
-                                for idx in range(count):
-                                    candidate = matches.nth(idx)
-
-                                    for attr in (
-                                        "href",
-                                        "data-href",
-                                        "data-url",
-                                        "data-profile-url",
-                                        "data-redirect-url",
-                                    ):
-                                        try:
-                                            value = (
-                                                candidate.get_attribute(attr)
-                                                or ""
-                                            ).strip()
-
-                                            if "/in/" in value.lower():
-                                                return value
-                                        except Exception:
-                                            continue
-                            except Exception:
-                                continue
-
-                        for attr in (
-                            "href",
-                            "data-href",
-                            "data-url",
-                            "data-profile-url",
-                            "data-redirect-url",
-                        ):
-                            try:
-                                value = (
-                                    ancestor.get_attribute(attr)
-                                    or ""
-                                ).strip()
-
-                                if "/in/" in value.lower():
-                                    return value
-                            except Exception:
-                                continue
-
-                        # Final local markup check.
-                        try:
-                            html = ancestor.evaluate(
-                                "el => el.outerHTML"
-                            )
-                            match = re.search(
-                                r"(?:https?://www\.linkedin\.com)?/in/[A-Za-z0-9._%-]+",
-                                str(html or ""),
-                                re.IGNORECASE,
-                            )
-
-                            if match:
-                                return match.group(0)
-                        except Exception:
-                            pass
-
-                    except Exception:
-                        continue
-
-                return ""
-
-            def open_control_and_capture_profile(node, control_index):
-                """
-                Some headless LinkedIn layouts do not expose an href at all.
-                The "View LinkedIn Member" control can still open the actual
-                authenticated profile in a new tab. Capture that URL and close
-                only the temporary tab.
-                """
-                try:
-                    node.scroll_into_view_if_needed(timeout=5000)
-                except Exception:
-                    pass
-
-                context = None
-                try:
-                    context = self.page.context
-                except Exception:
-                    return ""
-
-                def inspect_new_pages(before_pages):
-                    try:
-                        current_pages = list(context.pages)
-                    except Exception:
-                        return ""
-
-                    for candidate_page in current_pages:
-                        if candidate_page in before_pages:
-                            continue
-
-                        try:
-                            candidate_page.wait_for_load_state(
-                                "domcontentloaded",
-                                timeout=15000,
-                            )
-                        except Exception:
-                            pass
-
-                        try:
-                            candidate_page.wait_for_timeout(1500)
-                        except Exception:
-                            pass
-
-                        candidate_url = str(
-                            candidate_page.url or ""
-                        ).strip()
-
-                        lower = candidate_url.lower()
-
-                        if (
-                            "/in/" in lower
-                            and not any(
-                                marker in lower
-                                for marker in (
-                                    "/login",
-                                    "/authwall",
-                                    "/checkpoint",
-                                    "/ssr-login",
-                                )
-                            )
-                        ):
-                            print(
-                                f"Semantic control {control_index} opened profile:",
-                                candidate_url,
-                            )
-
-                            # Close only the temporary discovery tab. The actual
-                            # profile will be opened by LinkedInProfilePageV2 later.
-                            try:
-                                if not candidate_page.is_closed():
-                                    candidate_page.close()
-                            except Exception:
-                                pass
-
-                            return candidate_url
-
-                        try:
-                            if not candidate_page.is_closed():
-                                candidate_page.close()
-                        except Exception:
-                            pass
-
-                    return ""
-
-                for action_name, click_kwargs in (
-                    (
-                        "Ctrl-click",
-                        {
-                            "modifiers": ["Control"],
-                            "timeout": 8000,
-                            "no_wait_after": True,
-                        },
-                    ),
-                    (
-                        "middle-click",
-                        {
-                            "button": "middle",
-                            "timeout": 8000,
-                            "no_wait_after": True,
-                        },
-                    ),
-                ):
-                    try:
-                        before_pages = set(context.pages)
-
-                        with context.expect_page(timeout=9000):
-                            node.click(**click_kwargs)
-
-                        captured = inspect_new_pages(before_pages)
-
-                        if captured:
-                            return captured
-
-                    except Exception as ex:
-                        print(
-                            f"Semantic control {control_index} {action_name} "
-                            "did not expose a profile tab:",
-                            repr(ex),
-                        )
-
-                # Last resort: allow the control to navigate the SAME page,
-                # but immediately restore the employee-search URL after capturing
-                # a real /in/ profile URL. This avoids corrupting the search-page
-                # owner if LinkedIn ignores Ctrl-click/middle-click in headless mode.
-                before_search_url = str(
-                    self.page.url or ""
-                ).strip()
-
-                try:
-                    before_pages = set(context.pages)
-
-                    node.click(
-                        timeout=5000,
-                        no_wait_after=True,
-                    )
-                    self.page.wait_for_timeout(1500)
-
-                    current_url = str(
-                        self.page.url or ""
-                    ).strip()
-
-                    lower_current = current_url.lower()
-
-                    if (
-                        "/in/" in lower_current
-                        and not any(
-                            marker in lower_current
-                            for marker in (
-                                "/login",
-                                "/authwall",
-                                "/checkpoint",
-                                "/ssr-login",
-                            )
-                        )
-                    ):
-                        print(
-                            f"Semantic control {control_index} navigated the "
-                            "search page directly to a profile:",
-                            current_url,
-                        )
-
-                        try:
-                            self.page.goto(
-                                before_search_url,
-                                wait_until="domcontentloaded",
-                                timeout=60000,
-                                referer=current_url,
-                            )
-                            self.page.wait_for_timeout(1500)
-                        except Exception as restore_ex:
-                            print(
-                                "Search-page restore after semantic click failed:",
-                                repr(restore_ex),
-                            )
-
-                        return current_url
-
-                    captured = inspect_new_pages(before_pages)
-
-                    if captured:
-                        return captured
-
-                except Exception as ex:
-                    print(
-                        f"Semantic control {control_index} fallback click failed:",
-                        repr(ex),
-                    )
-
-                return ""
-
-            recovered = 0
-
-            for index in range(control_count):
+            used_control_indexes = set()
+            for index in range(control_limit):
                 if limit_reached():
                     break
+                if index in used_control_indexes:
+                    continue
 
                 try:
                     control = controls.nth(index)
-
-                    try:
-                        if not control.is_visible():
-                            continue
-                    except Exception:
-                        pass
-
-                    result_text = control_result_text(control)
-
-                    profile_href = href_from_local_markup(control)
-
-                    if not profile_href:
-                        profile_href = open_control_and_capture_profile(
-                            control,
-                            index + 1,
-                        )
-
-                    if not profile_href:
-                        print(
-                            f"Semantic control {index + 1}: "
-                            "no authenticated profile URL could be recovered."
-                        )
+                    if not control.is_visible():
                         continue
-
-                    primary_name = extract_primary_name(
-                        "LinkedIn Member",
-                        result_text,
-                    )
-
-                    if add_candidate(
-                        profile_href,
-                        primary_name,
-                        result_text or primary_name,
-                        enforce_location=True,
-                    ):
-                        recovered += 1
-
-                        print("-" * 60)
-                        print(
-                            "EMPLOYEE CANDIDATE (SEMANTIC CONTROL):",
-                            canonical_profile_url(profile_href),
-                        )
-                        print(
-                            "Primary anchor:",
-                            primary_name[:200],
-                        )
-                        print(
-                            "Connection degree: IGNORED",
-                        )
-
-                except Exception as ex:
-                    print(
-                        f"Semantic profile-control {index + 1} inspection failed:",
-                        repr(ex),
-                    )
-
-            print(
-                "Semantic profile-control candidates recovered:",
-                recovered,
-            )
-
-        # ============================================================
-        # PASS 1C
-        # HIDDEN HTML /in/ URL RECOVERY
-        #
-        # A few LinkedIn render paths keep profile URLs in the rendered HTML
-        # but do not expose them as anchor locators. This pass only accepts
-        # a URL when nearby HTML also contains employee-result evidence.
-        # It does not generate URLs from names.
-        # ============================================================
-
-        if not limit_reached():
-
-            print("=" * 60)
-            print("PASS 1C - HIDDEN HTML PROFILE-URL RECOVERY")
-            print("=" * 60)
-
-            try:
-                html = self.page.content()
-
-                profile_matches = list(
-                    re.finditer(
-                        r"https?://www\.linkedin\.com/in/[A-Za-z0-9._%-]+|/in/[A-Za-z0-9._%-]+",
-                        html or "",
-                        re.IGNORECASE,
-                    )
-                )
-
-                print(
-                    "Raw /in/ URLs found in rendered HTML:",
-                    len(profile_matches),
-                )
-
-                recovered_html = 0
-                seen_html = set()
-
-                for match in profile_matches:
-                    if limit_reached():
-                        break
-
-                    raw_url = match.group(0)
-
-                    profile_url = canonical_profile_url(
-                        raw_url
-                    )
-
-                    if (
-                        not profile_url
-                        or profile_url in seen_html
-                        or profile_url in seen_urls
-                    ):
-                        continue
-
-                    start = max(0, match.start() - 1800)
-                    end = min(
-                        len(html),
-                        match.end() + 1800,
-                    )
-
-                    local_html = html[start:end]
-
-                    # Strip tags so location/result text can be validated.
-                    local_text = normalize_text(
-                        re.sub(
-                            r"<[^>]+>",
-                            " ",
-                            local_html,
-                        )
-                    )
-
-                    lower_local = local_text.lower()
-
-                    if (
-                        "view linkedin member" not in lower_local
-                        and "linkedin member" not in lower_local
-                        and not any(
-                            signal in lower_local
-                            for signal in (
-                                "recruiter",
-                                "manager",
-                                "engineer",
-                                "developer",
-                                "analyst",
-                                "consultant",
-                                "specialist",
-                                "staffing",
-                            )
-                        )
-                    ):
-                        continue
-
-                    primary_name = extract_primary_name(
-                        "LinkedIn Member",
-                        local_text,
-                    )
-
-                    if add_candidate(
-                        profile_url,
-                        primary_name,
-                        local_text or primary_name,
-                        enforce_location=True,
-                    ):
-                        recovered_html += 1
-                        seen_html.add(profile_url)
-
-                        print(
-                            "EMPLOYEE CANDIDATE (HIDDEN HTML):",
-                            profile_url,
-                        )
-
-                print(
-                    "Hidden HTML profile URLs recovered:",
-                    recovered_html,
-                )
-
-            except Exception as ex:
-                print(
-                    "Hidden HTML profile-url recovery failed:",
-                    repr(ex),
-                )
-
-        # ============================================================
-        # PASS 2
-        # VIRTUALIZED-DOM EMPLOYEE RESULT-ROW EXTRACTION
-        #
-        # The result row is the boundary. We never use a page-level /in/
-        # link as an employee by itself.
-        #
-        # For each visible /in/ link:
-        #   1. Walk local ancestors only.
-        #   2. Prefer a local ancestor that looks like an employee result row.
-        #   3. Treat ONLY the first /in/ link inside that row as the employee.
-        #   4. Ignore later /in/ links (mutual/nested profiles).
-        #   5. Ignore 1st/2nd/3rd-degree labels completely.
-        # ============================================================
-
-        print("=" * 60)
-        print("PASS 2 - VIRTUALIZED-DOM EMPLOYEE RESULT-ROW EXTRACTION")
-        print("=" * 60)
-
-        if not limit_reached():
-
-            try:
-                self.page.evaluate("window.scrollTo(0, 0)")
-            except Exception:
-                pass
-
-            total_rounds = 16
-            empty_rounds_at_bottom = 0
-
-            row_role_signals = (
-                "recruiter",
-                "talent acquisition",
-                "sales",
-                "specialist",
-                "manager",
-                "engineer",
-                "developer",
-                "analyst",
-                "consultant",
-                "director",
-                "staffing",
-                "human resources",
-                "president",
-                "administrator",
-                "architect",
-            )
-
-            row_class_signals = (
-                "reusable-search__result",
-                "entity-result",
-                "search-result",
-                "base-search-card",
-                "pvs-entity",
-            )
-
-            for scan_round in range(1, total_rounds + 1):
-
-                if limit_reached():
-                    break
-
-                try:
-                    links = self.page.locator(
-                        "a[href*='/in/']"
-                    )
-                    link_count = links.count()
-                except Exception as ex:
-                    print(
-                        "Visible /in/ link lookup failed:",
-                        repr(ex)
-                    )
-                    links = None
-                    link_count = 0
-
-                round_added = 0
-                processed_rows = set()
-
-                if links is not None and link_count > 0:
-
-                    for link_index in range(link_count):
-
-                        if limit_reached():
-                            break
-
-                        try:
-                            link = links.nth(link_index)
-
-                            best_container = None
-                            best_text = ""
-                            best_level = -1
-                            best_link_count = 0
-                            best_score = -1
-
-                            for level in range(0, 10):
-
-                                try:
-                                    ancestor = link.locator(
-                                        "xpath=" + "/.." * (level + 1)
-                                    )
-
-                                    if not ancestor.count():
-                                        continue
-
-                                    ancestor_text = normalize_text(
-                                        ancestor.inner_text(
-                                            timeout=1000
-                                        )
-                                    )
-
-                                    if (
-                                        len(ancestor_text) < 20
-                                        or len(ancestor_text) > 2200
-                                    ):
-                                        continue
-
-                                    ancestor_links = ancestor.locator(
-                                        "a[href*='/in/']"
-                                    )
-
-                                    local_count = ancestor_links.count()
-
-                                    if local_count < 1 or local_count > 5:
-                                        continue
-
-                                    try:
-                                        class_text = (
-                                            ancestor.get_attribute("class")
-                                            or ""
-                                        ).lower()
-                                    except Exception:
-                                        class_text = ""
-
-                                    lower_text = ancestor_text.lower()
-
-                                    score = 0
-
-                                    if location_matches(
-                                        ancestor_text
-                                    ):
-                                        score += 60
-
-                                    if any(
-                                        signal in lower_text
-                                        for signal in row_role_signals
-                                    ):
-                                        score += 40
-
-                                    if "linkedin member" in lower_text:
-                                        score += 35
-
-                                    if any(
-                                        signal in class_text
-                                        for signal in row_class_signals
-                                    ):
-                                        score += 30
-
-                                    if len(ancestor_text) >= 80:
-                                        score += 10
-
-                                    score -= level
-
-                                    # Do not promote a tiny mutual-profile
-                                    # fragment to an employee result. A real
-                                    # result row should expose at least one
-                                    # strong signal: location, role, known
-                                    # result-row class, or LinkedIn Member.
-                                    if score < 25:
-                                        continue
-
-                                    if score > best_score:
-                                        best_container = ancestor
-                                        best_text = ancestor_text
-                                        best_level = level
-                                        best_link_count = local_count
-                                        best_score = score
-
-                                except Exception:
-                                    continue
-
-                            if best_container is None:
-                                # LinkedIn sometimes renders a valid employee row
-                                # without exposing a recognizable role/location/class
-                                # signal in the ancestor text. Do not discard the
-                                # candidate at discovery time; profile validation
-                                # remains authoritative for company/location.
-                                fallback_container = None
-                                fallback_text = ""
-                                fallback_level = -1
-                                fallback_link_count = 0
-
-                                for fallback_level_candidate in range(0, 7):
-                                    try:
-                                        fallback_ancestor = link.locator(
-                                            "xpath=" + "/.." * (fallback_level_candidate + 1)
-                                        )
-
-                                        if not fallback_ancestor.count():
-                                            continue
-
-                                        fallback_ancestor_text = normalize_text(
-                                            fallback_ancestor.inner_text(timeout=1000)
-                                        )
-
-                                        if (
-                                            len(fallback_ancestor_text) < 10
-                                            or len(fallback_ancestor_text) > 1800
-                                        ):
-                                            continue
-
-                                        fallback_links = fallback_ancestor.locator(
-                                            "a[href*='/in/']"
-                                        )
-                                        fallback_count = fallback_links.count()
-
-                                        # A real employee row normally contains the
-                                        # employee link plus zero/few related links.
-                                        if fallback_count < 1 or fallback_count > 4:
-                                            continue
-
-                                        fallback_container = fallback_ancestor
-                                        fallback_text = fallback_ancestor_text
-                                        fallback_link_count = fallback_count
-                                        break
-
-                                    except Exception:
-                                        continue
-
-                                if fallback_container is None:
-                                    continue
-
-                                best_container = fallback_container
-                                best_text = fallback_text
-                                best_level = fallback_level
-                                best_link_count = fallback_link_count
-                                best_score = 0
-
-                            local_links = best_container.locator(
-                                "a[href*='/in/']"
-                            )
-
-                            local_count = local_links.count()
-
-                            if local_count < 1:
-                                continue
-
-                            # The first /in/ link inside the employee result
-                            # row is the employee. Later /in/ links are mutual
-                            # or nested profiles and are ignored.
-                            primary_link = local_links.nth(0)
-
-                            primary_href = (
-                                primary_link.get_attribute(
-                                    "href"
-                                )
-                                or ""
-                            ).strip()
-
-                            primary_url = canonical_profile_url(
-                                primary_href
-                            )
-
-                            if not primary_url:
-                                continue
-
-                            if primary_url in processed_rows:
-                                continue
-
-                            processed_rows.add(primary_url)
-
-                            raw_primary_name = (
-                                primary_link.inner_text(
-                                    timeout=1500
-                                ).strip()
-                            )
-
-                            primary_name = extract_primary_name(
-                                raw_primary_name,
-                                best_text,
-                            )
-
-                            # Do NOT reject:
-                            #   - 1st/2nd/3rd-degree labels
-                            #   - mutual-connection wording in the primary anchor
-                            #   - LinkedIn Member
-                            if not primary_name:
-                                if "linkedin member" in best_text.lower():
-                                    primary_name = "LinkedIn Member"
-                                else:
-                                    continue
-
-                            if add_candidate(
-                                primary_href,
-                                primary_name,
-                                best_text or primary_name,
-                                enforce_location=True,
-                            ):
-                                round_added += 1
-
-                                print("-" * 60)
-                                print(
-                                    "EMPLOYEE CANDIDATE:",
-                                    primary_url,
-                                )
-                                print(
-                                    "Primary anchor:",
-                                    primary_name[:200],
-                                )
-                                print(
-                                    "Local ancestor level:",
-                                    best_level,
-                                )
-                                print(
-                                    "Local /in/ link count:",
-                                    best_link_count,
-                                )
-                                print(
-                                    "Result group:",
-                                    (best_text or primary_name)[:500],
-                                )
-                                print(
-                                    "Connection degree: IGNORED",
-                                )
-
-                        except Exception as ex:
-                            print(
-                                f"PASS 2 link {link_index + 1} "
-                                f"inspection failed:",
-                                repr(ex),
-                            )
-
-                try:
-                    scroll_state = self.page.evaluate(
-                        '''() => {
-                            const candidates = [
-                                document.scrollingElement,
-                                ...Array.from(
-                                    document.querySelectorAll("main, section, article, ul, div")
-                                )
-                            ].filter(Boolean);
-
-                            const seen = new Set();
-                            const scrollables = [];
-
-                            for (const el of candidates) {
-                                if (seen.has(el)) continue;
-                                seen.add(el);
-
-                                try {
-                                    const style = window.getComputedStyle(el);
-                                    const overflowY = style.overflowY || "";
-                                    const scrollable =
-                                        el.scrollHeight > (el.clientHeight + 20) &&
-                                        (
-                                            overflowY === "auto" ||
-                                            overflowY === "scroll" ||
-                                            overflowY === "overlay" ||
-                                            el === document.scrollingElement
-                                        );
-
-                                    if (!scrollable || el.clientHeight < 100) continue;
-                                    scrollables.push(el);
-                                } catch (_) {}
-                            }
-
-                            let moved = false;
-                            let movableCount = 0;
-
-                            for (const el of scrollables) {
-                                try {
-                                    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-                                    if ((el.scrollTop + 8) < maxTop) {
-                                        const before = el.scrollTop;
-                                        el.scrollTop = Math.min(maxTop, before + 900);
-                                        if (el.scrollTop > before + 2) {
-                                            moved = true;
-                                            movableCount += 1;
-                                        }
-                                    }
-                                } catch (_) {}
-                            }
-
-                            window.scrollBy(0, 700);
-
-                            return {
-                                scrollableCount: scrollables.length,
-                                movableCount,
-                                moved
-                            };
-                        }'''
-                    )
-
-                    scrollable_count = int(
-                        scroll_state.get("scrollableCount", 0)
-                    )
-                    movable_count = int(
-                        scroll_state.get("movableCount", 0)
-                    )
-                    scrolled_inner = bool(
-                        scroll_state.get("moved", False)
-                    )
-
-                    at_bottom = not scrolled_inner
-
                 except Exception:
-                    scrollable_count = 0
-                    movable_count = 0
-                    scrolled_inner = False
-                    at_bottom = False
+                    continue
 
+                used_control_indexes.add(index)
+                profiles.append(
+                    {
+                        "full_name": "LinkedIn Member",
+                        "profile_url": "",
+                        "control_index": index,
+                    }
+                )
                 print(
-                    f"PASS 2 scan {scan_round}/{total_rounds}: "
-                    f"{link_count} visible /in/ links, "
-                    f"{round_added} new employees, "
-                    f"profiles={len(profiles)}, "
-                    f"at_bottom={at_bottom}"
+                    f"Candidate {len(profiles)}: employee control #{index}"
                 )
 
-                if at_bottom:
-
-                    if round_added == 0:
-                        empty_rounds_at_bottom += 1
-                    else:
-                        empty_rounds_at_bottom = 0
-
-                    if empty_rounds_at_bottom >= 2:
-                        break
-
-                # The JS block above explicitly scrolls LinkedIn's inner result
-                # container(s). Keep a smaller wheel nudge as a virtualization fallback.
-                try:
-                    self.page.mouse.wheel(
-                        0,
-                        700
-                    )
-                except Exception:
-                    pass
-
-            try:
-                self.page.evaluate(
-                    "window.scrollTo(0, 0)"
-                )
-            except Exception:
-                pass
-
-        # ============================================================
-        # FINAL RESULT
-        # ============================================================
-
-        print("=" * 60)
-
-        if rendered_result_text and not profiles:
-            print(
-                "RESULT-TEXT PRESENT BUT NO EMPLOYEE CANDIDATE WAS EXTRACTED."
-            )
-
-            try:
-                all_dom_links = self.page.locator(
-                    "a[href*='/in/']"
-                )
-                dom_count = all_dom_links.count()
-
-                print(
-                    "All DOM /in/ anchors after extraction:",
-                    dom_count
-                )
-
-                preview = []
-                for i in range(min(dom_count, 20)):
-                    try:
-                        href = (
-                            all_dom_links.nth(i).get_attribute("href")
-                            or ""
-                        )
-                        if href:
-                            preview.append(href)
-                    except Exception:
-                        continue
-
-                print(
-                    "DOM /in/ href preview:",
-                    preview
-                )
-
-            except Exception as ex:
-                print(
-                    "DOM /in/ diagnostic failed:",
-                    repr(ex)
-                )
-
-            try:
-                body_preview = normalize_text(
-                    self.page.locator("body").inner_text(timeout=2000)
-                )
-
-                print(
-                    "Rendered employee-result text preview:",
-                    body_preview[:1800]
-                )
-
-            except Exception as ex:
-                print(
-                    "Rendered text diagnostic failed:",
-                    repr(ex)
-                )
-
-        print(
-            "EMPLOYEE PROFILES EXTRACTED:",
-            len(profiles)
-        )
-
-        if not profiles:
-            print(
-                "WARNING: No extractable profile URL survived DOM discovery. "
-                "The LinkedIn page did render employee-result text, but it "
-                "did not expose usable profile URLs in anchors or semantic "
-                "profile controls."
-            )
-
-        print("=" * 60)
-
+        print("EMPLOYEE CANDIDATES DISCOVERED:", len(profiles))
         return profiles
 
 
 
     def next_page(self):
-        """
-        Advance the authenticated company-scoped LinkedIn people search.
+        """Advance one company-scoped people-search page with one clean path."""
+        from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 
-        Fail-safe pagination contract:
-        - Preserve LinkedIn's current query parameters exactly.
-        - Change ONLY the page parameter when constructing an explicit next URL.
-        - Try SAME authenticated page navigation first.
-        - Try a fresh tab in the SAME authenticated browser context second.
-        - Use LinkedIn's own Next href/control only after direct navigation fails.
-        - Validate company scope, page advancement, authentication state, and
-          rendered employee-result state before accepting a transition.
-        - Restore the previous authenticated search URL after a failed attempt.
-        - Return False only when LinkedIn positively exposes a disabled Next control.
-        - Raise on unresolved pagination failure so the workflow cannot mistake
-          navigation failure for "no more employee pages".
-        """
-        from hashlib import sha1
-        from urllib.parse import (
-            parse_qs,
-            parse_qsl,
-            urlencode,
-            urljoin,
-            urlsplit,
-            urlunsplit,
-        )
-
-        owner_page = self.page
-        before_url = str(
-            getattr(owner_page, "url", "") or ""
-        ).strip()
-        before_lower = before_url.lower()
-
-        print("=" * 60)
-        print("PAGINATION - FAIL-SAFE STATE MACHINE")
-        print("=" * 60)
-        print("Current URL:", before_url)
-
-        def is_blocked(url):
-            value = str(url or "").lower()
-            return any(
-                marker in value
-                for marker in (
-                    "/login",
-                    "/authwall",
-                    "/checkpoint",
-                    "/uas/login",
-                    "/signup",
-                    "/ssr-login",
-                    "remember-me-auto-login",
-                )
-            )
-
-        def parse_query(url):
-            return parse_qs(
-                urlsplit(str(url or "")).query,
-                keep_blank_values=True,
-            )
-
-        def company_ids(url):
-            data = parse_query(url)
-            return (
-                data.get("currentCompany", [])
-                or data.get("currentcompany", [])
-            )
-
-        def page_number(url):
-            data = parse_query(url)
-            try:
-                raw = (
-                    data.get("page", ["1"])
-                    or ["1"]
-                )[0]
-                return max(
-                    1,
-                    int(str(raw).strip()),
-                )
-            except Exception:
-                return 1
-
-        def is_company_people_url(url, expected_company_ids):
-            value = str(url or "").lower()
-
-            if is_blocked(value):
-                return False
-
-            if "/search/results/people/" not in value:
-                return False
-
-            actual_ids = company_ids(url)
-
-            return bool(actual_ids) and actual_ids == expected_company_ids
-
-        def non_page_query(url):
-            return sorted(
-                (
-                    str(key).lower(),
-                    tuple(str(item) for item in values),
-                )
-                for key, values in parse_query(url).items()
-                if str(key).lower() not in {"page", "network", "pastcompany"}
-            )
-
-        def build_next_url(start_url):
-            parsed = urlsplit(start_url)
-            current_number = page_number(start_url)
-            target_number = current_number + 1
-
-            rebuilt = []
-            page_written = False
-
-            for key, value in parse_qsl(
-                parsed.query,
-                keep_blank_values=True,
-            ):
-                if str(key).lower() == "page":
-                    if not page_written:
-                        rebuilt.append(
-                            (
-                                key,
-                                str(target_number),
-                            )
-                        )
-                        page_written = True
-                    continue
-
-                if str(key).lower() in {"network", "pastcompany"}:
-                    continue
-
-                rebuilt.append(
-                    (key, value)
-                )
-
-            if not page_written:
-                rebuilt.append(
-                    (
-                        "page",
-                        str(target_number),
-                    )
-                )
-
-            target_url = urlunsplit(
-                (
-                    parsed.scheme,
-                    parsed.netloc,
-                    parsed.path,
-                    urlencode(
-                        rebuilt,
-                        doseq=True,
-                    ),
-                    parsed.fragment,
-                )
-            )
-
-            if (
-                non_page_query(target_url)
-                != non_page_query(start_url)
-            ):
-                raise RuntimeError(
-                    "Pagination safety check failed: explicit next URL "
-                    "changed a query parameter other than page."
-                )
-
-            return target_url
-
-        def result_signature(active_page):
-            parts = []
-
-            selectors = (
-                "li.reusable-search__result-container",
-                "li[class*='reusable-search__result']",
-                "li.entity-result",
-                "div.entity-result",
-                "li.search-result",
-                "li[class*='search-result']",
-                "ul.reusable-search__entity-result-list > li",
-            )
-
-            for selector in selectors:
-                try:
-                    rows = active_page.locator(selector)
-                    count = min(
-                        10,
-                        rows.count(),
-                    )
-
-                    if count:
-                        for index in range(count):
-                            try:
-                                text_value = rows.nth(index).inner_text(
-                                    timeout=1000
-                                )
-                            except Exception:
-                                continue
-
-                            normalized = " ".join(
-                                str(text_value or "").split()
-                            ).strip()
-
-                            if normalized:
-                                parts.append(
-                                    normalized[:1200]
-                                )
-
-                        if parts:
-                            break
-                except Exception:
-                    continue
-
-            try:
-                links = active_page.locator(
-                    "a[href*='/in/']"
-                )
-                count = min(
-                    20,
-                    links.count(),
-                )
-
-                for index in range(count):
-                    try:
-                        href = (
-                            links.nth(index).get_attribute(
-                                "href"
-                            )
-                            or ""
-                        ).strip()
-                    except Exception:
-                        continue
-
-                    if href:
-                        parts.append(
-                            href.split("?", 1)[0]
-                            .split("#", 1)[0]
-                            .rstrip("/")
-                            .lower()
-                        )
-            except Exception:
-                pass
-
-            if not parts:
-                try:
-                    body = active_page.locator(
-                        "body"
-                    ).inner_text(
-                        timeout=1500
-                    )
-                    body = " ".join(
-                        str(body or "").split()
-                    ).strip()
-
-                    if body:
-                        parts.append(
-                            body[:4000]
-                        )
-                except Exception:
-                    pass
-
-            payload = "\n".join(parts)
-
-            return sha1(
-                payload.encode(
-                    "utf-8",
-                    errors="ignore",
-                )
-            ).hexdigest()
-
-        def active_page_indicator(active_page, expected_page):
-            """Return True when LinkedIn itself marks the requested page active."""
-            expected = str(expected_page)
-
-            for selector in (
-                "[aria-current='page']",
-                "button[aria-current='page']",
-                "a[aria-current='page']",
-            ):
-                try:
-                    locator = active_page.locator(selector)
-                    count = min(20, locator.count())
-                    for index in range(count):
-                        try:
-                            text_value = " ".join(
-                                str(
-                                    locator.nth(index).inner_text(timeout=500)
-                                    or ""
-                                ).split()
-                            ).strip()
-                            if text_value == expected:
-                                return True
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-
-            # Fallback for LinkedIn controls that expose page state in labels.
-            for selector in (
-                "button:visible",
-                "a:visible",
-                "[role='button']:visible",
-            ):
-                try:
-                    controls = active_page.locator(selector)
-                    count = min(250, controls.count())
-                    for index in range(count):
-                        control = controls.nth(index)
-                        parts = []
-                        for attr in (
-                            "aria-label",
-                            "title",
-                            "data-testid",
-                            "data-control-name",
-                        ):
-                            try:
-                                value = (
-                                    control.get_attribute(attr)
-                                    or ""
-                                ).strip()
-                                if value:
-                                    parts.append(value)
-                            except Exception:
-                                pass
-                        try:
-                            value = (
-                                control.inner_text(timeout=300)
-                                or ""
-                            ).strip()
-                            if value:
-                                parts.append(value)
-                        except Exception:
-                            pass
-
-                        label = " ".join(parts).strip().lower()
-                        if (
-                            expected.lower() == label
-                            or f"page {expected.lower()}" in label
-                        ) and (
-                            "current" in label
-                            or "selected" in label
-                            or "page" in label
-                        ):
-                            return True
-                except Exception:
-                    continue
-
+        current_url = str(self.page.url or "").strip()
+        lower = current_url.lower()
+        if "/search/results/people/" not in lower or "currentcompany=" not in lower:
+            print("NEXT ABORTED: not on company-scoped people search.")
             return False
 
-        def result_state(active_page):
-            visible_links = 0
-            result_cards = 0
-            result_text = False
-            no_results = False
+        parsed = urlsplit(current_url)
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        current_page = 1
+        rebuilt = []
+        for key, value in query:
+            if key.lower() == "page":
+                try:
+                    current_page = int(value)
+                except Exception:
+                    current_page = 1
+                continue
+            rebuilt.append((key, value))
 
-            try:
-                visible_links = active_page.locator(
-                    "a[href*='/in/']:visible"
-                ).count()
-            except Exception:
-                visible_links = 0
+        target_page = max(1, current_page) + 1
+        rebuilt.append(("page", str(target_page)))
+        next_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                urlencode(rebuilt),
+                parsed.fragment,
+            )
+        )
 
-            selectors = (
-                "li.reusable-search__result-container:visible",
-                "li[class*='reusable-search__result']:visible",
-                "li.entity-result:visible",
-                "div.entity-result:visible",
-                "li.search-result:visible",
-                "li[class*='search-result']:visible",
-                "ul.reusable-search__entity-result-list > li:visible",
+        before_page = self.page
+        print("=" * 60)
+        print("NEXT PAGE")
+        print("=" * 60)
+        print("Current page:", current_page)
+        print("Target page:", target_page)
+        print("Next URL:", next_url)
+
+        try:
+            next_page = self.page.context.new_page()
+            next_page.goto(
+                next_url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+                referer=current_url,
             )
 
-            for selector in selectors:
-                try:
-                    result_cards = max(
-                        result_cards,
-                        active_page.locator(selector).count(),
-                    )
-                except Exception:
-                    continue
-
+            # LinkedIn paints the employee result rows quickly. One short
+            # stabilization window is enough; do not run a 60–80 attempt
+            # pagination state machine.
             try:
-                body = active_page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=2000
-                )
-                normalized = " ".join(
-                    str(body or "").split()
-                ).strip().lower()
-
-                role_signals = (
-                    "recruiter",
-                    "talent acquisition",
-                    "sales",
-                    "specialist",
-                    "manager",
-                    "engineer",
-                    "developer",
-                    "analyst",
-                    "consultant",
-                    "director",
-                    "staffing",
-                    "human resources",
-                )
-
-                context_words = (
-                    "people",
-                    "employees",
-                    "results",
-                    "connections",
-                )
-
-                role_hits = sum(
-                    1
-                    for signal in role_signals
-                    if signal in normalized
-                )
-
-                context_hits = sum(
-                    1
-                    for word in context_words
-                    if word in normalized
-                )
-
-                result_text = (
-                    len(normalized) >= 800
-                    and role_hits >= 2
-                    and context_hits >= 1
-                )
-
-                no_results = any(
-                    marker in normalized
-                    for marker in (
-                        "no results",
-                        "no people found",
-                        "no results found",
-                        "we couldn't find",
-                    )
-                )
+                next_page.wait_for_timeout(3000)
             except Exception:
                 pass
 
-            return (
-                visible_links,
-                result_cards,
-                result_text,
-                no_results,
-            )
-
-        def wait_for_valid_page(
-            active_page,
-            expected_page,
-            previous_signature,
-            expected_company_ids,
-        ):
-            for attempt in range(1, 81):
-                try:
-                    active_page.wait_for_timeout(250)
-                except Exception:
-                    pass
-
-                try:
-                    candidate_url = str(
-                        active_page.url or ""
-                    ).strip()
-                except Exception:
-                    candidate_url = ""
-
-                if is_blocked(candidate_url):
-                    continue
-
-                if not is_company_people_url(
-                    candidate_url,
-                    expected_company_ids,
-                ):
-                    continue
-
-                if page_number(candidate_url) != expected_page:
-                    continue
-
-                current_signature = result_signature(
-                    active_page
-                )
-
-                (
-                    visible_links,
-                    result_cards,
-                    result_text,
-                    no_results,
-                ) = result_state(
-                    active_page
-                )
-
-                signature_changed = (
-                    bool(current_signature)
-                    and current_signature != previous_signature
-                )
-
-                page_identity_confirmed = active_page_indicator(
-                    active_page,
-                    expected_page,
-                )
-
-                print(
-                    "Active page indicator:",
-                    page_identity_confirmed,
-                )
-
-                # Explicit LinkedIn no-results is an END state, not a successful page.
-                if (
-                    no_results
-                    and visible_links == 0
-                    and result_cards == 0
-                    and not result_text
-                ):
-                    print("=" * 60)
-                    print("END OF RESULTS CONFIRMED")
-                    print("=" * 60)
-                    print("Final URL:", candidate_url)
-                    print("Page number:", page_number(candidate_url))
-                    print("Result state: 0 links | 0 cards | no employee-result text")
-                    return "END_OF_RESULTS"
-
-                if (
-                    (
-                        signature_changed
-                        or page_identity_confirmed
-                    )
-                    and (
-                        visible_links > 0
-                        or result_cards > 0
-                        or result_text
-                    )
-                ):
-                    print("=" * 60)
-                    print("NEXT PAGE VALIDATED - POPULATED RESULT PAGE")
-                    print("=" * 60)
-                    print("Final next-page URL:", candidate_url)
-                    print(
-                        "Company scope preserved:",
-                        company_ids(candidate_url),
-                    )
-                    print(
-                        "Network preserved:",
-                        parse_query(candidate_url).get(
-                            "network",
-                            [],
-                        ),
-                    )
-                    print(
-                        "Page number:",
-                        page_number(candidate_url),
-                    )
-                    print(
-                        "Result state:",
-                        visible_links,
-                        "visible /in/ links |",
-                        result_cards,
-                        "result cards |",
-                        result_text,
-                        "employee-result text |",
-                        no_results,
-                        "no-results",
-                    )
-                    return "VALIDATED"
-
-            return "FAILED"
-
-        def restore_owner_page():
-            for attempt in range(1, 3):
-                try:
-                    print(
-                        f"Restoring employee-search page {attempt}/2..."
-                    )
-
-                    owner_page.goto(
-                        before_url,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                        referer=before_url,
-                    )
-
-                    owner_page.wait_for_timeout(2500)
-
-                    restored_url = str(
-                        owner_page.url or ""
-                    ).strip()
-
-                    if is_company_people_url(
-                        restored_url,
-                        original_company_ids,
-                    ):
-                        print(
-                            "Authenticated employee-search page restored:",
-                            restored_url,
-                        )
-                        return True
-                except Exception as exc:
-                    print(
-                        "Restore failed:",
-                        repr(exc),
-                    )
-
-            return False
-
-        if not is_company_people_url(
-            before_url,
-            company_ids(before_url),
-        ):
-            raise RuntimeError(
-                "Pagination cannot start: current page is not an "
-                "authenticated company-scoped LinkedIn people search."
-            )
-
-        original_company_ids = company_ids(
-            before_url
-        )
-
-        if not original_company_ids:
-            raise RuntimeError(
-                "Pagination cannot start: currentCompany is missing."
-            )
-
-        current_page_number = page_number(
-            before_url
-        )
-        target_page_number = (
-            current_page_number + 1
-        )
-
-        previous_signature = result_signature(
-            owner_page
-        )
-
-        direct_next_url = build_next_url(
-            before_url
-        )
-
-        print(
-            "Current page:",
-            current_page_number,
-        )
-        print(
-            "Target page:",
-            target_page_number,
-        )
-        print(
-            "Company scope:",
-            original_company_ids,
-        )
-        print(
-            "Network:",
-            parse_query(before_url).get(
-                "network",
-                [],
-            ),
-        )
-        print(
-            "Direct next-page URL:",
-            direct_next_url,
-        )
-
-        # 1. Same authenticated page
-        print("=" * 60)
-        print("PAGINATION ATTEMPT: SAME AUTHENTICATED PAGE")
-        print("=" * 60)
-
-        try:
-            owner_page.goto(
-                direct_next_url,
-                wait_until="domcontentloaded",
-                timeout=60000,
-                referer=before_url,
-            )
-
-            validation = wait_for_valid_page(
-                owner_page,
-                target_page_number,
-                previous_signature,
-                original_company_ids,
-            )
-
-            if validation == "VALIDATED":
-                return True
-
-            if validation == "END_OF_RESULTS":
-                restore_owner_page()
-                return False
-        except Exception as exc:
-            print(
-                "Same-page pagination failed:",
-                repr(exc),
-            )
-
-        restore_owner_page()
-
-        # 2. Fresh tab, same authenticated browser context
-        navigation_page = None
-
-        print("=" * 60)
-        print("PAGINATION ATTEMPT: FRESH AUTHENTICATED TAB")
-        print("=" * 60)
-
-        try:
-            navigation_page = owner_page.context.new_page()
-
-            navigation_page.goto(
-                direct_next_url,
-                wait_until="domcontentloaded",
-                timeout=60000,
-                referer=before_url,
-            )
-
-            validation = wait_for_valid_page(
-                navigation_page,
-                target_page_number,
-                previous_signature,
-                original_company_ids,
-            )
-
-            if validation == "END_OF_RESULTS":
-                print("Fresh-tab pagination reached end-of-results.")
-                return False
-
-            if validation == "VALIDATED":
-                old_page = owner_page
-                self.page = navigation_page
-                navigation_page = None
-
-                try:
-                    if (
-                        old_page is not self.page
-                        and not old_page.is_closed()
-                    ):
-                        old_page.close()
-                except Exception as exc:
-                    print(
-                        "Previous page cleanup warning:",
-                        repr(exc),
-                    )
-
-                return True
-
-        except Exception as exc:
-            print(
-                "Fresh-tab pagination failed:",
-                repr(exc),
-            )
-        finally:
-            if navigation_page is not None:
-                try:
-                    if not navigation_page.is_closed():
-                        navigation_page.close()
-                except Exception:
-                    pass
-
-        restore_owner_page()
-
-        # 3. LinkedIn's own Next href
-        print("=" * 60)
-        print("PAGINATION ATTEMPT: LINKEDIN NEXT HREF")
-        print("=" * 60)
-
-        next_href = ""
-
-        for selector in (
-            "a:visible",
-            "button:visible",
-            "[role='button']:visible",
-        ):
-            try:
-                controls = owner_page.locator(
-                    selector
-                )
-                count = min(
-                    250,
-                    controls.count(),
-                )
-
-                for index in range(count):
-                    control = controls.nth(
-                        index
-                    )
-
-                    try:
-                        if not control.is_visible():
-                            continue
-                    except Exception:
-                        continue
-
-                    parts = []
-
-                    for attr in (
-                        "aria-label",
-                        "title",
-                        "data-testid",
-                        "data-control-name",
-                    ):
-                        try:
-                            value = (
-                                control.get_attribute(
-                                    attr
-                                )
-                                or ""
-                            ).strip()
-                            if value:
-                                parts.append(value)
-                        except Exception:
-                            pass
-
-                    try:
-                        text_value = (
-                            control.inner_text(
-                                timeout=500
-                            )
-                            or ""
-                        ).strip()
-
-                        if text_value:
-                            parts.append(
-                                text_value
-                            )
-                    except Exception:
-                        pass
-
-                    label = " ".join(parts).lower()
-
-                    if (
-                        "next" not in label
-                        or "previous" in label
-                    ):
-                        continue
-
-                    disabled = False
-
-                    try:
-                        disabled = (
-                            (
-                                control.get_attribute(
-                                    "aria-disabled"
-                                )
-                                or ""
-                            ).lower()
-                            == "true"
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        disabled = (
-                            disabled
-                            or bool(control.is_disabled())
-                        )
-                    except Exception:
-                        pass
-
-                    if disabled:
-                        continue
-
-                    try:
-                        next_href = (
-                            control.get_attribute(
-                                "href"
-                            )
-                            or ""
-                        ).strip()
-                    except Exception:
-                        next_href = ""
-
-                    if next_href:
-                        print(
-                            "LinkedIn Next href found:",
-                            next_href,
-                        )
-                        break
-
-                if next_href:
-                    break
-            except Exception:
-                continue
-
-        if next_href:
-            resolved_next_href = urljoin(
-                before_url,
-                next_href,
-            )
-
-            href_page = page_number(
-                resolved_next_href
-            )
+            final_url = str(next_page.url or "").strip()
+            final_lower = final_url.lower()
 
             if (
-                is_company_people_url(
-                    resolved_next_href,
-                    original_company_ids,
-                )
-                and href_page > current_page_number
+                "/search/results/people/" not in final_lower
+                or "currentcompany=" not in final_lower
+                or "/login" in final_lower
+                or "/authwall" in final_lower
+                or "/ssr-login" in final_lower
             ):
+                print("NEXT FAILED: LinkedIn did not return an authenticated people-search page.")
                 try:
-                    owner_page.goto(
-                        resolved_next_href,
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                        referer=before_url,
-                    )
-
-                    validation = wait_for_valid_page(
-                        owner_page,
-                        href_page,
-                        previous_signature,
-                        original_company_ids,
-                    )
-
-                    if validation == "VALIDATED":
-                        return True
-
-                    if validation == "END_OF_RESULTS":
-                        restore_owner_page()
-                        return False
-                except Exception as exc:
-                    print(
-                        "LinkedIn Next href navigation failed:",
-                        repr(exc),
-                    )
-
-                restore_owner_page()
-
-        # 4. Live Next control
-        print("=" * 60)
-        print("PAGINATION ATTEMPT: LIVE NEXT CONTROL")
-        print("=" * 60)
-
-        candidates = []
-
-        for selector in (
-            "a:visible",
-            "button:visible",
-            "[role='button']:visible",
-        ):
-            try:
-                controls = owner_page.locator(
-                    selector
-                )
-                count = min(
-                    250,
-                    controls.count(),
-                )
-
-                for index in range(count):
-                    control = controls.nth(index)
-
-                    try:
-                        if not control.is_visible():
-                            continue
-                    except Exception:
-                        continue
-
-                    parts = []
-
-                    for attr in (
-                        "aria-label",
-                        "title",
-                        "data-testid",
-                        "data-control-name",
-                    ):
-                        try:
-                            value = (
-                                control.get_attribute(
-                                    attr
-                                )
-                                or ""
-                            ).strip()
-                            if value:
-                                parts.append(value)
-                        except Exception:
-                            pass
-
-                    try:
-                        text_value = (
-                            control.inner_text(
-                                timeout=500
-                            )
-                            or ""
-                        ).strip()
-
-                        if text_value:
-                            parts.append(
-                                text_value
-                            )
-                    except Exception:
-                        pass
-
-                    label = " ".join(
-                        parts
-                    ).lower()
-
-                    if (
-                        "next" not in label
-                        or "previous" in label
-                    ):
-                        continue
-
-                    disabled = False
-
-                    try:
-                        disabled = (
-                            (
-                                control.get_attribute(
-                                    "aria-disabled"
-                                )
-                                or ""
-                            ).lower()
-                            == "true"
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        disabled = (
-                            disabled
-                            or bool(control.is_disabled())
-                        )
-                    except Exception:
-                        pass
-
-                    candidates.append(
-                        (
-                            control,
-                            disabled,
-                            label,
-                        )
-                    )
-            except Exception:
-                continue
-
-        enabled = [
-            item
-            for item in candidates
-            if not item[1]
-        ]
-
-        if not enabled:
-            if candidates:
-                print(
-                    "LinkedIn exposes a disabled Next control."
-                )
-                print(
-                    "Pagination end-of-results positively confirmed."
-                )
+                    next_page.close()
+                except Exception:
+                    pass
                 return False
 
-            print(
-                "No usable Next control found; this is NOT treated "
-                "as end-of-results."
+            # Validate that LinkedIn actually advanced to the requested page
+            # and preserved the selected company scope.
+            final_query = parse_qsl(
+                urlsplit(final_url).query,
+                keep_blank_values=True,
             )
-        else:
-            next_control = enabled[0][0]
+            final_page_number = 1
+            final_company_ids = []
+            for key, value in final_query:
+                if key.lower() == "page":
+                    try:
+                        final_page_number = int(value)
+                    except Exception:
+                        final_page_number = 1
+                if key.lower() == "currentcompany":
+                    final_company_ids.append(value)
 
+            expected_company_ids = []
+            for key, value in query:
+                if key.lower() == "currentcompany":
+                    expected_company_ids.append(value)
+
+            if final_page_number != target_page:
+                print(
+                    "NEXT FAILED: LinkedIn did not advance to the requested page.",
+                    "Expected:", target_page,
+                    "Actual:", final_page_number,
+                )
+                try:
+                    next_page.close()
+                except Exception:
+                    pass
+                return False
+
+            if expected_company_ids and final_company_ids != expected_company_ids:
+                print(
+                    "NEXT FAILED: currentCompany changed unexpectedly.",
+                    "Expected:", expected_company_ids,
+                    "Actual:", final_company_ids,
+                )
+                try:
+                    next_page.close()
+                except Exception:
+                    pass
+                return False
+
+            body_text = ""
             try:
-                next_control.scroll_into_view_if_needed()
+                body_text = next_page.locator("body").inner_text(timeout=3000)
             except Exception:
                 pass
 
+            normalized = " ".join((body_text or "").split()).lower()
+            no_results = any(
+                phrase in normalized
+                for phrase in (
+                    "no results found",
+                    "no results",
+                    "we couldn't find any results",
+                )
+            )
+
+            has_employee_signal = (
+                "view linkedin member" in normalized
+                or "linkedin member" in normalized
+                or bool(next_page.locator("a[href*='/in/']:visible").count())
+            )
+
+            if no_results and not has_employee_signal:
+                print("NO MORE EMPLOYEE RESULTS.")
+                try:
+                    next_page.close()
+                except Exception:
+                    pass
+                return False
+
+            self.page = next_page
             try:
-                next_control.click(
-                    timeout=15000,
-                    no_wait_after=True,
-                )
+                if before_page is not self.page and not before_page.is_closed():
+                    before_page.close()
+            except Exception:
+                pass
 
-                validation = wait_for_valid_page(
-                    owner_page,
-                    target_page_number,
-                    previous_signature,
-                    original_company_ids,
-                )
+            print("NEXT PAGE READY:", final_url)
+            return True
 
-                if validation == "VALIDATED":
-                    return True
-
-                if validation == "END_OF_RESULTS":
-                    restore_owner_page()
-                    return False
-            except Exception as exc:
-                print(
-                    "Live Next click failed:",
-                    repr(exc),
-                )
-
-            restore_owner_page()
-
-        # Match the working desktop behavior: an unresolved Next navigation
-        # is a stop condition, not a fatal workflow exception. This prevents
-        # GitHub Actions from turning a LinkedIn pagination/UI variation into
-        # a failed run after valid profiles have already been collected.
-        print(
-            "WARNING: LinkedIn pagination could not advance from page "
-            f"{current_page_number} to page {target_page_number}. "
-            "Treating this as the end of the usable result set."
-        )
-        return False
+        except Exception as exc:
+            print("NEXT PAGE FAILED:", repr(exc))
+            try:
+                if 'next_page' in locals() and next_page is not None and not next_page.is_closed():
+                    next_page.close()
+            except Exception:
+                pass
+            return False

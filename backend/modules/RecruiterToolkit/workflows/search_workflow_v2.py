@@ -6,1695 +6,281 @@ from automation.search_controller import should_stop
 
 
 def normalize_company(value):
-    """
-    Normalize company names only for comparison.
-    Does not alter the original company value used elsewhere.
-    """
-    if not value:
-        return ""
-
     import re
-
-    value = str(value).strip().lower()
+    value = str(value or "").strip().lower()
     value = re.sub(r"[^a-z0-9]+", " ", value)
-
     return " ".join(value.split())
 
 
 def normalize_location(value):
-    """
-    Normalize location text only for comparison.
-
-    The profile page may return locations such as:
-
-        Edison, New Jersey
-        Edison, New Jersey, United States
-        New Jersey, United States
-
-    The workflow compares the requested location as a normalized
-    component of the actual profile location.
-    """
-    if not value:
-        return ""
-
     import re
-
-    value = str(value).strip().lower()
+    value = str(value or "").strip().lower()
     value = re.sub(r"[^a-z0-9]+", " ", value)
-
     return " ".join(value.split())
 
 
-def search_result_supports_company(search_result_text, requested_company):
-    """Allow visible search-result company association in addition to exact profile company."""
-    result = normalize_company(search_result_text)
-    requested = normalize_company(requested_company)
-    if not result or not requested:
-        return False
-    if requested in result:
-        return True
-    generic = {"inc","llc","ltd","corp","corporation","company","co","limited","the"}
-    tokens = [t for t in requested.split() if t not in generic and len(t) >= 3]
-    return bool(tokens and all(t in result.split() for t in tokens))
-
-
-
-class SearchWorkflowProfilePage(LinkedInProfilePageV2):
-    """
-    Workflow-local navigation fix.
-
-    The employee search page is NEVER used as the profile page.
-    For every candidate we:
-      1. stay on the authenticated employee-search page,
-      2. find the exact candidate /in/ href,
-      3. Ctrl-click that exact link and capture the newly opened tab,
-      4. verify the new tab is the requested profile,
-      5. let LinkedInProfilePageV2 handle extraction,
-      6. close only the temporary profile tab.
-
-    This preserves the working CompanyPage search/filter/pagination flow
-    and prevents profile navigation from replacing the employee search page.
-    """
-
-    @staticmethod
-    def _canonical_profile_url(value):
-        if not value:
-            return ""
-        value = str(value).strip()
-        if value.startswith("/"):
-            value = "https://www.linkedin.com" + value
-        return value.split("?")[0].split("#")[0].rstrip("/").lower()
-
-    @staticmethod
-    def _blocked_url(url):
-        u = (url or "").lower()
-        return (
-            "/authwall" in u
-            or "/login" in u
-            or "/ssr-login/" in u
-            or "remember-me-auto-login" in u
-        )
-
-
-    def _employee_search_page(self):
-        """
-        Locate a CLEAN authenticated company-scoped employee-search page.
-
-        Never use a tab containing:
-          - network
-          - pastCompany
-        """
-        def is_valid_search_page(candidate):
-            try:
-                if candidate is None or candidate.is_closed():
-                    return False
-
-                url = str(candidate.url or "")
-                lower = url.lower()
-
-                if (
-                    "/search/results/people/" not in lower
-                    or "currentcompany=" not in lower
-                    or "/login" in lower
-                    or "/authwall" in lower
-                    or "/checkpoint" in lower
-                    or "/ssr-login" in lower
-                    or "remember-me-auto-login" in lower
-                ):
-                    return False
-
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(
-                    urlsplit(url).query,
-                    keep_blank_values=True,
-                )
-
-                if any(str(key).lower() == "network" for key in query):
-                    return False
-
-                if any(str(key).lower() == "pastcompany" for key in query):
-                    return False
-
-                return True
-            except Exception:
-                return False
-
-        try:
-            context = self.page.context
-        except Exception:
-            return None
-
-        try:
-            pages = list(context.pages)
-        except Exception:
-            return None
-
-        for candidate in reversed(pages):
-            if is_valid_search_page(candidate):
-                print(
-                    "Authenticated CLEAN employee-search page found in browser context:"
-                )
-                print(candidate.url)
-                return candidate
-
-        print(
-            "No authenticated CLEAN company-scoped employee-search page "
-            "found in browser context."
-        )
-        return None
-
-
-    def open_profile(self, profile_url):
-        requested = self._canonical_profile_url(profile_url)
-        if not requested or "/in/" not in requested:
-            print("INVALID PROFILE URL:", profile_url)
-            return False
-
-        search_page = self._employee_search_page()
-        if search_page is None:
-            print("PROFILE OPEN FAILED: authenticated employee-search page is not available.")
-            return False
-
-        self._original_profile_page = search_page
-        self.profile_url = str(profile_url).strip()
-
-        print("PROFILE NAVIGATION MODE: authenticated search page -> exact link -> new tab")
-        print("REQUESTED PROFILE:", self.profile_url)
-        print("SEARCH PAGE REMAINS:", search_page.url)
-
-        try:
-            exact_link = None
-            links = search_page.locator("a[href*='/in/']:visible")
-            count = links.count()
-
-            for i in range(count):
-                try:
-                    href = links.nth(i).get_attribute("href")
-                    if self._canonical_profile_url(href) == requested:
-                        exact_link = links.nth(i)
-                        break
-                except Exception:
-                    continue
-
-            if exact_link is None:
-                print("EXACT EMPLOYEE PROFILE LINK NOT FOUND ON SEARCH PAGE.")
-                return False
-
-            print("EXACT EMPLOYEE PROFILE LINK FOUND.")
-
-            # Capture the new tab explicitly. This is the important fix:
-            # the authenticated employee-search page is not replaced.
-            profile_page = None
-            try:
-                context = search_page.context
-                # Use the browser-context page event so we capture the actual
-                # new tab created by the authenticated LinkedIn click.
-                with context.expect_page(timeout=15000) as page_info:
-                    exact_link.click(modifiers=["Control"], timeout=15000)
-                profile_page = page_info.value
-            except Exception as ex:
-                print("CTRL-CLICK NEW-TAB OPEN FAILED:", repr(ex))
-
-            if profile_page is None:
-                print("PROFILE OPEN FAILED: no new profile tab was created.")
-                return False
-
-            self._temporary_profile_page = profile_page
-            self.page = profile_page
-
-            try:
-                profile_page.wait_for_load_state("domcontentloaded", timeout=30000)
-            except Exception:
-                pass
-
-            try:
-                profile_page.wait_for_timeout(2500)
-            except Exception:
-                pass
-
-            actual = self._canonical_profile_url(profile_page.url)
-            print("PROFILE TAB URL:", profile_page.url)
-
-            if self._blocked_url(profile_page.url):
-                print("AUTHWALL/LOGIN DETECTED ON PROFILE TAB.")
-                print(
-                    "Skipping redundant direct-profile retry. The authenticated "
-                    "company/location search row will be used as the fallback "
-                    "when its evidence is sufficient."
-                )
-
-                try:
-                    if not profile_page.is_closed():
-                        profile_page.close()
-                except Exception:
-                    pass
-
-                self._temporary_profile_page = None
-                self.page = search_page
-                return False
-
-            if actual != requested:
-                print("REJECTED: profile tab URL does not match requested candidate.")
-                print("Requested:", requested)
-                print("Actual:", actual)
-                return False
-
-            print("EXACT AUTHENTICATED EMPLOYEE PROFILE OPENED.")
-            return True
-
-        except Exception as ex:
-            print("PROFILE NEW-TAB NAVIGATION FAILED:", repr(ex))
-            return False
+def canonical_profile_url(value):
+    import re
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/"):
+        value = "https://www.linkedin.com" + value
+    value = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return re.sub(
+        r"^https?://(?:www\.)?linkedin\.com",
+        "https://www.linkedin.com",
+        value,
+        flags=re.IGNORECASE,
+    )
 
 
 class SearchWorkflowV2:
 
     def __init__(self, page):
-
         self.page = page
+        self.company_page = CompanyPage(self.page)
+        # Keep the proven desktop architecture: one dedicated profile page.
+        self.profile_page = self.page.context.new_page()
 
-        # -------------------------------------------------
-        # IMPORTANT:
-        # Keep CompanyPage as the owner of the LinkedIn
-        # company search, employee search, location filter,
-        # result extraction, and pagination.
-        #
-        # DO NOT replace this with a raw /in/ DOM scan.
-        # -------------------------------------------------
-        self.company_page = CompanyPage(
-            self.page
-        )
+    def _validate_profile(self, data, company, location):
+        requested_company = normalize_company(company)
+        requested_location = normalize_location(location)
 
+        actual_company = normalize_company(data.get("company", ""))
+        actual_location = normalize_location(data.get("location", ""))
 
-    # =====================================================
-    # AUTHENTICATED EMPLOYEE SEARCH PAGE OWNERSHIP
-    # =====================================================
-
-    def _restore_employee_search_page(self):
-        """
-        Re-anchor workflow and CompanyPage to the CLEAN authenticated
-        company-scoped employee-search tab.
-
-        A tab containing network or pastCompany is never selected.
-        """
-        context = None
-
-        try:
-            context = self.page.context
-        except Exception:
-            try:
-                context = self.company_page.page.context
-            except Exception:
-                context = None
-
-        if context is None:
-            print("SEARCH PAGE RESTORE FAILED: browser context unavailable.")
+        if requested_location and requested_location not in actual_location:
+            print("REJECTED: profile location does not match requested location.")
+            print("Profile location:", data.get("location", ""))
+            print("Requested location:", location)
             return False
 
-        try:
-            pages = list(context.pages)
-        except Exception as ex:
-            print(
-                "SEARCH PAGE RESTORE FAILED: could not inspect context pages:",
-                repr(ex),
-            )
+        # LinkedIn can omit the company from some authenticated profile views.
+        # Because this candidate came from the selected company's people-search
+        # page, an empty profile-company field is allowed. When LinkedIn does
+        # expose a company, however, it must agree with the requested company.
+        if actual_company and requested_company and requested_company not in actual_company:
+            print("REJECTED: profile company does not match requested company.")
+            print("Profile company:", data.get("company", ""))
+            print("Requested company:", company)
             return False
-
-        valid_pages = []
-
-        for candidate in pages:
-            try:
-                if candidate.is_closed():
-                    continue
-
-                url = str(candidate.url or "").strip()
-                lower = url.lower()
-
-                if (
-                    "/search/results/people/" not in lower
-                    or "currentcompany=" not in lower
-                    or "/login" in lower
-                    or "/authwall" in lower
-                    or "/checkpoint" in lower
-                    or "/ssr-login" in lower
-                    or "remember-me-auto-login" in lower
-                ):
-                    continue
-
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(
-                    urlsplit(url).query,
-                    keep_blank_values=True,
-                )
-
-                if any(str(key).lower() == "network" for key in query):
-                    continue
-
-                if any(str(key).lower() == "pastcompany" for key in query):
-                    continue
-
-                valid_pages.append(candidate)
-            except Exception:
-                continue
-
-        if not valid_pages:
-            print(
-                "SEARCH PAGE RESTORE FAILED: no CLEAN authenticated "
-                "company people-search tab exists."
-            )
-            return False
-
-        selected = valid_pages[-1]
-
-        try:
-            self.page = selected
-            self.company_page.page = selected
-        except Exception as ex:
-            print(
-                "SEARCH PAGE RESTORE FAILED: could not assign page ownership:",
-                repr(ex),
-            )
-            return False
-
-        print("=" * 60)
-        print("EMPLOYEE SEARCH PAGE RESTORED")
-        print("=" * 60)
-        print("Workflow page URL:", self.page.url)
-        print("CompanyPage page URL:", self.company_page.page.url)
-        print("Company-scoped people search:", True)
-        print("Verified: network parameter ABSENT.")
-        print("Verified: pastCompany parameter ABSENT.")
 
         return True
 
-        # LinkedInProfilePageV2 creates a fresh temporary
-        # profile tab for each candidate.
-        #
-        # Do not keep a reusable profile Page here.
-    # =====================================================
-    # FALLBACK RECORD
-    # =====================================================
+    def _process_link_candidate(self, row):
+        profile_url = canonical_profile_url(row.get("profile_url"))
+        if not profile_url:
+            return None
 
-    @staticmethod
-    def _search_result_fallback(row, company, location):
-        """
-        LinkedIn may allow the authenticated people-search page
-        while redirecting direct profile navigation to /authwall.
+        profile = LinkedInProfilePageV2(self.profile_page)
+        if not profile.open_profile(profile_url):
+            return None
 
-        The employee was already obtained from CompanyPage.get_profiles()
-        on the company + location filtered people-search page.
-
-        In that situation, preserve the employee in the CSV instead
-        of silently dropping the profile.
-
-        Profile-specific fields that were not available because of the
-        authwall remain blank.
-        """
-
-        import re
-
-        search_text = str(row.get("search_result_text", "") or "")
-        email = ""
         try:
-            matches = re.findall(
-                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                search_text,
-            )
-            if matches:
-                email = matches[0].strip()
-        except Exception:
-            email = ""
+            return profile.get_profile()
+        finally:
+            temp = getattr(profile, "_temporary_profile_page", None)
+            if temp is not None:
+                try:
+                    if not temp.is_closed():
+                        temp.close()
+                except Exception:
+                    pass
+                profile._temporary_profile_page = None
 
-        return {
-            "full_name": row.get("full_name", ""),
-            "headline": row.get("headline", ""),
-            "location": row.get("location", ""),
-            "company": row.get("company", ""),
-            "email": email,
-            "email_source": "search_result" if email else "",
-            "profile_url": row.get("profile_url", ""),
-            "linked_email_id": "",
-            "search_company": company,
-            "search_location": location,
-        }
+    def _process_control_candidate(self, control_index):
+        temp_page, actual_url = self.company_page.open_result_profile(control_index)
+        if temp_page is None or not actual_url:
+            return None
 
-    # =====================================================
-    # MAIN WORKFLOW
-    # =====================================================
+        profile = LinkedInProfilePageV2(temp_page)
+        profile.profile_url = actual_url
 
-    def run(
-        self,
-        company,
-        location,
-        max_profiles=None
-    ):
+        try:
+            return profile.get_profile()
+        finally:
+            try:
+                if not temp_page.is_closed():
+                    temp_page.close()
+            except Exception:
+                pass
+
+    def run(self, company, location, max_profiles=1):
+        max_profiles = int(max_profiles)
+        if max_profiles < 1:
+            raise ValueError("max_profiles must be at least 1.")
 
         print("=" * 70)
         print("LINKEDIN SEARCH WORKFLOW V2")
         print("=" * 70)
-
-        print(
-            "Company:",
-            company
-        )
-
-        print(
-            "Location:",
-            location
-        )
-
-        try:
-            max_profiles = int(max_profiles)
-        except (TypeError, ValueError):
-            raise ValueError(
-                "max_profiles must be a positive integer."
-            )
-
-        if max_profiles < 1:
-            raise ValueError(
-                "max_profiles must be at least 1."
-            )
-
-        print(
-            "Maximum profiles:",
-            max_profiles
-        )
+        print("Company:", company)
+        print("Location:", location)
+        print("Maximum profiles:", max_profiles)
 
         results = []
         seen_urls = set()
         page_no = 1
 
-        # -------------------------------------------------
-        # A - Search Company
-        # -------------------------------------------------
-
         print("=" * 60)
         print("A - Searching company")
         print("=" * 60)
-
-        company_search_ok = self.company_page.search_company(
-            company
-        )
-
-        print(
-            "Company search completed."
-        )
-
-        # Never continue into open_company_result() when company search failed.
-        # Otherwise the workflow can scan unrelated /company/ links already
-        # present on the LinkedIn Feed.
-        if not company_search_ok:
-            print(
-                "Company search failed. SAFE STOP: refusing to scan unrelated "
-                "Feed company links."
-            )
-            return self._finish(
-                results,
-                company,
-                location
-            )
-
-        # -------------------------------------------------
-        # B - Open Company
-        # -------------------------------------------------
+        if not self.company_page.search_company(company):
+            raise RuntimeError("Company search failed.")
 
         print("=" * 60)
         print("B - Opening company")
         print("=" * 60)
-
-        found = (
-            self.company_page
-            .open_company_result(
-                company
-            )
-        )
-
-        print(
-            "Company found:",
-            found
-        )
-
-        if not found:
-
-            print(
-                "Company not found."
-            )
-
-            return self._finish(
-                results,
-                company,
-                location
-            )
-
-        # -------------------------------------------------
-        # C - Open Employees
-        # -------------------------------------------------
+        if not self.company_page.open_company_result(company):
+            raise RuntimeError(f"Company '{company}' was not found.")
 
         print("=" * 60)
         print("C - Opening employees")
         print("=" * 60)
-
-        opened = (
-            self.company_page
-            .open_employees_page()
-        )
-
-        print(
-            "Employees page:",
-            opened
-        )
-
-        # Keep SearchWorkflowV2 and CompanyPage pointed at the exact same
-        # authenticated employee-search page.
-        if opened:
-            try:
-                self.page = self.company_page.page
-                print(
-                    "Employee-search page ownership synchronized:",
-                    self.page.url
-                )
-            except Exception as ex:
-                print(
-                    "Employee-search page ownership synchronization failed:",
-                    repr(ex)
-                )
-
-        # -------------------------------------------------
-        # V2 EMPLOYEE SEARCH RECOVERY
-        #
-        # LinkedIn may redirect the currentCompany people
-        # search through /ssr-login/remember-me-auto-login
-        # even though the authenticated feed session works.
-        #
-        # Do not immediately terminate the workflow.
-        # Re-establish the authenticated company page and
-        # retry the existing CompanyPage employee navigation.
-        # -------------------------------------------------
-
-        if (
-            not opened
-            and getattr(
-                self.company_page,
-                "_employee_search_scope_ready",
-                False,
-            )
-        ):
-
-            # First recover from an already-open authenticated company
-            # people-search tab. This is non-navigational and cannot turn a
-            # valid session into /login/ or /uas/login/.
-            try:
-                if self._restore_employee_search_page():
-                    opened = True
-                    print(
-                        "Existing authenticated employee-search tab "
-                        "recovered without navigation."
-                    )
-            except Exception as ex:
-                print(
-                    "Existing employee-search tab recovery failed:",
-                    repr(ex)
-                )
-
-            current_url = self.page.url.lower()
-
-            if not opened and (
-                "/ssr-login/" in current_url
-                or "remember-me-auto-login" in current_url
-                or "/login" in current_url
-            ):
-
-                print("=" * 60)
-                print(
-                    "EMPLOYEE SEARCH REDIRECT RECOVERY"
-                )
-                print("=" * 60)
-
-                print(
-                    "Redirected employee URL:",
-                    self.page.url
-                )
-
-                try:
-
-                    # -------------------------------------------------
-                    # Return to the authenticated LinkedIn feed.
-                    # -------------------------------------------------
-
-                    self.page.goto(
-                        "https://www.linkedin.com/feed/",
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
-
-                    self.page.wait_for_timeout(
-                        3000
-                    )
-
-                    print(
-                        "Recovery feed URL:",
-                        self.page.url
-                    )
-
-                    if (
-                        "/feed" in self.page.url.lower()
-                        and "/login" not in self.page.url.lower()
-                    ):
-
-                        print(
-                            "Authenticated feed recovered."
-                        )
-
-                        # -------------------------------------------------
-                        # Repeat the existing V2 company-search flow.
-                        #
-                        # We are NOT replacing CompanyPage.
-                        # -------------------------------------------------
-
-                        self.company_page.search_company(
-                            company
-                        )
-
-                        found_again = (
-                            self.company_page
-                            .open_company_result(
-                                company
-                            )
-                        )
-
-                        print(
-                            "Company recovery result:",
-                            found_again
-                        )
-
-                        if found_again:
-
-                            opened = (
-                                self.company_page
-                                .open_employees_page()
-                            )
-
-                            print(
-                                "Employee recovery result:",
-                                opened
-                            )
-
-                except Exception as ex:
-
-                    print(
-                        "Employee search recovery failed:",
-                        repr(ex)
-                    )
-
-        # -------------------------------------------------
-        # Final employee-search failure
-        # -------------------------------------------------
-
-        if not opened:
-
-            print(
-                "Employees page not found."
-            )
-
-            return self._finish(
-                results,
-                company,
-                location
-            )
-
-        # -------------------------------------------------
-        # D - Apply Location
-        # -------------------------------------------------
+        if not self.company_page.open_employees_page():
+            raise RuntimeError("Company-scoped employee search could not be opened.")
 
         print("=" * 60)
         print("D - Applying location")
         print("=" * 60)
+        if not self.company_page.apply_location(location):
+            raise RuntimeError("LinkedIn location filter was not successfully applied.")
 
-        location_applied = (
-            self.company_page.apply_location(
-                location
-            )
-        )
+        print("=" * 60)
+        print("E - Collecting valid profiles")
+        print("=" * 60)
 
-        print(
-            "Location filter result:",
-            location_applied
-        )
-
-        if not location_applied:
-
-            print(
-                "ERROR: Location filter was not successfully applied."
-            )
-
-            print(
-                "SAFE STOP: Refusing to process an "
-                "unfiltered employee search."
-            )
-
-            return self._finish(
-                results,
-                company,
-                location
-            )
-
-        print(
-            "Location applied successfully."
-        )
-
-
-        # -------------------------------------------------
-        # E - Collect Employees
-        #
-        # CompanyPage.get_profiles() is intentionally retained.
-        #
-        # This is the working extraction logic that produced:
-        #
-        #   Vamshi Krishna Kota
-        #   Veena D. Gangadhariah
-        #   David Cooper
-        #
-        # on the SmartWorks, LLC + New Jersey search page.
-        # -------------------------------------------------
+        empty_page_streak = 0
 
         while len(results) < max_profiles:
-
             if should_stop():
-
-                print(
-                    "STOP requested."
-                )
-
+                print("STOP requested.")
                 break
 
             print("=" * 60)
-            print(
-                f"E - Reading employee page {page_no}"
-            )
+            print(f"Reading employee page {page_no}")
             print("=" * 60)
 
-            remaining_profiles = max_profiles - len(results)
-
-            # max_profiles means VALID RETAINED profiles, not candidates attempted.
-            # Over-fetch from the already location-filtered result rows because
-            # authwalls, missing profile data, duplicates and validation failures
-            # can consume candidates without producing a retained profile.
-            candidate_batch_size = min(
-                100,
-                max(
-                    remaining_profiles * 3,
-                    25,
-                ),
+            remaining = max_profiles - len(results)
+            candidates = self.company_page.get_profiles(
+                company,
+                location,
+                remaining,
             )
 
-            print(
-                "Candidate discovery batch size:",
-                candidate_batch_size,
-                "| Valid profiles still required:",
-                remaining_profiles,
-            )
+            print("Candidates discovered on page:", len(candidates))
 
-            page_results = (
-                self.company_page
-                .get_profiles(
-                    company,
-                    location,
-                    candidate_batch_size,
-                )
-            )
+            accepted_this_page = 0
 
-            print(
-                "Profiles extracted:",
-                len(page_results)
-            )
-
-            if not page_results:
-
-                print(
-                    "No employee profiles found on this page."
-                )
-
-            # -------------------------------------------------
-            # Process ALL employees returned from CompanyPage
-            # -------------------------------------------------
-
-            print("Candidates returned by CompanyPage:", len(page_results))
-
-            for candidate_index, row in enumerate(
-                page_results,
-                start=1
-            ):
-
-                if should_stop():
-                    print("STOP requested.")
+            for index, row in enumerate(candidates, start=1):
+                if len(results) >= max_profiles or should_stop():
                     break
 
+                control_index = row.get("control_index")
+                candidate_url = canonical_profile_url(row.get("profile_url"))
+
                 print("=" * 60)
-                print(
-                    f"PROCESSING CANDIDATE "
-                    f"{candidate_index} "
-                    f"OF {len(page_results)}"
-                )
+                print(f"Processing candidate {index}/{len(candidates)}")
                 print("=" * 60)
-
-                # -------------------------------------------------
-                # FREEZE THIS CANDIDATE'S URL.
-                #
-                # This must become a plain string before any
-                # profile navigation occurs.
-                # -------------------------------------------------
-
-                candidate_url = str(
-                    row.get(
-                        "profile_url",
-                        ""
-                    )
-                ).strip()
-
-                if not candidate_url:
-                    print(
-                        "SKIP - candidate has no profile URL."
-                    )
-                    continue
-
-                if candidate_url in seen_urls:
-                    print(
-                        "SKIP - duplicate profile URL:",
-                        candidate_url
-                    )
-                    continue
-
-                # Candidate is marked seen only after it is
-                # successfully retained in results.
-
-                print(
-                    "Candidate profile URL:",
-                    candidate_url
-                )
-
-                # -------------------------------------------------
-                # Immutable handoff value.
-                # -------------------------------------------------
-
-                requested_profile_url = (
-                    candidate_url
-                )
-
-                print(
-                    "Profile URL handed to "
-                    "LinkedInProfilePageV2:",
-                    requested_profile_url
-                )
-
-                profile = None
 
                 try:
+                    if control_index is not None:
+                        data = self._process_control_candidate(int(control_index))
+                    else:
+                        data = self._process_link_candidate(row)
 
-                    # Re-anchor to the authenticated employee search page before
-                    # opening EVERY candidate. The search page is never the profile page.
-                    if not self._restore_employee_search_page():
-                        print(
-                            "PROFILE OPEN FAILED: employee-search page is not available."
-                        )
-                        print("Candidate NOT counted as collected.")
-                        print("Continuing to next candidate...")
+                    if not data:
+                        print("Candidate skipped: profile could not be opened.")
                         continue
 
-                    current_employee_url = str(
-                        self.company_page.page.url or ""
-                    ).lower()
-
-                    if (
-                        "/search/results/people/" not in current_employee_url
-                        or "currentcompany=" not in current_employee_url
-                    ):
-                        print(
-                            "PROFILE OPEN FAILED: current page is not company-scoped employee search."
-                        )
-                        print("Current URL:", self.company_page.page.url)
-                        print("Candidate NOT counted as collected.")
-                        print("Continuing to next candidate...")
+                    actual_url = canonical_profile_url(
+                        data.get("profile_url") or candidate_url
+                    )
+                    if not actual_url or "/in/" not in actual_url:
+                        print("Candidate skipped: no real LinkedIn /in/ profile URL.")
                         continue
 
-                    self.page = self.company_page.page
+                    data["profile_url"] = actual_url
 
-                    # self.page remains the authenticated employee-search page.
-                    # LinkedInProfilePageV2.open_profile() searches that page for
-                    # the EXACT candidate URL and Ctrl-clicks that exact link
-                    # into a temporary profile tab.
-                    profile = SearchWorkflowProfilePage(
-                        self.page
-                    )
-
-                    print(
-                        "OPEN_PROFILE ARGUMENT:",
-                        requested_profile_url
-                    )
-
-                    profile_opened = (
-                        profile.open_profile(
-                            requested_profile_url
-                        )
-                    )
-
-                    if not profile_opened:
-
-                        row_text = str(row.get("search_result_text", "") or "")
-                        requested_location_normalized = normalize_location(location)
-                        row_location_normalized = normalize_location(row_text)
-                        row_location_matches = (
-                            bool(requested_location_normalized)
-                            and requested_location_normalized in row_location_normalized
-                        )
-
-                        if row_location_matches:
-                            fallback = self._search_result_fallback(
-                                row, company, location
-                            )
-                            if fallback.get("full_name"):
-                                fallback["profile_url"] = requested_profile_url
-                                results.append(fallback)
-                                seen_urls.add(candidate_url)
-
-                                print(
-                                    "SEARCH-RESULT FALLBACK COLLECTED:",
-                                    fallback.get("full_name"),
-                                )
-                                print(
-                                    "Reason: profile navigation hit authwall/blocked profile; "
-                                    "bounded company/location result row retained."
-                                )
-
-                                try:
-                                    autosave = Exporter.export_csv(
-                                        results,
-                                        f"{company}_{location}_v2_autosave.csv",
-                                    )
-                                    print("Autosave:", autosave)
-                                except Exception as ex:
-                                    print("Autosave failed:", repr(ex))
-
-                                if len(results) >= max_profiles:
-                                    print("Maximum profile limit reached.")
-                                    break
-
-                                continue
-
-                        print("PROFILE PAGE COULD NOT BE OPENED.")
-                        print(
-                            "Candidate not retained because the bounded "
-                            "search-result TEXT did not prove the requested location."
-                        )
-                        print("Continuing to next candidate...")
+                    if actual_url in seen_urls:
+                        print("Candidate skipped: duplicate profile URL.")
                         continue
 
-                    # -------------------------------------------------
-                    # Verify that the actual browser page is the SAME
-                    # profile requested for this candidate.
-                    # -------------------------------------------------
+                    if not self._validate_profile(data, company, location):
+                        continue
 
-                    actual_browser_url = ""
+                    data["search_company"] = company
+                    data["search_location"] = location
+                    results.append(data)
+                    seen_urls.add(actual_url)
+                    accepted_this_page += 1
+
+                    print("VALID PROFILE COLLECTED")
+                    print("Profiles collected so far:", len(results))
 
                     try:
-                        actual_browser_url = (
-                            profile.page.url
-                        )
-                    except Exception as ex:
-                        print(
-                            "Could not read actual profile URL:",
-                            repr(ex)
-                        )
-
-                    print(
-                        "REQUESTED PROFILE URL:",
-                        requested_profile_url
-                    )
-
-                    print(
-                        "ACTUAL PROFILE PAGE URL:",
-                        actual_browser_url
-                    )
-
-                    def canonical_profile_url(value):
-
-                        if not value:
-                            return ""
-
-                        value = str(
-                            value
-                        ).strip()
-
-                        if value.startswith("/"):
-                            value = (
-                                "https://www.linkedin.com"
-                                + value
-                            )
-
-                        return (
-                            value
-                            .split("?")[0]
-                            .split("#")[0]
-                            .rstrip("/")
-                            .lower()
-                        )
-
-                    requested_canonical = (
-                        canonical_profile_url(
-                            requested_profile_url
-                        )
-                    )
-
-                    actual_canonical = (
-                        canonical_profile_url(
-                            actual_browser_url
-                        )
-                    )
-
-                    if (
-                        not actual_canonical
-                        or actual_canonical
-                        != requested_canonical
-                    ):
-
-                        print(
-                            "REJECT - opened profile URL "
-                            "does not match requested "
-                            "candidate URL."
-                        )
-
-                        print(
-                            "Requested canonical URL:",
-                            requested_canonical
-                        )
-
-                        print(
-                            "Actual canonical URL:",
-                            actual_canonical
-                        )
-
-                        continue
-
-                    # -------------------------------------------------
-                    # Extract actual profile data.
-                    # -------------------------------------------------
-                    # Call the base LinkedInProfilePageV2 implementation
-                    # explicitly. This prevents a subclass/monkey-patched
-                    # method-resolution edge case from silently skipping the
-                    # profile extractor after a successful tab open.
-                    # -------------------------------------------------
-
-                    print("BEGIN PROFILE DATA EXTRACTION")
-
-                    data = LinkedInProfilePageV2.get_profile(profile)
-                    # V3: preserve the bounded employee-row name if the authenticated profile header exposes no name.
-                    if not data.get("full_name"):
-
-                        row_name = str(row.get("full_name", "")).strip()
-                        if row_name:
-                            data["full_name"] = row_name
-                            print("PROFILE NAME FALLBACK FROM SEARCH RESULT:", row_name)
-
-                    print(
-                        "PROFILE DATA EXTRACTION RETURNED:",
-                        type(data).__name__,
-                        "keys=",
-                        sorted(data.keys()) if isinstance(data, dict) else "NON-DICT",
-                    )
-
-                    if not isinstance(data, dict):
-
-                        print("PROFILE DATA EXTRACTION RETURNED NON-DICT DATA.")
-                        print("Candidate NOT counted as collected.")
-                        print("Continuing to next candidate...")
-                        continue
-
-                    # If LinkedIn hides the person's name on the profile page,
-                    # preserve the identity that came from the authenticated
-                    # search-result row. For anonymized results this will be
-                    # "LinkedIn Member"; do not invent a real name.
-                    if not data.get("full_name"):
-
-                        fallback_name = str(
-                            row.get("full_name", "")
-                        ).strip()
-
-                        if fallback_name:
-                            data["full_name"] = fallback_name
-                            print(
-                                "PROFILE NAME NOT VISIBLE; USING SEARCH-RESULT "
-                                "IDENTITY:",
-                                fallback_name,
-                            )
-                        else:
-                            print("PROFILE OPENED BUT PROFILE DATA WAS EMPTY.")
-                            print("Candidate NOT counted as collected.")
-                            print("Continuing to next candidate...")
-                            continue
-
-                    if not data.get("email"):
-                        try:
-                            search_result_email_matches = re.findall(
-                                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                                str(row.get("search_result_text", "") or ""),
-                            )
-                            if search_result_email_matches:
-                                data["email"] = search_result_email_matches[0].strip()
-                                data["email_source"] = "search_result"
-                                print("SEARCH RESULT EMAIL FALLBACK:", data["email"])
-                        except Exception:
-                            pass
-
-                    actual_company = (
-                        data.get(
-                            "company",
-                            ""
-                        )
-                    )
-
-                    actual_location = (
-                        data.get(
-                            "location",
-                            ""
-                        )
-                    )
-
-                    # LinkedIn can expose a numeric company ID instead of the
-                    # company name. It is not a usable employer value. Prefer the
-                    # bounded authenticated search-result row in that case.
-                    row_company_value = str(
-                        row.get("company", "")
-                    ).strip()
-
-                    # CompanyPage stores the requested location in row["location"]
-                    # for output compatibility. It is NOT evidence of the person's
-                    # actual location and must never be used for validation/filling.
-                    row_location_value = ""
-
-                    normalized_profile_company = normalize_company(
-                        actual_company
-                    )
-
-                    if (
-                        row_company_value
-                        and (
-                            not actual_company
-                            or (
-                                normalized_profile_company.isdigit()
-                                and len(normalized_profile_company) >= 3
-                            )
-                        )
-                    ):
-                        print(
-                            "PROFILE COMPANY NORMALIZED FROM SEARCH RESULT:",
-                            repr(actual_company),
-                            "->",
-                            repr(row_company_value),
-                        )
-                        actual_company = row_company_value
-                        data["company"] = row_company_value
-
-                    normalized_profile_location = normalize_location(
-                        actual_location
-                    )
-
-                    requested_location_for_fill = normalize_location(
-                        location
-                    )
-
-                    # NEVER manufacture actual profile location from the
-                    # requested location or row["location"]. If the profile page
-                    # hides location, validation below uses search_result_text as
-                    # the independent bounded-row evidence.
-                    if not actual_location:
-                        print(
-                            "PROFILE LOCATION NOT EXPOSED BY PROFILE PAGE; "
-                            "using bounded search-result text only for validation."
-                        )
-
-                    requested_company_normalized = (
-                        normalize_company(
-                            company
-                        )
-                    )
-
-                    actual_company_normalized = (
-                        normalize_company(
-                            actual_company
-                        )
-                    )
-
-                    requested_location_normalized = (
-                        normalize_location(
-                            location
-                        )
-                    )
-
-                    actual_location_normalized = (
-                        normalize_location(
-                            actual_location
-                        )
-                    )
-
-                    search_result_text = row.get(
-                        "search_result_text",
-                        ""
-                    )
-                    # V3: only parse email addresses from this exact bounded employee result row.
-                    result_emails = []
-                    try:
-                        import re as _re
-                        email_pattern = _re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", _re.IGNORECASE)
-                        for match in email_pattern.findall(str(search_result_text or "")):
-                            normalized_email = match.strip().lower()
-                            if normalized_email and normalized_email not in result_emails:
-                                result_emails.append(normalized_email)
-                    except Exception:
-                        result_emails = []
-
-                    if result_emails:
-                        current_email = str(data.get("email", "")).strip().lower()
-
-                        if not current_email:
-                            data["email"] = result_emails[0]
-                            data["email_source"] = "search_result"
-                            current_email = result_emails[0]
-                            print("SEARCH RESULT EMAIL FALLBACK:", current_email)
-
-                        existing_linked = [
-                            item.strip().lower()
-                            for item in str(data.get("linked_email_id", "")).split(";")
-                            if item.strip()
-                        ]
-
-                        merged_linked = []
-                        for item in existing_linked + result_emails:
-                            if item and item != current_email and item not in merged_linked:
-                                merged_linked.append(item)
-
-                        data["linked_email_id"] = "; ".join(merged_linked)
-                        print("SEARCH RESULT EMAILS:", result_emails)
-
-                    search_result_company_matches = (
-                        search_result_supports_company(
-                            search_result_text,
-                            company
-                        )
-                    )
-
-                    search_result_location_normalized = (
-                        normalize_location(
-                            search_result_text
-                        )
-                    )
-
-                    search_result_location_matches = (
-                        bool(
-                            search_result_location_normalized
-                        )
-                        and
-                        bool(
-                            requested_location_normalized
-                        )
-                        and
-                        requested_location_normalized
-                        in
-                        search_result_location_normalized
-                    )
-
-                    row_company_normalized = normalize_company(
-                        row.get("company", "")
-                    )
-
-                    # The candidate was obtained from CompanyPage.get_profiles()
-                    # while the browser was on currentCompany-scoped people search.
-                    # When LinkedIn masks the employer on the profile page, keep the
-                    # company scope already established by the search row.
-                    row_company_scope_matches = (
-                        bool(row_company_normalized)
-                        and row_company_normalized == requested_company_normalized
-                    )
-
-                    company_matches = (
-                        (
-                            bool(actual_company_normalized)
-                            and
-                            actual_company_normalized == requested_company_normalized
-                        )
-                        or
-                        search_result_company_matches
-                        or
-                        row_company_scope_matches
-                    )
-
-                    # Prefer the authoritative profile location whenever it
-                    # exists. If LinkedIn does not expose a profile location,
-                    # allow the bounded employee-result row to supply the
-                    # location evidence instead.
-                    location_matches = (
-                        (
-                            bool(actual_location_normalized)
-                            and
-                            bool(requested_location_normalized)
-                            and
-                            requested_location_normalized
-                            in
-                            actual_location_normalized
-                        )
-                        or
-                        (
-                            not actual_location_normalized
-                            and
-                            search_result_location_matches
-                        )
-                    )
-
-                    print(
-                        "PROFILE COMPANY:",
-                        repr(actual_company)
-                    )
-
-                    print(
-                        "REQUESTED COMPANY:",
-                        repr(company)
-                    )
-
-                    print(
-                        "PROFILE COMPANY EXACT MATCH:",
-                        (
-                            bool(actual_company_normalized)
-                            and
-                            actual_company_normalized == requested_company_normalized
-                        )
-                    )
-
-                    print(
-                        "SEARCH RESULT COMPANY ASSOCIATION MATCH:",
-                        search_result_company_matches
-                    )
-
-                    print(
-                        "PROFILE LOCATION:",
-                        repr(actual_location)
-                    )
-
-                    print(
-                        "REQUESTED LOCATION:",
-                        repr(location)
-                    )
-
-                    print(
-                        "LOCATION MATCH:",
-                        location_matches
-                    )
-
-                    print(
-                        "SEARCH RESULT LOCATION MATCH:",
-                        search_result_location_matches
-                    )
-
-                    # -------------------------------------------------
-                    # STRICT ACCEPTANCE
-                    # -------------------------------------------------
-
-                    if not company_matches:
-
-                        print(
-                            "REJECTED - PROFILE COMPANY MISMATCH"
-                        )
-
-                        print(
-                            "Continuing to next candidate..."
-                        )
-
-                        continue
-
-                    if not location_matches:
-
-                        print(
-                            "REJECTED - PROFILE LOCATION MISMATCH"
-                        )
-
-                        print(
-                            "Continuing to next candidate..."
-                        )
-
-                        continue
-
-                    data["search_company"] = (
-                        company
-                    )
-
-                    data["search_location"] = (
-                        location
-                    )
-
-                    # Always preserve the exact candidate URL.
-                    data["profile_url"] = (
-                        requested_profile_url
-                    )
-
-                    results.append(
-                        data
-                    )
-
-                    # Mark only after all profile validation succeeded
-                    # and the candidate was actually retained.
-                    seen_urls.add(
-                        candidate_url
-                    )
-
-                    print(
-                        "PROFILE VALIDATION PASSED"
-                    )
-
-                    print(
-                        "VALID PROFILE COLLECTED"
-                    )
-
-                    print(
-                        "Profiles collected so far:",
-                        len(results)
-                    )
-
-                    try:
-
                         autosave = Exporter.export_csv(
                             results,
-                            f"{company}_{location}"
-                            f"_v2_autosave.csv"
+                            f"{company}_{location}_v2_autosave.csv",
                         )
+                        print("Autosave:", autosave)
+                    except Exception as exc:
+                        print("Autosave failed:", repr(exc))
 
-                        print(
-                            "Autosave:",
-                            autosave
-                        )
-
-                    except Exception as ex:
-
-                        print(
-                            "Autosave failed:",
-                            repr(ex)
-                        )
-
-                    if (
-                        len(results)
-                        >= max_profiles
-                    ):
-
-                        print(
-                            "Maximum profile limit reached."
-                        )
-
-                        break
-
-                except Exception as ex:
-
-                    print("Profile processing failed:", repr(ex))
-                    print("Candidate NOT counted as collected.")
-                    print("Continuing to next candidate...")
+                except Exception as exc:
+                    print("Candidate processing failed:", repr(exc))
                     continue
-
-                finally:
-                    # ALWAYS close the temporary profile tab used by this candidate.
-                    # LinkedInProfilePageV2 normally closes it during get_profile(),
-                    # but this finally block guarantees cleanup on every success,
-                    # rejection, exception, or early-return path.
-                    try:
-                        temporary_profile_page = None
-
-                        if profile is not None:
-                            temporary_profile_page = getattr(
-                                profile,
-                                "_temporary_profile_page",
-                                None
-                            )
-
-                        if (
-                            temporary_profile_page is not None
-                            and not temporary_profile_page.is_closed()
-                        ):
-                            temporary_profile_page.close()
-                            print("PROFILE TAB CLOSED.")
-
-                    except Exception as cleanup_ex:
-                        print(
-                            "PROFILE TAB CLEANUP WARNING:",
-                            repr(cleanup_ex)
-                        )
-
-                    # Re-anchor the workflow and CompanyPage to the SAME
-                    # authenticated employee-search page before the next candidate
-                    # and before pagination.
-                    if not self._restore_employee_search_page():
-                        print(
-                            "SEARCH PAGE RESTORE WARNING: "
-                            "employee-search page could not be re-anchored."
-                        )
-
-            # -------------------------------------------------
-            # Maximum reached after exhausting candidates
-            # -------------------------------------------------
 
             if len(results) >= max_profiles:
                 break
 
-            # -------------------------------------------------
-            # Only move to the next LinkedIn employee page after
-            # every candidate on the current page has been processed.
-            # -------------------------------------------------
+            empty_page_streak = 0 if accepted_this_page else empty_page_streak + 1
 
-            print("=" * 60)
-            print("CURRENT EMPLOYEE PAGE EXHAUSTED")
-            print("Profiles collected so far:", len(results))
-            print("Trying next employee page...")
-            print("=" * 60)
+            print(
+                "Accepted on page:",
+                accepted_this_page,
+                "| Total:",
+                len(results),
+                "/",
+                max_profiles,
+            )
 
-            if not self._restore_employee_search_page():
-                print("SAFE STOP: authenticated company employee-search page was lost.")
-                break
-
-            # Never paginate from a feed/root/profile/login page.
-            current_employee_url = str(self.company_page.page.url or "").lower()
-            if (
-                "/search/results/people/" not in current_employee_url
-                or "currentcompany=" not in current_employee_url
-            ):
-                print("SAFE STOP: page ownership invariant failed before pagination.")
-                print("Current URL:", self.company_page.page.url)
-                break
-
-            try:
-                has_next = self.company_page.next_page()
-            except RuntimeError as ex:
-                print(
-                    "WARNING: LinkedIn pagination raised an unresolved "
-                    "navigation error. Stopping cleanly after valid profiles "
-                    "already collected:",
-                    repr(ex),
-                )
-                has_next = False
-            except Exception as ex:
-                print(
-                    "WARNING: Unexpected pagination error. Stopping cleanly:",
-                    repr(ex),
-                )
-                has_next = False
-
-            print("Next page:", has_next)
-
-            if not has_next:
+            if not self.company_page.next_page():
                 print("No more employee pages.")
                 break
 
-            # Hard postcondition: CompanyPage.next_page() must leave the
-            # workflow on the same authenticated company-scoped people-search
-            # page it claimed to open. This protects against LinkedIn's
-            # transient root-page redirect.
-            validated_next_url = str(
-                self.company_page.page.url or ""
-            ).lower()
-
-            if (
-                "/search/results/people/" not in validated_next_url
-                or "currentcompany=" not in validated_next_url
-            ):
-                print(
-                    "SAFE STOP: next_page() returned True but the live "
-                    "CompanyPage is no longer on company people-search."
-                )
-                print(
-                    "Invalid next-page URL:",
-                    self.company_page.page.url
-                )
-                break
-
-            self.page = self.company_page.page
-            print(
-                "Pagination page ownership synchronized:",
-                self.page.url
-            )
-
             page_no += 1
 
-        # -------------------------------------------------
-        # Final export
-        # -------------------------------------------------
-
-        return self._finish(
-            results,
-            company,
-            location
-        )
-
-    # =====================================================
-    # FINAL EXPORT
-    # =====================================================
-
-    def _finish(
-        self,
-        results,
-        company,
-        location
-    ):
-
-        print("=" * 70)
-        print(
-            "V2 WORKFLOW FINISHED"
-        )
-        print("=" * 70)
-
-        print(
-            "Profiles collected:",
-            len(results)
-        )
-
+        # Export partial data too, but never label an incomplete run as success.
         output_file = None
-
         if results:
-
             try:
-
-                output_file = (
-                    Exporter.export_csv(
-                        results,
-                        f"{company}_{location}_v2.csv"
-                    )
+                output_file = Exporter.export_csv(
+                    results,
+                    f"{company}_{location}_v2.csv",
                 )
+                print("Final CSV:", output_file)
+            except Exception as exc:
+                print("Final export failed:", repr(exc))
 
-                print(
-                    "Final CSV:",
-                    output_file
-                )
+        success = len(results) >= max_profiles
+        print("=" * 70)
+        print("V2 WORKFLOW FINISHED")
+        print("=" * 70)
+        print("Profiles collected:", len(results))
+        print("Profiles required:", max_profiles)
+        print("Success:", success)
 
-            except Exception as ex:
-
-                print(
-                    "Final export failed:",
-                    repr(ex)
-                )
+        if not success:
+            raise RuntimeError(
+                f"LinkedIn V2 search incomplete: collected {len(results)} "
+                f"valid profiles, required {max_profiles}."
+            )
 
         return {
             "results": results,
             "count": len(results),
-            "csv": output_file
+            "required": max_profiles,
+            "success": True,
+            "csv": output_file,
         }
