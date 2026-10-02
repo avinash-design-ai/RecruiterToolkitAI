@@ -2058,6 +2058,40 @@ class LinkedInProfilePageV2(BasePage):
 # Temporary profile-tab cleanup wrapper
 # ============================================================
 
+def _find_live_authenticated_employee_search_page(profile_page):
+    """Return an already-open authenticated company people-search Page."""
+    try:
+        context = profile_page.context
+    except Exception:
+        return None
+
+    try:
+        pages = list(context.pages)
+    except Exception:
+        return None
+
+    matches = []
+    for candidate in pages:
+        try:
+            if candidate.is_closed():
+                continue
+            url = str(candidate.url or "").strip()
+            lower = url.lower()
+            if (
+                "/search/results/people/" in lower
+                and "currentcompany=" in lower
+                and "/login" not in lower
+                and "/authwall" not in lower
+                and "/checkpoint" not in lower
+                and "/ssr-login" not in lower
+                and "remember-me-auto-login" not in lower
+            ):
+                matches.append(candidate)
+        except Exception:
+            continue
+
+    return matches[-1] if matches else None
+
 _OriginalLinkedInProfilePageV2GetProfile = (
     LinkedInProfilePageV2.get_profile
 )
