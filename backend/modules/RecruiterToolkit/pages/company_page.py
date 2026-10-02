@@ -1253,7 +1253,13 @@ class CompanyPage(BasePage):
         return None, ""
 
     def get_profiles(self, company="", location="", max_profiles=None):
-        """Discover real employees from the company/location-scoped people page."""
+        """Discover real employees from the company/location-scoped people page.
+
+        LinkedIn may update the URL before the result-card DOM is hydrated.
+        We therefore perform a small, bounded hydration pass before giving up.
+        Candidate discovery is based on real /in/ links inside the main result
+        area and does NOT require a 1st/2nd/3rd-degree marker.
+        """
         import re
 
         print("=" * 60)
@@ -1296,13 +1302,33 @@ class CompanyPage(BasePage):
                 flags=re.IGNORECASE,
             )
 
+        def visible_profile_links():
+            """Choose the populated employee-result link set with the largest count."""
+            selectors = (
+                "main a[href*='/in/']:visible",
+                "section[aria-label*='Search results'] a[href*='/in/']:visible",
+                "a[href*='/in/']:visible",
+            )
+            best = None
+            best_count = 0
+            for selector in selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    count = locator.count()
+                    if count > best_count:
+                        best = locator
+                        best_count = count
+                except Exception:
+                    continue
+            return best
+
         def candidate_context(link):
-            """Return bounded row text without walking to page-level containers."""
+            """Return bounded result-card text without walking to page-level containers."""
             best = ""
-            for level in range(1, 7):
+            for level in range(1, 8):
                 try:
                     ancestor = link.locator("xpath=" + "/.." * level)
-                    text = " ".join((ancestor.inner_text(timeout=1000) or "").split())
+                    text = " ".join((ancestor.inner_text(timeout=1200) or "").split())
                     if not text:
                         continue
                     if (
@@ -1311,12 +1337,38 @@ class CompanyPage(BasePage):
                         or "• 3rd" in text
                         or str(location).lower() in text.lower()
                     ):
-                        return text[:1800]
-                    if 30 <= len(text) <= 1200 and not best:
-                        best = text[:1800]
+                        return text[:2000]
+                    if 20 <= len(text) <= 1400 and not best:
+                        best = text[:2000]
                 except Exception:
                     continue
             return best
+
+        def plausible_name(text):
+            raw = " ".join(str(text or "").split()).strip()
+            if not raw:
+                return ""
+            if "•" in raw:
+                raw = re.sub(r"\s*•\s*(?:1st|2nd|3rd)\b.*$", "", raw, flags=re.IGNORECASE).strip()
+            if "View LinkedIn Member" in raw:
+                return ""
+            blocked = {
+                "linkedin",
+                "home",
+                "messaging",
+                "notifications",
+                "jobs",
+                "search",
+                "people",
+                "profile",
+            }
+            if raw.lower() in blocked:
+                return ""
+            if len(raw) > 120:
+                return ""
+            if not re.search(r"[A-Za-z]", raw):
+                return ""
+            return raw
 
         def add_link_candidate(link):
             try:
@@ -1324,27 +1376,36 @@ class CompanyPage(BasePage):
                 if not href or href in seen_urls:
                     return False
 
-                text = link.inner_text().strip()
-                if not text or "\n" not in text:
-                    return False
-
-                if not any(marker in text for marker in ("• 1st", "• 2nd", "• 3rd")):
-                    return False
-
-                lines = [part.strip() for part in text.splitlines() if part.strip()]
-                if not lines:
-                    return False
-
-                name = re.sub(
-                    r"\s*•\s*(?:1st|2nd|3rd)\s*",
-                    " ",
-                    lines[0],
-                    flags=re.IGNORECASE,
-                ).strip()
-                if not name or len(name) > 100:
-                    return False
-
+                link_text = link.inner_text().strip()
                 row_text = candidate_context(link)
+
+                name = plausible_name(link_text)
+                if not name:
+                    for attr in ("aria-label", "title"):
+                        try:
+                            name = plausible_name(link.get_attribute(attr))
+                        except Exception:
+                            name = ""
+                        if name:
+                            break
+
+                if not name:
+                    return False
+
+                context_lower = row_text.lower()
+                evidence = (
+                    "• 1st" in row_text
+                    or "• 2nd" in row_text
+                    or "• 3rd" in row_text
+                    or str(location).lower() in context_lower
+                    or "view profile" in context_lower
+                    or "connect" in context_lower
+                    or "message" in context_lower
+                    or len(row_text) >= 60
+                )
+                if row_text and not evidence:
+                    return False
+
                 seen_urls.add(href)
                 profiles.append({
                     "full_name": name,
@@ -1359,33 +1420,78 @@ class CompanyPage(BasePage):
                 print("Employee-link inspection failed:", repr(exc))
                 return False
 
-        try:
-            links = self.page.locator("a[href*='/in/']:visible")
-            link_count = links.count()
-        except Exception:
-            links = None
-            link_count = 0
+        def hydrate_once(label):
+            """Bounded DOM hydration for LinkedIn's lazy employee results."""
+            try:
+                self.page.wait_for_timeout(1200)
+            except Exception:
+                pass
+            for delta in (1200, 1800, 2400, -2200, -1200):
+                try:
+                    self.page.mouse.wheel(0, delta)
+                    self.page.wait_for_timeout(350)
+                except Exception:
+                    break
+            try:
+                self.page.wait_for_timeout(900)
+            except Exception:
+                pass
 
-        print("Visible /in/ links:", link_count)
+            links = visible_profile_links()
+            count = 0
+            try:
+                count = links.count() if links is not None else 0
+            except Exception:
+                count = 0
+            print(f"Employee DOM hydration {label}: {count} visible /in/ links")
+            return links, count
+
+        links = visible_profile_links()
+        initial_count = 0
+        try:
+            initial_count = links.count() if links is not None else 0
+        except Exception:
+            initial_count = 0
+        print("Visible /in/ links:", initial_count)
+
         if links is not None:
-            for i in range(link_count):
+            for i in range(initial_count):
                 if limit_reached():
                     break
                 add_link_candidate(links.nth(i))
 
         if not profiles:
+            for cycle in range(1, 4):
+                links, count = hydrate_once(f"{cycle}/3")
+                if links is None:
+                    continue
+                for i in range(count):
+                    if limit_reached():
+                        break
+                    add_link_candidate(links.nth(i))
+                if profiles or limit_reached():
+                    break
+
+        if not profiles and not limit_reached():
             try:
-                self.page.wait_for_timeout(1200)
-                links = self.page.locator("a[href*='/in/']:visible")
-                link_count = links.count()
-                if link_count:
-                    print("/in/ links appeared after short hydration:", link_count)
-                    for i in range(link_count):
+                print("EMPLOYEE RESULT DOM STILL EMPTY: reloading current scoped search once...")
+                self.page.reload(wait_until="domcontentloaded", timeout=30000)
+                try:
+                    self.page.wait_for_timeout(2500)
+                except Exception:
+                    pass
+                for cycle in range(1, 3):
+                    links, count = hydrate_once(f"reload-{cycle}/2")
+                    if links is None:
+                        continue
+                    for i in range(count):
                         if limit_reached():
                             break
                         add_link_candidate(links.nth(i))
-            except Exception:
-                pass
+                    if profiles or limit_reached():
+                        break
+            except Exception as exc:
+                print("Employee result-page reload failed:", repr(exc))
 
         if not limit_reached() and not profiles:
             controls = None
@@ -1597,7 +1703,11 @@ class CompanyPage(BasePage):
             return False
 
         try:
-            self.page.wait_for_timeout(1200)
+            self.page.wait_for_timeout(2500)
+            self.page.mouse.wheel(0, 1600)
+            self.page.wait_for_timeout(700)
+            self.page.mouse.wheel(0, -1000)
+            self.page.wait_for_timeout(900)
         except Exception:
             pass
 
