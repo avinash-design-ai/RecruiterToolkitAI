@@ -43,26 +43,47 @@ class SearchWorkflowV2:
         # Keep the proven desktop architecture: one dedicated profile page.
         self.profile_page = self.page.context.new_page()
 
-    def _validate_profile(self, data, company, location):
+    def _validate_profile(self, data, company, location, row=None):
         requested_company = normalize_company(company)
         requested_location = normalize_location(location)
+        row = row or {}
 
-        actual_company = normalize_company(data.get("company", ""))
-        actual_location = normalize_location(data.get("location", ""))
-
+        profile_location = str(data.get("location", "") or "").strip()
+        row_location = str(row.get("search_result_location", "") or "").strip()
+        actual_location = normalize_location(profile_location)
+        search_location = normalize_location(row_location)
         if requested_location and requested_location not in actual_location:
-            print("REJECTED: profile location does not match requested location.")
-            print("Profile location:", data.get("location", ""))
-            print("Requested location:", location)
-            return False
+            if not actual_location and requested_location in search_location:
+                # The employee came from the authenticated LinkedIn search with
+                # the requested geoUrn. Use that filter as location evidence
+                # only when LinkedIn exposes no profile location at all.
+                data["location"] = row_location or location
+            else:
+                print("REJECTED: profile location does not match requested location.")
+                print("Profile location:", profile_location)
+                print("Search-result location:", row_location)
+                print("Requested location:", location)
+                return False
 
-        # LinkedIn can omit the company from some authenticated profile views.
-        # Because this candidate came from the selected company's people-search
-        # page, an empty profile-company field is allowed. When LinkedIn does
-        # expose a company, however, it must agree with the requested company.
-        if actual_company and requested_company and requested_company not in actual_company:
+        actual_company_raw = str(data.get("company", "") or "").strip()
+        actual_company = normalize_company(actual_company_raw)
+        selected_company_ids = []
+        try:
+            from urllib.parse import parse_qsl, urlsplit
+            for key, value in parse_qsl(urlsplit(str(self.company_page.page.url or "")).query, keep_blank_values=True):
+                if key.lower() == "currentcompany":
+                    selected_company_ids.append(value.strip('[]"'))
+        except Exception:
+            pass
+
+        if actual_company:
+            if actual_company in {normalize_company(str(x)) for x in selected_company_ids}:
+                return True
+            if requested_company in actual_company:
+                return True
             print("REJECTED: profile company does not match requested company.")
-            print("Profile company:", data.get("company", ""))
+            print("Profile company:", actual_company_raw)
+            print("Selected company ID(s):", selected_company_ids)
             print("Requested company:", company)
             return False
 
@@ -206,11 +227,13 @@ class SearchWorkflowV2:
                         print("Candidate skipped: duplicate profile URL.")
                         continue
 
-                    if not self._validate_profile(data, company, location):
+                    if not self._validate_profile(data, company, location, row=row):
                         continue
 
                     data["search_company"] = company
                     data["search_location"] = location
+                    if not data.get("location") and row.get("search_result_location"):
+                        data["location"] = row.get("search_result_location")
                     results.append(data)
                     seen_urls.add(actual_url)
                     accepted_this_page += 1
