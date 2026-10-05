@@ -364,6 +364,11 @@ class CompanyPage(BasePage):
                 + company_href
             )
 
+        # Preserve LinkedIn's exact selected company URL for later recovery.
+        # This is used only to obtain LinkedIn's own unfiltered employee-search
+        # link when the company click lands directly on network=["F"].
+        self._selected_company_href = company_href
+
         print(
             "Opening actual LinkedIn company page..."
         )
@@ -484,41 +489,43 @@ class CompanyPage(BasePage):
 
     def open_employees_page(self):
         """
-        Open the exact company-scoped LinkedIn people-search page.
+        Establish the authenticated company-scoped LinkedIn people search
+        without rewriting LinkedIn's returned URL.
 
-        V2 invariants:
-          - currentCompany is preserved for the selected company.
-          - pastCompany is NEVER allowed.
-          - network is NEVER allowed.
-          - no connection-degree filter is added.
-          - location is handled separately by apply_location()/get_profiles().
+        Critical invariant learned from the desktop/GitHub history:
+        a company click can land directly on a people-search URL containing
+        network=["F"]. Removing that parameter with page.goto() causes
+        LinkedIn to send the authenticated browser to
+        /ssr-login/remember-me-auto-login.
+
+        Therefore:
+        1. Never sanitize or rewrite the live authenticated people-search URL.
+        2. If the current page is already an unfiltered company people search,
+           keep it exactly as returned.
+        3. If it is company-scoped but contains a network filter, open the
+           exact selected company URL in a temporary authenticated tab and
+           click LinkedIn's own company-scoped people link that does NOT carry
+           a network parameter. Only adopt that tab after validation.
+        4. Never fabricate a people-search URL and never fabricate company IDs.
         """
+        from urllib.parse import parse_qs, urlsplit
+
         print("=" * 60)
         print("OPENING COMPANY EMPLOYEES / PEOPLE SEARCH")
         print("=" * 60)
 
         self._employee_search_scope_ready = False
-        current_url = str(self.page.url or "").strip()
 
+        current_page = self.page
+        current_url = str(current_page.url or "").strip()
         print("Current URL:")
         print(current_url)
 
-        def is_people_url(url):
-            if not url:
-                return False
-            lower = str(url).lower()
-            return (
-                "/search/results/people/" in lower
-                and "currentcompany=" in lower
-            )
-
-        def is_blocked_url(url):
-            if not url:
-                return True
-            lower = str(url).lower()
+        def blocked(url):
+            value = str(url or "").lower()
             return any(
-                part in lower
-                for part in (
+                marker in value
+                for marker in (
                     "/login",
                     "/authwall",
                     "/checkpoint",
@@ -529,278 +536,221 @@ class CompanyPage(BasePage):
                 )
             )
 
-        def company_ids(url):
-            try:
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(
-                    urlsplit(str(url or "")).query,
-                    keep_blank_values=True,
-                )
-                return (
-                    query.get("currentCompany", [])
-                    or query.get("currentcompany", [])
-                )
-            except Exception:
-                return []
+        def is_people_url(url):
+            value = str(url or "").lower()
+            return "/search/results/people/" in value and "currentcompany=" in value
 
-        def has_query_parameter(url, wanted_name):
+        def query(url):
             try:
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(
+                return parse_qs(
                     urlsplit(str(url or "")).query,
                     keep_blank_values=True,
                 )
-                wanted = str(wanted_name).lower()
-                return any(
-                    str(key).lower() == wanted
-                    for key in query
-                )
             except Exception:
+                return {}
+
+        def company_ids(url):
+            q = query(url)
+            return q.get("currentCompany", []) or q.get("currentcompany", [])
+
+        def network_values(url):
+            q = query(url)
+            return q.get("network", []) or q.get("Network", [])
+
+        def valid_unfiltered_people_url(url, expected_company_ids):
+            if blocked(url) or not is_people_url(url):
+                return False
+            actual_company_ids = company_ids(url)
+            if expected_company_ids and actual_company_ids != expected_company_ids:
+                return False
+            return not network_values(url)
+
+        expected_company_ids = company_ids(current_url)
+
+        # ------------------------------------------------------------
+        # CASE 1: LinkedIn already returned an authenticated people search.
+        # Never rewrite it.
+        # ------------------------------------------------------------
+        if is_people_url(current_url) and not blocked(current_url) and expected_company_ids:
+            networks = network_values(current_url)
+
+            if not networks:
+                print("COMPANY PEOPLE SEARCH ALREADY OPEN")
+                print("Connection-degree handling: DISABLED")
+                print("Preserving LinkedIn's returned search URL unchanged.")
+                print("Company scope preserved:", expected_company_ids)
+                self._employee_search_scope_ready = True
+                return True
+
+            print("COMPANY PEOPLE SEARCH ALREADY OPEN")
+            print("LinkedIn returned network filter:", networks)
+            print("IMPORTANT: network filter will NOT be removed from this live page.")
+            print("Attempting to obtain LinkedIn's own unfiltered company people-search link.")
+
+            # The exact company href is captured by open_company_result().
+            company_href = str(getattr(self, "_selected_company_href", "") or "").strip()
+            if company_href and company_href.startswith("/"):
+                company_href = "https://www.linkedin.com" + company_href
+
+            if not company_href:
+                print("No exact selected company href is available; cannot safely derive an unfiltered search URL.")
+                print("FAIL SAFE: preserving the authenticated filtered page rather than rewriting it.")
                 return False
 
-        def sanitize_people_search_url(url):
-            """
-            Remove only:
-              - network     = connection-degree filter
-              - pastCompany = previous-company filter
-
-            Preserve currentCompany and unrelated LinkedIn parameters.
-            """
             try:
-                from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+                context = current_page.context
+            except Exception as exc:
+                print("Could not access browser context for unfiltered-search recovery:", repr(exc))
+                return False
 
-                parsed = urlsplit(str(url or ""))
-                rebuilt = []
-
-                for key, value in parse_qsl(
-                    parsed.query,
-                    keep_blank_values=True,
-                ):
-                    if str(key).lower() in {"network", "pastcompany"}:
-                        continue
-                    rebuilt.append((key, value))
-
-                return urlunsplit(
-                    (
-                        parsed.scheme,
-                        parsed.netloc,
-                        parsed.path,
-                        urlencode(rebuilt, doseq=True),
-                        parsed.fragment,
-                    )
-                )
-            except Exception:
-                return str(url or "")
-
-        def sanitize_and_reload(original_url, reason):
-            clean_url = sanitize_people_search_url(original_url)
-
-            if clean_url == original_url:
-                return str(original_url or "").strip()
-
-            removed = []
-            if has_query_parameter(original_url, "pastCompany"):
-                removed.append("pastCompany")
-            if has_query_parameter(original_url, "network"):
-                removed.append("network")
-
-            print("=" * 60)
-            print("LINKEDIN PEOPLE-SEARCH SCOPE SANITIZATION")
-            print("=" * 60)
-            print("Reason:", reason)
-            print("Original URL:", original_url)
-            print("Removing:", ", ".join(removed))
-            print("Sanitized URL:", clean_url)
-
+            recovery_page = None
             try:
-                self.page.goto(
-                    clean_url,
+                recovery_page = context.new_page()
+                print("Opening exact selected company URL in recovery tab:")
+                print(company_href)
+                recovery_page.goto(
+                    company_href,
                     wait_until="domcontentloaded",
                     timeout=60000,
-                    referer=original_url,
+                    referer=current_url,
                 )
-                self.page.wait_for_timeout(2500)
-            except Exception as ex:
-                print("ERROR: Failed to open sanitized people-search URL:", repr(ex))
-                return None
+                recovery_page.wait_for_timeout(4000)
 
-            return str(self.page.url or "").strip()
+                recovery_url = str(recovery_page.url or "").strip()
+                print("Recovery company tab URL:", recovery_url)
 
-        def validate_clean_people_search(url, expected_ids):
-            if is_blocked_url(url) or not is_people_url(url):
-                print("ERROR: Final URL is not a valid authenticated company people search.")
-                print("Final URL:", url)
-                return False
+                if blocked(recovery_url) or "/company/" not in recovery_url.lower():
+                    print("Recovery company tab did not reach authenticated company page.")
+                    return False
 
-            actual_ids = company_ids(url)
+                links = recovery_page.locator("a[href*='/search/results/people/']")
+                count = links.count()
+                print("Company-page people-search links found:", count)
 
-            if actual_ids != expected_ids:
-                print("ERROR: currentCompany changed unexpectedly.")
-                print("Expected:", expected_ids)
-                print("Actual:", actual_ids)
-                print("Final URL:", url)
-                return False
-
-            if has_query_parameter(url, "pastCompany"):
-                print("ERROR: pastCompany still present after sanitization.")
-                print("Final URL:", url)
-                return False
-
-            if has_query_parameter(url, "network"):
-                print("ERROR: network still present after sanitization.")
-                print("Final URL:", url)
-                return False
-
-            return True
-
-        # CASE 1: company-result click already landed on people search.
-        if is_people_url(current_url):
-            ids = company_ids(current_url)
-
-            print("=" * 60)
-            print("COMPANY PEOPLE-SEARCH PAGE ALREADY OPEN")
-            print("=" * 60)
-            print("Company scope:", ids)
-
-            if is_blocked_url(current_url):
-                print("ERROR: Current people-search URL is blocked/authwall.")
-                return False
-
-            if not ids:
-                print("ERROR: Current people-search page has no currentCompany.")
-                return False
-
-            clean_url = sanitize_and_reload(
-                current_url,
-                "company-result click",
-            )
-            if clean_url is None:
-                return False
-
-            current_url = clean_url
-
-            if not validate_clean_people_search(current_url, ids):
-                return False
-
-            print("Connection-degree handling: DISABLED")
-            print("Verified: network parameter ABSENT.")
-            print("Verified: pastCompany parameter ABSENT.")
-            print("Company scope preserved:", ids)
-
-            self._employee_search_scope_ready = True
-
-            print("=" * 60)
-            print("COMPANY PEOPLE SEARCH READY")
-            print("=" * 60)
-            print("Final URL:", current_url)
-            print("Company scope preserved:", ids)
-
-            return True
-
-        # CASE 2: still on the company page.
-        if "/company/" in current_url.lower() and not is_blocked_url(current_url):
-            links = self.page.locator(
-                "a[href*='/search/results/people/']"
-            )
-
-            count = links.count()
-            print("People-search links found:", count)
-
-            selected = None
-
-            # Prefer a clean current-company people-search link.
-            for i in range(count):
-                try:
-                    link = links.nth(i)
-                    href = (link.get_attribute("href") or "").strip()
-
-                    if not href:
-                        continue
-
-                    if "/search/results/people/" not in href.lower():
-                        continue
-
-                    ids = company_ids(href)
-                    if not ids:
-                        continue
-
-                    if has_query_parameter(href, "pastCompany"):
-                        print("Skipping people-search link with pastCompany:", href)
-                        continue
-
-                    selected = link
-                    break
-                except Exception:
-                    continue
-
-            # If LinkedIn exposes only a polluted link, use it and sanitize
-            # immediately after navigation rather than failing open.
-            if selected is None:
+                selected_unfiltered = None
                 for i in range(count):
                     try:
                         link = links.nth(i)
                         href = (link.get_attribute("href") or "").strip()
-
-                        if (
-                            href
-                            and "/search/results/people/" in href.lower()
-                            and company_ids(href)
-                        ):
-                            selected = link
-                            break
+                        if not href:
+                            continue
+                        if href.startswith("/"):
+                            href = "https://www.linkedin.com" + href
+                        if not is_people_url(href):
+                            continue
+                        if company_ids(href) != expected_company_ids:
+                            continue
+                        if network_values(href):
+                            print("Skipping company people link with network filter:", href)
+                            continue
+                        selected_unfiltered = link
+                        print("Selected LinkedIn-supplied UNFILTERED company people link:")
+                        print(href)
+                        break
                     except Exception:
                         continue
 
+                if selected_unfiltered is None:
+                    print("No LinkedIn-supplied unfiltered company people-search link was exposed.")
+                    return False
+
+                selected_unfiltered.scroll_into_view_if_needed()
+                selected_unfiltered.click(timeout=15000)
+                recovery_page.wait_for_timeout(5000)
+
+                final_url = str(recovery_page.url or "").strip()
+                print("Unfiltered company people-search final URL:", final_url)
+
+                if not valid_unfiltered_people_url(final_url, expected_company_ids):
+                    print("Unfiltered recovery failed: final URL was not validated.")
+                    return False
+
+                # Adopt only the validated recovery tab. The original F-filtered
+                # tab is deliberately left untouched until the new tab is proven.
+                self.page = recovery_page
+                self._employee_search_scope_ready = True
+
+                try:
+                    if not current_page.is_closed():
+                        current_page.close()
+                except Exception as close_ex:
+                    print("Original filtered search-tab cleanup warning:", repr(close_ex))
+
+                recovery_page = None
+
+                print("UNFILTERED COMPANY PEOPLE SEARCH READY")
+                print("Connection-degree handling: DISABLED")
+                print("Company scope preserved:", expected_company_ids)
+                print("Final URL:", final_url)
+                return True
+
+            except Exception as ex:
+                print("Unfiltered company people-search recovery failed:", repr(ex))
+                return False
+            finally:
+                if recovery_page is not None:
+                    try:
+                        if not recovery_page.is_closed():
+                            recovery_page.close()
+                    except Exception:
+                        pass
+
+        # ------------------------------------------------------------
+        # CASE 2: We are on the company page itself.
+        # Click LinkedIn's own unfiltered people-search link and preserve it.
+        # ------------------------------------------------------------
+        if "/company/" in current_url.lower() and not blocked(current_url):
+            expected_company_ids = company_ids(current_url)
+            links = current_page.locator("a[href*='/search/results/people/']")
+            count = links.count()
+            print("People-search links found on company page:", count)
+
+            selected = None
+            for i in range(count):
+                try:
+                    link = links.nth(i)
+                    href = (link.get_attribute("href") or "").strip()
+                    if href.startswith("/"):
+                        href = "https://www.linkedin.com" + href
+                    if not is_people_url(href):
+                        continue
+                    ids = company_ids(href)
+                    if expected_company_ids and ids != expected_company_ids:
+                        continue
+                    if network_values(href):
+                        print("Skipping company people link with network filter:", href)
+                        continue
+                    selected = link
+                    print("Selected LinkedIn-supplied UNFILTERED people-search link:")
+                    print(href)
+                    break
+                except Exception:
+                    continue
+
             if selected is None:
-                print("ERROR: No company-scoped people-search link found.")
+                print("ERROR: No unfiltered LinkedIn-supplied company people-search link found.")
                 return False
 
             try:
                 selected.scroll_into_view_if_needed()
                 selected.click(timeout=15000)
-                self.page.wait_for_timeout(5000)
+                current_page.wait_for_timeout(5000)
             except Exception as ex:
-                print("People-search link click failed:", repr(ex))
+                print("Unfiltered people-search link click failed:", repr(ex))
                 return False
 
-            final_url = str(self.page.url or "").strip()
-            print("Final employee-search URL before sanitization:", final_url)
-
-            if is_blocked_url(final_url) or not is_people_url(final_url):
-                print(
-                    "ERROR: LinkedIn did not open an authenticated "
-                    "company people search."
-                )
-                return False
-
-            final_ids = company_ids(final_url)
-            if not final_ids:
-                print("ERROR: Opened people-search page has no currentCompany.")
-                return False
-
-            clean_url = sanitize_and_reload(
-                final_url,
-                "company-page people-search link",
-            )
-            if clean_url is None:
-                return False
-
-            final_url = clean_url
-
-            if not validate_clean_people_search(final_url, final_ids):
-                return False
-
-            print("Connection-degree handling: DISABLED")
-            print("Verified: network parameter ABSENT.")
-            print("Verified: pastCompany parameter ABSENT.")
-            print("Company scope preserved:", final_ids)
+            final_url = str(current_page.url or "").strip()
             print("Final employee-search URL:", final_url)
+            if not valid_unfiltered_people_url(final_url, expected_company_ids):
+                print("ERROR: LinkedIn did not open an authenticated unfiltered company people search.")
+                return False
 
             self._employee_search_scope_ready = True
+            print("UNFILTERED COMPANY PEOPLE SEARCH READY")
+            print("Company scope preserved:", expected_company_ids)
             return True
 
-        print("ERROR: Current page is not an authenticated company page")
-        print("or a company-scoped LinkedIn people search.")
+        print("ERROR: Current page is not an authenticated company page or company-scoped people search.")
         print("Current URL:", current_url)
         return False
 
