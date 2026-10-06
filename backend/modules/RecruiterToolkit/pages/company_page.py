@@ -801,17 +801,19 @@ class CompanyPage(BasePage):
                 return False
 
             def _control_like_candidate(item, wanted):
-                """Return True when an exact text node is plausibly a filter control."""
+                """Return True when a visible item is plausibly a Connections filter control."""
                 try:
                     if not item.is_visible():
                         return False
+
                     label = normalized_label(label_for(item))
-                    if label not in wanted or len(label) > 30:
+                    if label not in wanted or len(label) > 80:
                         return False
 
                     role = (item.get_attribute("role") or "").strip().lower()
                     tag = (item.evaluate("el => el.tagName") or "").strip().lower()
-                    if role in ("checkbox", "option", "radio", "button") or tag in ("label", "button"):
+
+                    if role in ("checkbox", "radio", "option", "button") or tag in ("label", "button"):
                         return True
 
                     node = item
@@ -819,69 +821,248 @@ class CompanyPage(BasePage):
                         parent = node.locator("xpath=../").first
                         if parent.count() == 0:
                             break
+
                         prole = (parent.get_attribute("role") or "").strip().lower()
                         ptag = (parent.evaluate("el => el.tagName") or "").strip().lower()
-                        if prole in ("checkbox", "option", "radio", "button") or ptag in ("label", "button"):
+                        has_input = parent.locator(
+                            "input[type='checkbox'], input[type='radio']"
+                        ).count() > 0
+
+                        if (
+                            prole in ("checkbox", "radio", "option", "button")
+                            or ptag in ("label", "button")
+                            or has_input
+                        ):
                             return True
+
                         node = parent
                 except Exception:
                     return False
+
                 return False
 
-            def find_degree_option(patterns):
-                wanted = {
-                    normalized_label(pattern)
-                    for pattern in patterns
-                    if pattern
-                }
 
-                # First search the exact subtree opened by the Connections section.
-                roots = []
-                if connection_scope_root is not None:
-                    roots.append(connection_scope_root)
+            def _fresh_connections_scope():
+                """Re-acquire the live Connections subtree after LinkedIn rerenders it."""
+                nonlocal connection_scope_root
+
+                # A checkbox click can replace the entire Connections subtree.
+                # Never rely solely on the previous locator handle.
+                try:
+                    loc = self.page.get_by_text("Connections", exact=True)
+                    visible = []
+                    for i in range(min(loc.count(), 30)):
+                        item = loc.nth(i)
+                        if item.is_visible():
+                            visible.append(item)
+
+                    if visible:
+                        root = _expand_connections_scope(visible[-1]) or visible[-1]
+                        connection_scope_root = root
+                        return root
+                except Exception:
+                    pass
+
                 dialog = filter_dialog()
-                if dialog is not None and dialog not in roots:
-                    roots.append(dialog)
+                if dialog is not None:
+                    connection_scope_root = dialog
+                    return dialog
+
+                return connection_scope_root
+
+
+            def _degree_control_candidates(scope):
+                """Collect only interactive controls in the Connections scope."""
+                if scope is None:
+                    return []
 
                 selectors = (
                     "label:visible",
                     "[role='checkbox']:visible",
-                    "[role='option']:visible",
                     "[role='radio']:visible",
+                    "[role='option']:visible",
                     "button:visible",
                     "li:visible",
-                    "div:visible",
                     "span:visible",
+                    "div:visible",
                 )
 
-                for root in roots:
-                    for selector in selectors:
+                candidates = []
+                seen_labels = set()
+
+                for selector in selectors:
+                    try:
+                        loc = scope.locator(selector)
+                        for i in range(min(loc.count(), 1500)):
+                            item = loc.nth(i)
+                            if not item.is_visible():
+                                continue
+
+                            label = normalized_label(label_for(item))
+                            if not label or len(label) > 80:
+                                continue
+
+                            if not _control_like_candidate(item, {label}):
+                                continue
+
+                            # Several nested wrappers expose the same accessible
+                            # label. Keep only one representative.
+                            if label in seen_labels:
+                                continue
+                            seen_labels.add(label)
+                            candidates.append(item)
+                    except Exception:
+                        continue
+
+                return candidates
+
+
+            def _third_degree_semantic_candidate():
+                """
+                Find LinkedIn's broadest Connections option without requiring the
+                literal label '3rd+'. The UI may render it as 3rd+, 3rd degree,
+                third-degree connections, outside your network, etc.
+                """
+                scope = _fresh_connections_scope()
+                candidates = _degree_control_candidates(scope)
+                if not candidates:
+                    print("Third-degree resolver: no interactive Connections controls found.")
+                    return None
+
+                semantic_patterns = (
+                    re.compile(r"^3(?:rd)?\s*\+?(?:\s*(?:degree|degrees|connections?|network))?$", re.I),
+                    re.compile(r"^(?:third|third-degree|third degree)(?:\s*\+)?(?:\s*(?:connections?|network))?$", re.I),
+                    re.compile(r"(?:3rd|third).*(?:degree|connection|network)", re.I),
+                    re.compile(r"(?:outside|out of).*network", re.I),
+                )
+
+                for item in candidates:
+                    label = normalized_label(label_for(item))
+                    if any(pattern.search(label) for pattern in semantic_patterns):
+                        print("Third-degree control located semantically:", label_for(item).strip())
+                        return item
+
+                # Structural fallback: within the Connections group, first and
+                # second degree are known options. After preserving F and adding
+                # 2nd, the remaining degree control is the broadest one.
+                first_labels = {
+                    "1st", "1st degree", "1st degree connections", "first",
+                }
+                second_labels = {
+                    "2nd", "2nd degree", "2nd degree connections", "second",
+                }
+
+                remaining = []
+                for item in candidates:
+                    label = normalized_label(label_for(item))
+                    if label in first_labels or label in second_labels:
+                        continue
+                    if any(term in label for term in (
+                        "location", "industry", "company", "school", "followers",
+                    )):
+                        continue
+                    remaining.append(item)
+
+                if len(remaining) == 1:
+                    print(
+                        "Third-degree control resolved as remaining Connections option:",
+                        label_for(remaining[0]).strip(),
+                    )
+                    return remaining[0]
+
+                # If the DOM exposes selected state reliably, prefer the only
+                # remaining unselected short control.
+                unselected = []
+                for item in remaining:
+                    try:
+                        if not degree_is_selected(item):
+                            unselected.append(item)
+                    except Exception:
+                        pass
+
+                if len(unselected) == 1:
+                    print(
+                        "Third-degree control resolved as only unselected Connections option:",
+                        label_for(unselected[0]).strip(),
+                    )
+                    return unselected[0]
+
+                print(
+                    "Third-degree resolver ambiguous; Connections candidates:",
+                    [label_for(item).strip() for item in candidates],
+                )
+                return None
+
+
+            def find_degree_option(patterns):
+                """Find a degree control without relying on a brittle third-degree label."""
+                wanted = {normalized_label(pattern) for pattern in patterns if pattern}
+
+                if any(
+                    normalized_label(pattern) in {"3rd+", "3rd +", "3rd"}
+                    for pattern in patterns
+                    if pattern
+                ):
+                    semantic = _third_degree_semantic_candidate()
+                    if semantic is not None:
+                        return semantic
+
+                scope = _fresh_connections_scope()
+                scopes = []
+                if scope is not None:
+                    scopes.append(("connections-section", scope))
+
+                dialog = filter_dialog()
+                if dialog is not None and all(root is not dialog for _, root in scopes):
+                    scopes.append(("all-filters-dialog", dialog))
+
+                for scope_name, root in scopes:
+                    for selector in (
+                        "label:visible",
+                        "[role='checkbox']:visible",
+                        "[role='option']:visible",
+                        "[role='radio']:visible",
+                        "button:visible",
+                        "li:visible",
+                        "span:visible",
+                        "div:visible",
+                    ):
                         try:
                             loc = root.locator(selector)
-                            for i in range(min(loc.count(), 1000)):
+                            for i in range(min(loc.count(), 1500)):
                                 item = loc.nth(i)
-                                label = normalized_label(label_for(item))
-                                if label in wanted and len(label) <= 30 and item.is_visible():
-                                    if _control_like_candidate(item, wanted):
-                                        return item
+                                if not item.is_visible():
+                                    continue
+                                if normalized_label(label_for(item)) not in wanted:
+                                    continue
+                                if _control_like_candidate(item, wanted):
+                                    print(
+                                        "Degree option located in",
+                                        scope_name,
+                                        ":",
+                                        label_for(item).strip(),
+                                    )
+                                    return item
                         except Exception:
                             continue
 
-                # Final bounded fallback: exact page text only, validated as a
-                # control or a descendant of a control. This never uses substring
-                # matching against arbitrary employee result-card text.
-                try:
-                    for pattern in wanted:
+                # Final exact-text fallback, still validated as a real filter
+                # control rather than arbitrary page text.
+                for pattern in patterns:
+                    try:
                         loc = self.page.get_by_text(pattern, exact=True)
-                        for i in range(min(loc.count(), 30)):
+                        for i in range(min(loc.count(), 100)):
                             item = loc.nth(i)
-                            if _control_like_candidate(item, wanted):
+                            if _control_like_candidate(item, {normalized_label(pattern)}):
+                                print(
+                                    "Degree option located via page exact-text fallback:",
+                                    pattern,
+                                )
                                 return item
-                except Exception:
-                    pass
+                    except Exception:
+                        continue
 
                 return None
-
             def degree_is_selected(item):
 
                 try:
