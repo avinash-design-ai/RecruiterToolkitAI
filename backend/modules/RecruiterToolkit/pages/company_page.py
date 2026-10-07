@@ -603,23 +603,99 @@ class CompanyPage(BasePage):
 
 
         def filter_dialog():
-            # Prefer the visible All Filters modal/dialog. This prevents
-            # employee result cards behind the modal from being considered.
+            """Return the live LinkedIn All Filters panel across UI variants."""
+
+            # LinkedIn does not always expose All Filters as role=dialog or
+            # .artdeco-modal. Some sessions render it as a drawer/section with
+            # no modal semantics, so detection is based on Connections/degree
+            # content plus common modal/filter containers.
             selectors = (
                 "[role='dialog']:visible",
+                "[aria-modal='true']:visible",
+                "dialog[open]:visible",
                 ".artdeco-modal:visible",
+                ".artdeco-modal__content:visible",
+                "[class*='modal']:visible",
+                "[class*='drawer']:visible",
+                "[class*='filter']:visible",
             )
 
-            for selector in selectors:
+            def panel_text(item):
                 try:
-                    loc = self.page.locator(selector)
-                    for i in range(min(loc.count(), 20)):
-                        item = loc.nth(i)
-                        if not item.is_visible():
+                    return normalized_label(item.inner_text(timeout=1500) or "")
+                except Exception:
+                    return normalized_label(label_for(item))
+
+            def looks_like_filter_panel(item):
+                try:
+                    if not item.is_visible():
+                        return False
+
+                    txt = panel_text(item)
+                    if not txt:
+                        return False
+
+                    classes = (item.get_attribute("class") or "").lower()
+                    has_connections = "connections" in txt
+                    has_degrees = (
+                        re.search(r"\b1st\b", txt) is not None
+                        or re.search(r"\b2nd\b", txt) is not None
+                        or re.search(r"\b3rd\+?\b", txt) is not None
+                    )
+                    has_filter_words = (
+                        "all filters" in txt
+                        or "filters" in txt
+                        or "modal" in classes
+                        or "drawer" in classes
+                        or "filter" in classes
+                    )
+
+                    return has_connections and (has_filter_words or has_degrees)
+                except Exception:
+                    return False
+
+            # The panel can be mid-transition immediately after clicking All Filters.
+            # Reacquire it for several short attempts rather than assuming a 1-second
+            # render time.
+            for _ in range(8):
+                for selector in selectors:
+                    try:
+                        loc = self.page.locator(selector)
+                        for i in range(min(loc.count(), 40)):
+                            item = loc.nth(i)
+                            if looks_like_filter_panel(item):
+                                return item
+                    except Exception:
+                        continue
+                try:
+                    self.page.wait_for_timeout(350)
+                except Exception:
+                    pass
+
+            # Fallback: locate the authoritative visible Connections heading or
+            # All Filters heading, then walk upward to a bounded ancestor that
+            # contains the filter/degree UI. This covers LinkedIn variants without
+            # dialog semantics.
+            for exact_text in ("Connections", "All Filters", "All filters"):
+                try:
+                    loc = self.page.get_by_text(exact_text, exact=True)
+                    for i in range(min(loc.count(), 30)):
+                        node = loc.nth(i)
+                        if not node.is_visible():
                             continue
-                        txt = normalized_label(label_for(item))
-                        if "connections" in txt or "all filters" in txt:
-                            return item
+
+                        current = node
+                        for _ in range(10):
+                            try:
+                                if looks_like_filter_panel(current):
+                                    return current
+
+                                parent = current.locator("xpath=../").first
+                                if parent.count() == 0 or not parent.is_visible():
+                                    break
+                                current = parent
+                            except Exception:
+                                break
                 except Exception:
                     continue
 
