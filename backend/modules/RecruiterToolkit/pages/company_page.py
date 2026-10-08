@@ -602,13 +602,111 @@ class CompanyPage(BasePage):
             ).strip().lower()
 
 
-        def filter_dialog():
-            """Return the live LinkedIn All Filters panel across UI variants."""
+        def _candidate_connections_controls():
+            """Find the actual All Filters Connections control without assuming modal semantics."""
+            results = []
+            seen = set()
 
-            # LinkedIn does not always expose All Filters as role=dialog or
-            # .artdeco-modal. Some sessions render it as a drawer/section with
-            # no modal semantics, so detection is based on Connections/degree
-            # content plus common modal/filter containers.
+            selectors = (
+                "button:visible",
+                "[role='button']:visible",
+                "[role='tab']:visible",
+                "label:visible",
+                "a:visible",
+                "li:visible",
+                "[aria-label]:visible",
+                "[title]:visible",
+            )
+
+            try:
+                role_button = self.page.get_by_role(
+                    "button",
+                    name=re.compile(r"^\s*connections\s*$", re.IGNORECASE),
+                )
+                selectors = ("__ROLE_BUTTON__",) + selectors
+            except Exception:
+                role_button = None
+
+            def consider(item):
+                try:
+                    if item is None or not item.is_visible():
+                        return
+                    label = normalized_label(label_for(item))
+                    if label != "connections":
+                        return
+                    key = label + "|" + str(item)
+                    if key in seen:
+                        return
+                    seen.add(key)
+                    results.append(item)
+                except Exception:
+                    return
+
+            if role_button is not None:
+                try:
+                    for i in range(min(role_button.count(), 20)):
+                        consider(role_button.nth(i))
+                except Exception:
+                    pass
+
+            for selector in selectors[1:] if selectors and selectors[0] == "__ROLE_BUTTON__" else selectors:
+                try:
+                    loc = self.page.locator(selector)
+                    for i in range(min(loc.count(), 1000)):
+                        consider(loc.nth(i))
+                except Exception:
+                    continue
+
+            return results
+
+
+        def _ancestor_filter_panel(node):
+            """Walk upward from a known filter control to a usable panel/scope."""
+            current = node
+            best = None
+
+            for _ in range(12):
+                try:
+                    if current.count() == 0 or not current.is_visible():
+                        break
+
+                    text_value = normalized_label(current.inner_text(timeout=1200) or "")
+                    classes = (current.get_attribute("class") or "").lower()
+                    role = (current.get_attribute("role") or "").lower()
+                    aria_modal = (current.get_attribute("aria-modal") or "").lower()
+
+                    has_filter_signature = any((
+                        "all filters" in text_value,
+                        "filters" in text_value,
+                        "connections" in text_value,
+                        "show results" in text_value,
+                        "modal" in classes,
+                        "drawer" in classes,
+                        "filter" in classes,
+                        role == "dialog",
+                        aria_modal == "true",
+                    ))
+
+                    if has_filter_signature:
+                        best = current
+                        # Prefer the smallest bounded ancestor that still contains
+                        # the filter UI. Do not walk all the way to body.
+                        if "connections" in text_value or "show results" in text_value:
+                            return current
+
+                    parent = current.locator("xpath=../").first
+                    if parent.count() == 0 or not parent.is_visible():
+                        break
+                    current = parent
+                except Exception:
+                    break
+
+            return best
+
+
+        def filter_dialog():
+            """Return the live All Filters panel/scope without requiring Connections text."""
+
             selectors = (
                 "[role='dialog']:visible",
                 "[aria-modal='true']:visible",
@@ -620,82 +718,55 @@ class CompanyPage(BasePage):
                 "[class*='filter']:visible",
             )
 
-            def panel_text(item):
+            # First prefer explicit filter containers. They do NOT need to contain
+            # Connections yet because LinkedIn can lazy-render the section.
+            for selector in selectors:
                 try:
-                    return normalized_label(item.inner_text(timeout=1500) or "")
+                    loc = self.page.locator(selector)
+                    for i in range(min(loc.count(), 60)):
+                        item = loc.nth(i)
+                        if not item.is_visible():
+                            continue
+                        text_value = normalized_label(item.inner_text(timeout=1200) or "")
+                        classes = (item.get_attribute("class") or "").lower()
+                        role = (item.get_attribute("role") or "").lower()
+                        aria_modal = (item.get_attribute("aria-modal") or "").lower()
+                        if (
+                            "all filters" in text_value
+                            or "show results" in text_value
+                            or "filter" in classes
+                            or "modal" in classes
+                            or "drawer" in classes
+                            or role == "dialog"
+                            or aria_modal == "true"
+                        ):
+                            return item
                 except Exception:
-                    return normalized_label(label_for(item))
+                    continue
 
-            def looks_like_filter_panel(item):
+            # Next find the actual Connections control and derive the panel from it.
+            for _ in range(10):
+                controls = _candidate_connections_controls()
+                for control in controls:
+                    panel = _ancestor_filter_panel(control)
+                    if panel is not None:
+                        return panel
                 try:
-                    if not item.is_visible():
-                        return False
-
-                    txt = panel_text(item)
-                    if not txt:
-                        return False
-
-                    classes = (item.get_attribute("class") or "").lower()
-                    has_connections = "connections" in txt
-                    has_degrees = (
-                        re.search(r"\b1st\b", txt) is not None
-                        or re.search(r"\b2nd\b", txt) is not None
-                        or re.search(r"\b3rd\+?\b", txt) is not None
-                    )
-                    has_filter_words = (
-                        "all filters" in txt
-                        or "filters" in txt
-                        or "modal" in classes
-                        or "drawer" in classes
-                        or "filter" in classes
-                    )
-
-                    return has_connections and (has_filter_words or has_degrees)
-                except Exception:
-                    return False
-
-            # The panel can be mid-transition immediately after clicking All Filters.
-            # Reacquire it for several short attempts rather than assuming a 1-second
-            # render time.
-            for _ in range(8):
-                for selector in selectors:
-                    try:
-                        loc = self.page.locator(selector)
-                        for i in range(min(loc.count(), 40)):
-                            item = loc.nth(i)
-                            if looks_like_filter_panel(item):
-                                return item
-                    except Exception:
-                        continue
-                try:
-                    self.page.wait_for_timeout(350)
+                    self.page.wait_for_timeout(300)
                 except Exception:
                     pass
 
-            # Fallback: locate the authoritative visible Connections heading or
-            # All Filters heading, then walk upward to a bounded ancestor that
-            # contains the filter/degree UI. This covers LinkedIn variants without
-            # dialog semantics.
-            for exact_text in ("Connections", "All Filters", "All filters"):
+            # Finally use the All Filters heading/control and walk upward.
+            for exact_text in ("All Filters", "All filters"):
                 try:
                     loc = self.page.get_by_text(exact_text, exact=True)
                     for i in range(min(loc.count(), 30)):
                         node = loc.nth(i)
                         if not node.is_visible():
                             continue
-
-                        current = node
-                        for _ in range(10):
-                            try:
-                                if looks_like_filter_panel(current):
-                                    return current
-
-                                parent = current.locator("xpath=../").first
-                                if parent.count() == 0 or not parent.is_visible():
-                                    break
-                                current = parent
-                            except Exception:
-                                break
+                        panel = _ancestor_filter_panel(node)
+                        if panel is not None:
+                            return panel
                 except Exception:
                     continue
 
@@ -703,61 +774,58 @@ class CompanyPage(BasePage):
 
 
         def open_connections_section():
-            dialog = filter_dialog()
-
-            if dialog is None:
-                print("ERROR: All Filters dialog not found.")
-                return False
-
-            # If degree options are already visible, no section click is needed.
-            for label in ("1st", "2nd", "3rd+"):
-                try:
-                    if dialog.get_by_text(label, exact=True).count() > 0:
-                        return True
-                except Exception:
-                    pass
-
-            # Open the exact Connections section inside the dialog.
-            candidates = (
-                dialog.get_by_text("Connections", exact=True),
-                dialog.locator("button:visible"),
-                dialog.locator("[role='button']:visible"),
-                dialog.locator("label:visible"),
-                dialog.locator("li:visible"),
-            )
-
-            for loc in candidates:
-                try:
-                    for i in range(min(loc.count(), 200)):
-                        item = loc.nth(i)
-                        if not item.is_visible():
-                            continue
-
-                        label = normalized_label(label_for(item))
-
-                        if label == "connections":
-                            item.scroll_into_view_if_needed()
-                            item.click(timeout=10000)
-                            self.page.wait_for_timeout(700)
-                            print("Connections section opened inside All Filters.")
+            # If degree controls are already visible, no section click is needed.
+            panel = filter_dialog()
+            if panel is not None:
+                for label in ("1st", "2nd", "3rd+"):
+                    try:
+                        if panel.get_by_text(label, exact=True).count() > 0:
+                            print("Connections section already expanded.")
                             return True
-                except Exception:
-                    continue
+                    except Exception:
+                        pass
 
-            # Some LinkedIn versions render the section as a text heading
-            # whose parent is the clickable control.
-            try:
-                heading = dialog.get_by_text("Connections", exact=True).first
-                if heading.count() > 0 and heading.is_visible():
-                    heading.scroll_into_view_if_needed()
-                    heading.click(timeout=10000)
-                    self.page.wait_for_timeout(700)
+            # Most robust path: resolve the exact Connections control directly.
+            controls = _candidate_connections_controls()
+            print("Visible exact Connections controls found:", len(controls))
+
+            for control in controls:
+                try:
+                    # Prefer a control whose ancestors look like the All Filters UI.
+                    scoped_panel = _ancestor_filter_panel(control)
+                    if scoped_panel is None and panel is not None:
+                        continue
+
+                    control.scroll_into_view_if_needed()
+                    control.click(timeout=10000)
+                    self.page.wait_for_timeout(900)
+
                     print("Connections section opened inside All Filters.")
                     return True
-            except Exception:
-                pass
+                except Exception as ex:
+                    print("Connections control click failed:", repr(ex))
+                    continue
 
-            print("ERROR: Connections section not found inside All Filters.")
+            # Last bounded fallback: exact visible Connections text and its clickable ancestor.
+            try:
+                loc = self.page.get_by_text("Connections", exact=True)
+                for i in range(min(loc.count(), 30)):
+                    node = loc.nth(i)
+                    if not node.is_visible():
+                        continue
+                    clickable = node.locator(
+                        "xpath=ancestor-or-self::*[self::button or self::a or @role='button' or @role='tab'][1]"
+                    ).first
+                    target = clickable if clickable.count() else node
+                    target.scroll_into_view_if_needed()
+                    target.click(timeout=10000)
+                    self.page.wait_for_timeout(900)
+                    print("Connections section opened inside All Filters via text ancestor.")
+                    return True
+            except Exception as ex:
+                print("Connections text fallback failed:", repr(ex))
+
+            print("ERROR: Connections section control could not be resolved after All Filters opened.")
             return False
 
 
