@@ -552,10 +552,8 @@ class SearchWorkflowV2:
                 "Company not found."
             )
 
-            return self._finish(
-                results,
-                company,
-                location
+            raise RuntimeError(
+                f"LinkedIn company search failed: company '{company}' could not be opened."
             )
 
         # -------------------------------------------------
@@ -721,10 +719,8 @@ class SearchWorkflowV2:
                 "Employees page not found."
             )
 
-            return self._finish(
-                results,
-                company,
-                location
+            raise RuntimeError(
+                "Company-scoped employee search could not be opened."
             )
 
         # -------------------------------------------------
@@ -757,10 +753,8 @@ class SearchWorkflowV2:
                 "unfiltered employee search."
             )
 
-            return self._finish(
-                results,
-                company,
-                location
+            raise RuntimeError(
+                "LinkedIn location filter was not successfully applied."
             )
 
         print(
@@ -1308,8 +1302,19 @@ class SearchWorkflowV2:
             page_no += 1
 
         # -------------------------------------------------
-        # Final export
+        # Final export / strict completion invariant
         # -------------------------------------------------
+
+        if len(results) < max_profiles:
+            self._finish(
+                results,
+                company,
+                location
+            )
+            raise RuntimeError(
+                f"LinkedIn V2 search incomplete: collected {len(results)} "
+                f"valid profiles, required {max_profiles}."
+            )
 
         return self._finish(
             results,

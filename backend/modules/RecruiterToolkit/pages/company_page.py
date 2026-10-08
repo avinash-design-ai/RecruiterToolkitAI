@@ -243,27 +243,27 @@ class CompanyPage(BasePage):
 
     def open_employees_page(self):
         """
-        Open the authenticated company-scoped LinkedIn people search.
+        Establish a company-scoped LinkedIn people search without touching
+        connection-degree UI or synthesizing any search URL.
 
-        IMPORTANT:
-        If LinkedIn has already landed on a valid company-scoped people-search
-        URL, keep that authenticated page exactly as it is.
+        LinkedIn can expose the employee-search link on a company page but
+        redirect a same-page Playwright click to https://www.linkedin.com/.
+        Therefore:
+          1. preserve the company page;
+          2. collect only genuine LinkedIn people-search hrefs containing
+             currentCompany;
+          3. open each exact LinkedIn-supplied href in an isolated tab;
+          4. validate the resulting tab before making it the workflow owner;
+          5. leave the company page untouched when a candidate fails.
 
-        We intentionally do NOT rewrite the URL from F to F/S/O here.
-        The previous implementation did that with page.goto(), and LinkedIn
-        redirected the authenticated session to /uas/login. That poisoned the
-        only live employee-search page and caused the workflow to stop with
-        zero profiles.
-
-        Connection degree is not used by get_profiles(). The workflow can
-        safely use the company-scoped search page that LinkedIn already opened
-        and paginate through it until max_profiles is reached.
+        The exact href is always taken from LinkedIn's DOM. No query string is
+        invented or rewritten here.
         """
-
         print("=" * 60)
         print("OPENING COMPANY EMPLOYEES / PEOPLE SEARCH")
         print("=" * 60)
 
+        self._employee_search_scope_ready = False
         current_url = str(self.page.url or "").strip()
         print("Current URL:")
         print(current_url)
@@ -271,83 +271,118 @@ class CompanyPage(BasePage):
         def is_people_url(url):
             if not url:
                 return False
-            lower = url.lower()
+            lower = str(url).lower()
             return (
                 "/search/results/people/" in lower
                 and "currentcompany=" in lower
-                and "/login" not in lower
-                and "/authwall" not in lower
-                and "/checkpoint" not in lower
-                and "/uas/login" not in lower
-                and "/signup" not in lower
-                and "/ssr-login" not in lower
-                and "remember-me-auto-login" not in lower
+            )
+
+        def is_blocked_url(url):
+            lower = str(url or "").lower()
+            return (not lower) or any(
+                marker in lower
+                for marker in (
+                    "/login",
+                    "/authwall",
+                    "/checkpoint",
+                    "/uas/login",
+                    "/signup",
+                    "/ssr-login",
+                    "remember-me-auto-login",
+                )
             )
 
         def company_ids(url):
             try:
-                from urllib.parse import urlsplit, parse_qs
+                from urllib.parse import parse_qs, urlsplit
                 query = parse_qs(
-                    urlsplit(url).query,
-                    keep_blank_values=True
+                    urlsplit(str(url or "")).query,
+                    keep_blank_values=True,
                 )
                 return (
                     query.get("currentCompany", [])
                     or query.get("currentcompany", [])
                 )
-            except Exception as ex:
-                print("Company ID inspection failed:", repr(ex))
+            except Exception:
                 return []
 
-        # CASE 1:
-        # open_company_result() already landed on the authenticated
-        # company-scoped people-search page. Keep it unchanged.
-        if is_people_url(current_url):
-            ids = company_ids(current_url)
+        def candidate_score(href):
+            lower = str(href or "").lower()
+            score = 0
+            if "pastcompany=" not in lower:
+                score += 100
+            if "origin=company_page_canned_search" in lower:
+                score += 50
+            elif "origin=company_hires_in_company_canned_search" in lower:
+                score += 45
+            elif "origin=" in lower and "company" in lower:
+                score += 20
+            return score
 
+        def validate_employee_page(tab, expected_ids, label):
+            try:
+                tab.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            try:
+                tab.wait_for_timeout(3500)
+            except Exception:
+                pass
+
+            final_url = str(tab.url or "").strip()
+            print(f"{label} final URL:", final_url)
+
+            if is_blocked_url(final_url) or not is_people_url(final_url):
+                print(f"{label} rejected: not an authenticated company people-search page.")
+                return False
+
+            final_ids = company_ids(final_url)
+            if expected_ids and final_ids != expected_ids:
+                print(f"{label} rejected: currentCompany changed.")
+                print("Expected:", expected_ids)
+                print("Actual:", final_ids)
+                return False
+
+            return True
+
+        # CASE 1: company click already landed directly on company people search.
+        if is_people_url(current_url) and not is_blocked_url(current_url):
+            ids = company_ids(current_url)
             if not ids:
-                print(
-                    "ERROR: Current company people-search page has no "
-                    "currentCompany scope."
-                )
+                print("ERROR: Current people-search page has no currentCompany.")
                 return False
 
             print("=" * 60)
-            print("AUTHENTICATED COMPANY PEOPLE SEARCH ALREADY OPEN")
+            print("COMPANY PEOPLE-SEARCH PAGE ALREADY OPEN")
             print("=" * 60)
             print("Company scope:", ids)
-            print("Connection-degree rewrite: SKIPPED")
-            print(
-                "Reason: preserving the authenticated LinkedIn search page "
-                "prevents /uas/login redirects."
-            )
-            print("Final URL:", current_url)
+            print("Connection-degree handling: DISABLED")
+            print("Preserving LinkedIn's returned people-search page.")
             print("Company scope preserved:", ids)
+
+            self._employee_search_scope_ready = True
             return True
 
-        # CASE 2:
-        # Still on the selected company page. Use only a LinkedIn-supplied
-        # currentCompany people-search link. Do not rewrite it.
-        links = self.page.locator(
-            "a[href*='/search/results/people/']"
-        )
+        # CASE 2: company page exposes LinkedIn-supplied people-search links.
+        if "/company/" not in current_url.lower() or is_blocked_url(current_url):
+            print("ERROR: Current page is neither company-scoped people search nor a usable company page.")
+            print("Current URL:", current_url)
+            return False
+
+        links = self.page.locator("a[href*='/search/results/people/']")
         count = links.count()
         print("People-search links found:", count)
 
-        selected = None
-        selected_href = ""
-        selected_company_ids = company_ids(current_url)
+        candidates = []
+        seen = set()
 
         for i in range(count):
             try:
-                link = links.nth(i)
-                href = (
-                    link.get_attribute("href")
-                    or ""
-                ).strip()
-
+                href = (links.nth(i).get_attribute("href") or "").strip()
                 if not href:
                     continue
+                if href.startswith("/"):
+                    href = "https://www.linkedin.com" + href
                 if "/search/results/people/" not in href.lower():
                     continue
 
@@ -355,88 +390,108 @@ class CompanyPage(BasePage):
                 if not ids:
                     continue
 
-                if (
-                    selected_company_ids
-                    and ids != selected_company_ids
-                ):
-                    print(
-                        "SKIP unrelated currentCompany:",
-                        href
-                    )
+                key = href.split("#", 1)[0]
+                if key in seen:
                     continue
 
-                selected = link
-                selected_href = href
-                print("Selected LinkedIn employee-search link:")
-                print(selected_href)
-                break
-
+                seen.add(key)
+                candidates.append((candidate_score(href), i, href, ids))
             except Exception as ex:
-                print(
-                    "Employee-search link inspection failed:",
-                    repr(ex)
+                print("Employee-search link inspection failed:", repr(ex))
+
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2].lower()))
+        print("Validated LinkedIn people-search candidates:", len(candidates))
+
+        if not candidates:
+            print("ERROR: No genuine currentCompany LinkedIn people-search link found.")
+            return False
+
+        context = self.page.context
+        company_page = self.page
+
+        # Never navigate the company-page owner to a failing people link.
+        for attempt, (_, source_index, href, expected_ids) in enumerate(candidates, start=1):
+            print("-" * 60)
+            print(f"EMPLOYEE SEARCH CANDIDATE {attempt}/{len(candidates)}")
+            print("Source link index:", source_index)
+            print("Exact LinkedIn href:", href)
+
+            # Path A: browser-real Ctrl-click in a fresh tab.
+            new_tab = None
+            try:
+                with context.expect_page(timeout=12000) as page_info:
+                    links.nth(source_index).click(
+                        modifiers=["Control"],
+                        timeout=15000,
+                    )
+                new_tab = page_info.value
+
+                if validate_employee_page(new_tab, expected_ids, "Ctrl-click candidate"):
+                    self.page = new_tab
+                    self._employee_search_scope_ready = True
+
+                    print("=" * 60)
+                    print("COMPANY PEOPLE SEARCH READY")
+                    print("=" * 60)
+                    print("Navigation mode: LinkedIn link -> isolated tab")
+                    print("Final URL:", self.page.url)
+                    print("Company scope preserved:", expected_ids)
+                    return True
+            except Exception as ex:
+                print("Ctrl-click employee-search candidate failed:", repr(ex))
+
+            if new_tab is not None:
+                try:
+                    if not new_tab.is_closed():
+                        new_tab.close()
+                except Exception:
+                    pass
+
+            # Path B: exact href supplied by LinkedIn, opened in an isolated tab.
+            direct_tab = None
+            try:
+                direct_tab = context.new_page()
+                print("Trying exact LinkedIn-supplied href in isolated tab...")
+                direct_tab.goto(
+                    href,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                    referer=current_url,
                 )
 
-        if selected is None:
-            print(
-                "No valid LinkedIn currentCompany employee-search "
-                "link found."
-            )
-            return False
+                if validate_employee_page(direct_tab, expected_ids, "Exact-href candidate"):
+                    self.page = direct_tab
+                    self._employee_search_scope_ready = True
 
-        try:
-            print(
-                "Clicking LinkedIn's original company employee-search link..."
-            )
-            selected.scroll_into_view_if_needed()
-            selected.click(timeout=15000)
-            self.page.wait_for_timeout(5000)
-        except Exception as ex:
-            print(
-                "Employee-search link click failed:",
-                repr(ex)
-            )
-            return False
+                    print("=" * 60)
+                    print("COMPANY PEOPLE SEARCH READY")
+                    print("=" * 60)
+                    print("Navigation mode: exact LinkedIn href -> isolated tab")
+                    print("Final URL:", self.page.url)
+                    print("Company scope preserved:", expected_ids)
+                    return True
+            except Exception as ex:
+                print("Exact LinkedIn employee-search href failed:", repr(ex))
 
-        final_url = str(
-            self.page.url or ""
-        ).strip()
+            if direct_tab is not None:
+                try:
+                    if not direct_tab.is_closed():
+                        direct_tab.close()
+                except Exception:
+                    pass
 
-        print(
-            "URL after employee-search link click:",
-            final_url
-        )
-
-        if not is_people_url(final_url):
-            print(
-                "ERROR: LinkedIn employee-search link did not produce "
-                "a valid authenticated company people-search page."
-            )
-            print("Expected source link:", selected_href)
-            print("Actual URL:", final_url)
-            return False
-
-        final_ids = company_ids(final_url)
-
-        if (
-            selected_company_ids
-            and final_ids != selected_company_ids
-        ):
-            print(
-                "ERROR: Company scope changed during employee-search "
-                "navigation."
-            )
-            print("Expected:", selected_company_ids)
-            print("Actual:", final_ids)
-            return False
+            try:
+                if not company_page.is_closed():
+                    self.page = company_page
+            except Exception:
+                pass
 
         print("=" * 60)
-        print("COMPANY PEOPLE SEARCH READY")
+        print("EMPLOYEE SEARCH COULD NOT BE SAFELY OPENED")
         print("=" * 60)
-        print("Final URL:", final_url)
-        print("Connection-degree filter:", "LINKEDIN ORIGINAL FILTER")
-        print("Company scope preserved:", final_ids)
-        return True
+        print("No LinkedIn-supplied currentCompany employee-search navigation succeeded.")
+        print("Company page was preserved; generic people search was refused.")
+        return False
     def apply_location(self, location):
         """
         Keep the already-working company people-search page intact.
