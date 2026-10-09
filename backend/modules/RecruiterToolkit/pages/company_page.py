@@ -9,23 +9,219 @@ class CompanyPage(BasePage):
         super().__init__(page)
 
     def search_company(self, company):
+        """
+        Search LinkedIn using its current global-search control.
 
-        # Store the exact requested company so get_profiles() can validate every result card.
+        LinkedIn changes the input placeholder and can collapse the input into
+        a Search button. Resolve the live input dynamically, and fail clearly
+        instead of waiting 30 seconds on one obsolete selector.
+        """
+        import re
+
+        company = str(company or "").strip()
+        if not company:
+            raise ValueError("Company name must not be empty.")
+
         self._search_company = company
 
+        print("=" * 60)
+        print("SEARCHING LINKEDIN COMPANY")
+        print("=" * 60)
+        print("Requested company:", company)
 
-        search_box = self.page.locator(
-            "input[placeholder*='looking']"
-        ).first
+        try:
+            print("Current URL:", self.page.url)
+            print("Current title:", self.page.title())
+        except Exception as ex:
+            print("Could not read current page state:", repr(ex))
 
-        search_box.click()
-        search_box.fill(company)
-        search_box.press("Enter")
+        input_selectors = (
+            "input.search-global-typeahead__input",
+            "input[data-test-global-search-input]",
+            "input[placeholder*='Search' i]",
+            "input[aria-label*='Search' i]",
+            "input[placeholder*='looking' i]",
+            "input[type='search']",
+            "input[role='combobox']",
+        )
 
+        def find_visible_search_input():
+            for selector in input_selectors:
+                try:
+                    matches = self.page.locator(selector)
+                    for index in range(matches.count()):
+                        candidate = matches.nth(index)
+                        try:
+                            if not candidate.is_visible() or not candidate.is_enabled():
+                                continue
+                            attrs = " ".join(
+                                str(candidate.get_attribute(name) or "")
+                                for name in (
+                                    "placeholder", "aria-label", "name",
+                                    "class", "data-test-global-search-input",
+                                )
+                            )
+                            dedicated = (
+                                "search-global-typeahead__input" in selector
+                                or "data-test-global-search-input" in selector
+                                or "role='combobox'" in selector
+                                or "type='search'" in selector
+                            )
+                            if dedicated or re.search(r"search|looking for", attrs, re.I):
+                                print("LinkedIn search box found using selector:", selector)
+                                print("Search input attributes:", repr(attrs[:250]))
+                                return candidate
+                        except Exception:
+                            continue
+                except Exception as ex:
+                    print("Search selector inspection failed:", selector, repr(ex))
+
+            # Accessibility fallback; do not select an arbitrary textbox.
+            try:
+                matches = self.page.get_by_role("combobox")
+                for index in range(matches.count()):
+                    candidate = matches.nth(index)
+                    try:
+                        if not candidate.is_visible() or not candidate.is_enabled():
+                            continue
+                        attrs = " ".join(
+                            str(candidate.get_attribute(name) or "")
+                            for name in ("placeholder", "aria-label", "name", "class")
+                        )
+                        if re.search(r"search|looking for", attrs, re.I):
+                            print("LinkedIn search box found using role=combobox.")
+                            return candidate
+                    except Exception:
+                        continue
+            except Exception as ex:
+                print("Combobox fallback failed:", repr(ex))
+
+            # Last fallback: only visible inputs identifying themselves as search.
+            try:
+                visible_inputs = self.page.locator("input:visible")
+                count = visible_inputs.count()
+                print("Visible input count:", count)
+                for index in range(count):
+                    candidate = visible_inputs.nth(index)
+                    try:
+                        attrs = " ".join(
+                            str(candidate.get_attribute(name) or "")
+                            for name in ("placeholder", "aria-label", "name", "class", "type")
+                        )
+                        print(f"Visible input #{index + 1} attributes:", repr(attrs[:250]))
+                        if candidate.is_enabled() and re.search(
+                            r"search|looking for|global-typeahead", attrs, re.I
+                        ):
+                            print("Selected visible input as LinkedIn search box.")
+                            return candidate
+                    except Exception:
+                        continue
+            except Exception as ex:
+                print("Visible-input fallback failed:", repr(ex))
+
+            return None
+
+        try:
+            self.page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+        search_box = find_visible_search_input()
+
+        # In some LinkedIn layouts the input is collapsed behind a button/icon.
+        # Click only an explicitly search-labelled opener, then reacquire the input.
+        if search_box is None:
+            opener_selectors = (
+                "button.search-global-typeahead__collapsed-search-button",
+                ".search-global-typeahead__collapsed-search-button",
+                "button[aria-label*='Search' i]",
+                "[role='button'][aria-label*='Search' i]",
+                "button[title*='Search' i]",
+                "[role='button'][title*='Search' i]",
+            )
+
+            for selector in opener_selectors:
+                try:
+                    controls = self.page.locator(selector)
+                    for index in range(controls.count()):
+                        control = controls.nth(index)
+                        try:
+                            if not control.is_visible() or not control.is_enabled():
+                                continue
+                            label = " ".join(
+                                str(control.get_attribute(name) or "")
+                                for name in ("aria-label", "title", "class", "data-control-name")
+                            )
+                            text_value = ""
+                            try:
+                                text_value = control.inner_text(timeout=1000)
+                            except Exception:
+                                pass
+                            if (
+                                "collapsed-search-button" not in label
+                                and not re.search(r"\bsearch\b", label + " " + text_value, re.I)
+                            ):
+                                continue
+
+                            print("Opening LinkedIn global search using:", selector, repr(label or text_value))
+                            control.click(timeout=4000)
+                            self.page.wait_for_timeout(500)
+                            search_box = find_visible_search_input()
+                            if search_box is not None:
+                                break
+                        except Exception as ex:
+                            print("Search opener attempt failed:", selector, repr(ex))
+                    if search_box is not None:
+                        break
+                except Exception as ex:
+                    print("Search opener selector unavailable:", selector, repr(ex))
+
+        if search_box is None:
+            try:
+                controls = self.page.get_by_role(
+                    "button",
+                    name=re.compile(r"^\s*search(\s+linkedin)?\s*$", re.I),
+                )
+                for index in range(controls.count()):
+                    control = controls.nth(index)
+                    try:
+                        if control.is_visible() and control.is_enabled():
+                            print("Opening LinkedIn global search using accessible Search button.")
+                            control.click(timeout=4000)
+                            self.page.wait_for_timeout(500)
+                            search_box = find_visible_search_input()
+                            if search_box is not None:
+                                break
+                    except Exception as ex:
+                        print("Accessible Search-button attempt failed:", repr(ex))
+            except Exception as ex:
+                print("Accessible Search-button lookup failed:", repr(ex))
+
+        if search_box is None:
+            try:
+                print("Final URL:", self.page.url)
+                print("Final title:", self.page.title())
+            except Exception:
+                pass
+            raise RuntimeError(
+                "LinkedIn global search control was not found after checking "
+                "visible inputs and the collapsed Search control."
+            )
+
+        print("Entering company into LinkedIn search:", company)
+        try:
+            search_box.click(timeout=10000)
+            search_box.fill(company, timeout=10000)
+            search_box.press("Enter", timeout=10000)
+        except Exception as ex:
+            raise RuntimeError(
+                f"Could not submit company '{company}' through LinkedIn global search: {ex!r}"
+            ) from ex
+
+        print("Company search submitted.")
         print("=" * 60)
         print("CHECKING PAGE BEFORE WAIT")
         print("=" * 60)
-
         try:
             print("URL:", self.page.url)
             print("TITLE:", self.page.title())
@@ -34,7 +230,6 @@ class CompanyPage(BasePage):
             raise
 
         self.page.wait_for_timeout(5000)
-
         print("PAGE SURVIVED WAIT")
 
     def open_company_result(self, company):
